@@ -1,21 +1,18 @@
-import openai
+from openai import OpenAI
 from dotenv import load_dotenv
 import os
 
+client = None
 
 def ask_gpt3(prompt):
-	response = openai.Completion.create(
-		engine="davinci",
-		prompt=prompt,
-		temperature=0.7,
-		max_tokens=100,
-		top_p=1.0,
-		frequency_penalty=0.0,
-		presence_penalty=0.0,
-		stop=None
+	response = client.chat.completions.create(
+		model="gpt-3.5-turbo",
+		messages=[{"role": "user", "content": prompt}],
+		max_tokens=150,
 	)
-	return response.choices[0].text.strip()
+	return response.choices[0].message.content.strip()
 
 def init():
+	global client
 	load_dotenv()
-	openai.api_key = os.getenv('api_key')
+	client = OpenAI(api_key=os.getenv('api_key'))

@@ -1,3 +1,4 @@
+import os
 import random
 import json
 import pickle
@@ -12,7 +13,7 @@ from tensorflow.keras.optimizers import SGD
 
 lemmatizer = WordNetLemmatizer()
 
-def traing_model():
+def train_model():
     intents = json.loads(open('intents.json').read())
 
     words = []
@@ -76,13 +77,8 @@ def traing_model():
 
     print('Done')
 
-# Check if the model exists
 def model_exists():
-    try:
-        model = open('JARVIS_model.keras')
-        return True
-    except:
-        return False
+    return os.path.exists('JARVIS_model.keras')
 
 if __name__ == '__main__':
-    traing_model()
+    train_model()

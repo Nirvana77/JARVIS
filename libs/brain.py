@@ -41,22 +41,21 @@ def predict_class(sentence):
 
     return_list = []
 
-    print(classes)
     for r in results:
         return_list.append({'intent': classes[r[0]], 'probability': str(r[1])})
     
     return return_list
 
-def get_response(intents_list, intents_json) -> str:
-    tag = intents_list[0]['intent']
-    list_of_intents = intents_json['intents']
+def get_response(intents_list, intents_json) -> dict:
+    if not intents_list:
+        return {'response': "I'm not sure I understand. Could you rephrase?", 'tag': 'unknown', 'action': 'none'}
 
-    for i in list_of_intents:
-        if i['tag'] == tag:
-            result = {'response': random.choice(i['responses']), 'tag': tag, 'action': i['action']}
-            break
-    
-    return result
+    tag = intents_list[0]['intent']
+    for intent in intents_json['intents']:
+        if intent['tag'] == tag:
+            return {'response': random.choice(intent['responses']), 'tag': tag, 'action': intent['action']}
+
+    return {'response': "I'm not sure I understand. Could you rephrase?", 'tag': 'unknown', 'action': 'none'}
 
 def init():
     global words, classes, model

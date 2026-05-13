@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import libs.voice as voice
 import libs.openai_helper as openai
 import libs.brain as brain
-import libs.training as traing
+import libs.training as training
 import json
 import threading
 import time
@@ -15,7 +15,8 @@ import speech_recognition as sr
 
 language = "en"
 
-intents = json.loads(open('intents.json').read())
+with open('intents.json') as f:
+	intents = json.load(f)
 
 standby = True
 will_run = True
@@ -55,7 +56,7 @@ def runCommand(res, userIntent=None):
 			shutdown()
 		else:
 			standby = True
-			voice.speak('I will enter standby mode´.')
+			voice.speak('I will enter standby mode.')
 		return
 	elif action == 'shutdown':
 		shutdown()
@@ -70,7 +71,7 @@ def runCommand(res, userIntent=None):
 		return
 	elif action == 'train':
 		voice.speak('Training with the new data')
-		threading.Thread(target=traing.traing_model).start()
+		threading.Thread(target=training.train_model).start()
 		return
 	elif response != "":
 		voice.speak(response)
@@ -109,14 +110,13 @@ def shutdown():
 
 def my_thread_function():
 	global will_run
-	global lastTraining
 
 	lastModif = os.path.getmtime('intents.json')
 
 	while will_run:
 		if lastModif != os.path.getmtime('intents.json'):
 			lastModif = os.path.getmtime('intents.json')
-			traing.traing_model()
+			training.train_model()
 
 		time.sleep(1)
 
@@ -126,7 +126,7 @@ def run():
 	# start an other thread
 	my_thread.start()
 
-	while True:
+	while will_run:
 		query = takeCommand().lower()
 
 		if 'none' == query:
@@ -134,34 +134,28 @@ def run():
 		else:
 			ints = brain.predict_class(query)
 			res = brain.get_response(ints, intents)
-			runCommand(res)
+			runCommand(res, query)
 
 
 def init():
 	load_dotenv()
 	global language
 	language = os.getenv('language')
-	global lastTraining
 
-	# Check the creation date of the model
-	# If it is older than 7 days, train the model again
-	# If the model does not exist, train the model
-	if not traing.model_exists():
+	if not training.model_exists():
 		print('Training model...')
-		traing.traing_model()
+		training.train_model()
 		print('Done')
 	else:
-		cration_date = os.path.getctime('JARVIS_model.keras')
-		lastTraining = time.time() - cration_date
-		if lastTraining > 604800: # 7 days in seconds
+		creation_date = os.path.getctime('JARVIS_model.keras')
+		age = time.time() - creation_date
+		if age > 604800:  # 7 days in seconds
 			print('Training model...')
-			traing.traing_model()
+			training.train_model()
 			print('Done')
 
 	voice.init()
 	brain.init()
-	
-	#traing_model()
 
 if __name__ == '__main__':
 	init()
