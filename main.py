@@ -4,13 +4,13 @@
 # https://www.youtube.com/watch?v=1lwddP0KUEg
 
 #import pandas as pd
-import libs.openai_helper as openai
+import libs.anthropic_helper as llm
 import libs.command_helper as commands
 
 if __name__ == '__main__':
 	print('Loading JARVIS...')
-	
-	openai.init()
+
+	llm.init()
 	print('loading commands...')
 	commands.init()
 	

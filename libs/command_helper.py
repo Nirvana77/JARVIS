@@ -3,7 +3,7 @@
 import importlib
 from dotenv import load_dotenv
 import libs.voice as voice
-import libs.openai_helper as openai
+import libs.anthropic_helper as llm
 import libs.brain as brain
 import libs.training as training
 import json
@@ -97,8 +97,11 @@ def runCommand(res, userIntent=None):
 def ask_chat_gpt():
 	voice.speak('What is your question?')
 	question = takeCommand()
-	voice.speak('Searching...')
-	answer = openai.ask_gpt3(question)
+	if question == 'None':
+		voice.speak('Sorry, I did not catch that.')
+		return
+	voice.speak('Let me think about that.')
+	answer = llm.ask_claude(question)
 	voice.speak(answer)
 
 def shutdown():
