@@ -1,0 +1,39 @@
+# JARVIS non-secret configuration. Secrets (ANTHROPIC_API_KEY,
+# ANTHROPIC_WORKSPACE_ID) stay in .env. See PRD/jarvis-2026-rebuild.md.
+
+[general]
+language = "en"           # also overridable with the `language` env var
+
+[persona]
+active = "jarvis"         # overridden by the JARVIS_PERSONA env var
+
+[wake]
+model = "hey_jarvis"      # openwakeword pretrained model name (bundled, offline)
+threshold = 0.5           # score above which the wake word is considered heard
+
+[capture]
+sample_rate = 16000
+frame_ms = 80             # length of one audio frame fed to the wake detector
+window_timeout_s = 8.0    # max length of the listening window opened by the wake word
+silence_s = 1.0           # trailing silence that ends an utterance
+
+[stt]
+model = "base"            # faster-whisper model size
+compute_type = "int8"
+device = "cpu"
+language = "en"
+
+[tts]
+voice = "en_GB-alan-medium"   # Piper voice; files resolved under <data>/models/piper/
+
+[nlu]
+embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+threshold = 0.45         # max class probability below this -> "unknown"
+
+[reasoner]
+enabled = true           # still capability-probed; false disables Ollama entirely
+base_url = "http://localhost:11434"
+model = "qwen2.5:3b"
+
+[paths]
+data_dir = "data"        # models, nlu artifacts, per-skill scratch (git-ignored)
