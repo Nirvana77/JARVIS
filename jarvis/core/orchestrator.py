@@ -146,8 +146,7 @@ class Orchestrator:
 
             acked = True
             self.state = "thinking"
-            label, confidence = await asyncio.to_thread(self.nlu.predict, text)
-            log.info("heard %r -> %s (%.2f)", text, label, confidence)
+            label = await self._classify_and_report(text)
             await self.handle(label, text)
 
             if not self.running or self.standby:
@@ -158,6 +157,25 @@ class Orchestrator:
         if self.running:
             self.standby = True
             await self._speak(self.persona.line("standby"))
+
+    async def _classify_and_report(self, text: str) -> str:
+        """Classify ``text`` and print what was heard / what it resolved to.
+
+        Printed on every turn (not gated on -v) so it's obvious why JARVIS did
+        what it did when recognition is shaky.
+        """
+        explain = getattr(self.nlu, "explain", None)
+        if callable(explain):
+            p = await asyncio.to_thread(explain, text)
+            top = " · ".join(f"{lbl} {prob:.2f}" for lbl, prob in p.ranking[:3])
+            print(f'  heard   : "{text}"')
+            print(f"  intent  : {p.label}  (conf {p.confidence:.2f}, sim {p.similarity:.2f})")
+            print(f"  ranked  : {top}")
+            log.info("heard %r -> %s (%.2f)", text, p.label, p.confidence)
+            return p.label
+        label, confidence = await asyncio.to_thread(self.nlu.predict, text)
+        print(f'  heard   : "{text}"   -> {label} ({confidence:.2f})')
+        return label
 
     # -- dispatch (also the unit-test entry point) --------------------------
 
@@ -245,6 +263,9 @@ class Orchestrator:
         finally:
             self.running = False
             self.mic.stop()
+            close = getattr(self.tts, "close", None)
+            if callable(close):
+                close()
 
     def stop(self) -> None:
         self.running = False

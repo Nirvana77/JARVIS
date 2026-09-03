@@ -32,6 +32,10 @@ class Speaker:
         self._voice = None
         self._sample_rate = 22050
         self._load_failed = False
+        self._out = None  # persistent sounddevice OutputStream (kept warm)
+        #: leading silence prepended to every utterance so the output device
+        #: doesn't swallow the first phoneme while it spins up
+        self.lead_pad_s = 0.25
 
     @property
     def model_path(self) -> Path:
@@ -78,6 +82,27 @@ class Speaker:
             wf.writeframes(pcm.tobytes())
         return buf.getvalue()
 
+    def _output(self, sample_rate: int):
+        """A persistent OutputStream. Reopening the device per utterance is what
+        clips the first word, so keep one stream open and reuse it."""
+        import sounddevice as sd
+
+        if self._out is not None and int(self._out.samplerate) != sample_rate:
+            self._out.close()
+            self._out = None
+        if self._out is None:
+            self._out = sd.OutputStream(samplerate=sample_rate, channels=1, dtype="int16")
+            self._out.start()
+        return self._out
+
+    def close(self) -> None:
+        if self._out is not None:
+            try:
+                self._out.stop()
+                self._out.close()
+            finally:
+                self._out = None
+
     def say(self, text: str) -> None:
         text = (text or "").strip()
         if not text:
@@ -88,10 +113,9 @@ class Speaker:
         pcm, sr = self.synthesize(text)
         if len(pcm) == 0:
             return  # already printed; nothing to play
+        pad = np.zeros(int(sr * self.lead_pad_s), dtype=pcm.dtype)
         try:
-            import sounddevice as sd
-
-            sd.play(pcm, sr)
-            sd.wait()
+            self._output(sr).write(np.concatenate([pad, pcm]))
         except Exception as exc:  # noqa: BLE001 - headless / no output device
             log.warning("audio playback failed: %s", exc)
+            self.close()

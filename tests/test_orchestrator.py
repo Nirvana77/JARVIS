@@ -78,6 +78,12 @@ class FakeNLU:
     def predict(self, text):
         return self.mapping.get(text, ("unknown", 0.1))
 
+    def explain(self, text):
+        from jarvis.nlu.classifier import Prediction
+
+        label, conf = self.mapping.get(text, ("unknown", 0.1))
+        return Prediction(label, conf, [(label, conf)], 1.0)
+
 
 class FakePersona:
     def __init__(self):
@@ -217,6 +223,15 @@ def test_stays_awake_for_followups_then_announces_standby(orch):
     assert orch.registry.calls == [("search", {"query": "black holes"})]
     assert "<standby>" in orch._persona.spoken  # deferred standby announcement
     assert orch.standby is True
+
+
+def test_transcript_and_intent_are_printed(orch, capsys):
+    orch.standby = False
+    orch.mic = FakeMic(script=[True, False])
+    asyncio.run(orch.run())
+    out = capsys.readouterr().out
+    assert 'heard   : "search black holes"' in out
+    assert "intent  : search" in out
 
 
 def test_two_commands_in_one_wake_session(orch):

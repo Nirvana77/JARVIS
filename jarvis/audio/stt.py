@@ -29,6 +29,10 @@ class Transcriber:
         self.compute_type = compute_type
         self.download_root = str(download_root) if download_root else None
         self.language = language
+        self.initial_prompt = (
+            "Voice commands for an assistant named Jarvis: "
+            "search, look up, play, open, note, remember, go to sleep, shut down."
+        )
         self._model = None
 
     def load(self) -> "Transcriber":
@@ -58,5 +62,10 @@ class Transcriber:
             language=self.language,
             beam_size=5,
             vad_filter=True,
+            # each utterance stands alone — stops whisper carrying context (and
+            # hallucinations) between commands
+            condition_on_previous_text=False,
+            # bias decoding toward the command vocabulary
+            initial_prompt=self.initial_prompt,
         )
         return " ".join(seg.text.strip() for seg in segments).strip()

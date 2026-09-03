@@ -92,6 +92,18 @@ def test_gibberish_is_unknown(trained):
         assert label == UNKNOWN
 
 
+def test_explain_returns_a_sorted_ranking(trained):
+    clf, _, _ = trained
+    p = clf.explain("search black holes")
+    assert p.label == "search"
+    probs = [prob for _, prob in p.ranking]
+    assert probs == sorted(probs, reverse=True)
+    assert {lbl for lbl, _ in p.ranking} == set(clf.labels)
+    assert 0.0 <= p.similarity <= 1.0001
+    label, conf = p              # Prediction still unpacks like a tuple
+    assert (label, conf) == (p.label, p.confidence)
+
+
 def test_versions_pruned_to_three(trained, embedder, embedding_model):
     _, out, _ = trained
     corpus = build_corpus()
