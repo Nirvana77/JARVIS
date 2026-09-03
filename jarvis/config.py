@@ -61,7 +61,8 @@ class CaptureConfig:
 
 @dataclass(frozen=True)
 class STTConfig:
-    model: str = "small"  # "base" is faster but noticeably less accurate
+    # ".en" models beat the multilingual ones for English at the same size/speed
+    model: str = "small.en"
     compute_type: str = "int8"
     device: str = "cpu"
     language: str = "en"
@@ -187,7 +188,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             follow_up_s=float(capture.get("follow_up_s", 10.0)),
         ),
         stt=STTConfig(
-            model=stt.get("model", "small"),
+            model=stt.get("model", "small.en"),
             compute_type=stt.get("compute_type", "int8"),
             device=stt.get("device", "cpu"),
             language=stt.get("language", language),

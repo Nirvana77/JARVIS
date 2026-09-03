@@ -94,10 +94,12 @@ class Microphone:
         grace_frames = int(start_grace_seconds / frame_dur)
 
         collected: list[np.ndarray] = []
-        noise_rms = None
+        early_rms: list[float] = []
+        floor = 0.01  # provisional until calibrated
         speech_started = False
         speech_frames = 0
         trailing_silence = 0
+        calibrate_frames = 8
 
         for i in range(max_frames):
             try:
@@ -107,13 +109,16 @@ class Microphone:
             collected.append(frame)
 
             rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)) + 1e-9)
-            if noise_rms is None:
-                noise_rms = rms
-                continue
-            if i < 5:  # keep adapting the floor to ambient noise at the start
-                noise_rms = 0.9 * noise_rms + 0.1 * rms
+            if i < calibrate_frames:
+                early_rms.append(rms)
+                if i == calibrate_frames - 1:
+                    # use the *quietest* early frame, clamped: robust even when
+                    # the user is already talking as the window opens (a running
+                    # average would set the floor to speech level and then never
+                    # detect anything)
+                    floor = min(max(min(early_rms), 0.003), 0.02)
 
-            is_speech = rms > max(noise_rms * 3.0, 0.01)
+            is_speech = rms > max(floor * 2.5, 0.008)
             if is_speech:
                 speech_started = True
                 speech_frames += 1
@@ -122,12 +127,11 @@ class Microphone:
                 trailing_silence += 1
                 if trailing_silence >= silence_frames:
                     break
-            elif i > grace_frames:
+            elif i >= grace_frames:
                 break  # nobody said anything
 
         # a couple of loud frames is a cough / a door / JARVIS's own tail, not a
         # command — require at least ~0.24s of speech
         if not speech_started or speech_frames < 3:
             return np.zeros(0, dtype=np.float32)
-        audio = np.concatenate(collected).astype(np.float32) / 32768.0
-        return audio
+        return np.concatenate(collected).astype(np.float32) / 32768.0

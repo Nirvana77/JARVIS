@@ -20,11 +20,12 @@ follow_up_s = 10.0        # after a command, keep listening this long for a foll
                           # (no wake word needed) before announcing standby
 
 [stt]
-model = "small"          # faster-whisper size: tiny/base/small/medium.
-                         # "base" is ~2x faster on CPU but mis-hears a lot;
-                         # "small" (~460 MB) is the sweet spot.
-compute_type = "int8"
-device = "cpu"
+model = "small.en"       # faster-whisper: tiny(.en)/base(.en)/small(.en)/medium(.en).
+                         # ".en" models are more accurate for English at the same
+                         # size. Bigger = better + slower: medium.en (~1.5GB) is
+                         # the next step up; base.en is faster but mis-hears more.
+compute_type = "int8"    # "int8_float32" is more accurate, ~1.5x slower on CPU
+device = "cpu"           # "cuda" + compute_type "float16" if you have a GPU
 language = "en"
 
 [tts]

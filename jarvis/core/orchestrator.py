@@ -164,11 +164,13 @@ class Orchestrator:
         Printed on every turn (not gated on -v) so it's obvious why JARVIS did
         what it did when recognition is shaky.
         """
+        asr = getattr(self.stt, "last_avg_logprob", None)
+        asr_note = f"  (asr {asr:+.2f})" if asr is not None else ""
         explain = getattr(self.nlu, "explain", None)
         if callable(explain):
             p = await asyncio.to_thread(explain, text)
             top = " · ".join(f"{lbl} {prob:.2f}" for lbl, prob in p.ranking[:3])
-            print(f'  heard   : "{text}"')
+            print(f'  heard   : "{text}"{asr_note}')
             print(f"  intent  : {p.label}  (conf {p.confidence:.2f}, sim {p.similarity:.2f})")
             print(f"  ranked  : {top}")
             log.info("heard %r -> %s (%.2f)", text, p.label, p.confidence)
