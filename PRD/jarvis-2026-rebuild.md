@@ -56,7 +56,7 @@ to resolve, tracked in `check_setup.py`).
 
 | Layer | Always (CPU) | Better (GPU / Ollama) | If "better" is absent |
 |---|---|---|---|
-| Wake word | `openWakeWord` "Jarvis", always-on | same | — |
+| Wake word | `openwakeword==0.4.0` (ONNX) "Jarvis", always-on | same | — |
 | Capture | `sounddevice` ring buffer + VAD | same | — |
 | STT | `faster-whisper base` int8 CPU | `small`/`medium` on GPU | — |
 | NLU | `fastembed` MiniLM (ONNX, no torch) + sklearn `LogisticRegression` head + slot filler | same | — |
@@ -293,12 +293,23 @@ directory, no sandboxing involved.
 
 ## Phased delivery
 
-### Phase 0 — dependency spike (no app code)
+### Phase 0 — dependency spike (no app code) — ✅ DONE (2026-09-03)
 Confirm CPU wheels on the target Python (3.14 first; **fall back to a 3.12
 `.venv` if any are missing**): `faster-whisper`/`ctranslate2`, `openwakeword`,
 `piper-tts`/`piper-phonemize`, `fastembed`/`onnxruntime`, `sqlite-vec`,
 `sounddevice`, `scikit-learn`, `pypdf`. Record the outcome; pick the
 interpreter. Extend `check_setup.py` with these rows.
+
+**Outcome (full detail in `PRD/phase-0-dependency-spike.md`):**
+- **Interpreter: Python 3.14.** Every dependency has a cp314 / pure-Python CPU
+  wheel and imports clean. The 3.12 fallback is not needed — dropped.
+- **`piper-phonemize` removed** — `piper-tts` 1.7 bundles phonemization; it is
+  not a separate package and is not on PyPI.
+- **`openwakeword` pinned to `0.4.0`** — 0.5+ require `tflite-runtime`, which
+  has no PyPI wheel; 0.4.0 runs the ONNX path (onnxruntime is already in the
+  stack).
+- `check_setup.py` gained a "2026 rebuild stack (PRD Phase 0)" section; all
+  rows green.
 
 ### Milestone 1 — local voice loop (no learning, no RAG)
 - `jarvis/` skeleton, `config.toml`, `Context`, `Skill` contract, `registry`.
