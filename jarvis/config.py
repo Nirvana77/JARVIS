@@ -50,6 +50,9 @@ class CaptureConfig:
     frame_ms: int = 80
     window_timeout_s: float = 8.0
     silence_s: float = 1.0
+    #: after a command, keep listening this long for a follow-up (no wake word)
+    #: before announcing standby
+    follow_up_s: float = 10.0
 
     @property
     def frame_samples(self) -> int:
@@ -178,6 +181,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             frame_ms=int(capture.get("frame_ms", 80)),
             window_timeout_s=float(capture.get("window_timeout_s", 8.0)),
             silence_s=float(capture.get("silence_s", 1.0)),
+            follow_up_s=float(capture.get("follow_up_s", 10.0)),
         ),
         stt=STTConfig(
             model=stt.get("model", "base"),

@@ -16,6 +16,8 @@ sample_rate = 16000
 frame_ms = 80             # length of one audio frame fed to the wake detector
 window_timeout_s = 8.0    # max length of the listening window opened by the wake word
 silence_s = 1.0           # trailing silence that ends an utterance
+follow_up_s = 10.0        # after a command, keep listening this long for a follow-up
+                          # (no wake word needed) before announcing standby
 
 [stt]
 model = "base"            # faster-whisper model size

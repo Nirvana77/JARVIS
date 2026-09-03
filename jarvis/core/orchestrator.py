@@ -92,36 +92,59 @@ class Orchestrator:
                 return True
         return False
 
-    # -- one command --------------------------------------------------------
+    # -- one wake session --------------------------------------------------
 
-    async def _listen(self) -> str:
+    async def _listen(self, window: float, grace: float | None = None) -> str:
         audio = await asyncio.to_thread(
             self.mic.record_utterance,
-            self.config.capture.window_timeout_s,
+            window,
             self.config.capture.silence_s,
+            window if grace is None else grace,
         )
         if len(audio) == 0:
             return ""
         text = await asyncio.to_thread(self.stt.transcribe, audio)
         return (text or "").strip()
 
-    async def _turn(self) -> None:
-        """One listening window: capture, understand, act. Assumes just woken."""
-        self.state = "listening"
-        text = await self._listen()
-        if not text:
-            # user said only the wake word — acknowledge and give them a beat
-            await self._speak(self.persona.line("wake_ack"))
-            self.state = "listening"
-            text = await self._listen()
-        if not text:
-            return
+    async def _session(self) -> None:
+        """One wake: the first command plus any follow-ups spoken within
+        ``capture.follow_up_s``, then a spoken transition to standby.
 
-        log.info("heard: %s", text)
-        self.state = "thinking"
-        label, confidence = await asyncio.to_thread(self.nlu.predict, text)
-        log.info("intent: %s (%.2f)", label, confidence)
-        await self.handle(label, text)
+        The follow-up window is why JARVIS does not drop to standby the instant
+        a command finishes — you can keep talking without saying the wake word
+        again, and only a quiet ``follow_up_s`` ends the session.
+        """
+        acked = False
+        window = self.config.capture.window_timeout_s
+        grace = 2.0  # first capture bails fast if the user says nothing
+
+        while self.running:
+            self.state = "listening"
+            text = await self._listen(window, grace)
+
+            if not text:
+                if not acked:
+                    # only the wake word so far — acknowledge, then wait longer
+                    await self._speak(self.persona.line("wake_ack"))
+                    acked = True
+                    grace = window
+                    continue
+                break  # follow-up window lapsed quietly
+
+            acked = True
+            self.state = "thinking"
+            label, confidence = await asyncio.to_thread(self.nlu.predict, text)
+            log.info("heard %r -> %s (%.2f)", text, label, confidence)
+            await self.handle(label, text)
+
+            if not self.running or self.standby:
+                return  # shutdown / explicit goodbye already handled the exit
+
+            window = grace = self.config.capture.follow_up_s
+
+        if self.running:
+            self.standby = True
+            await self._speak(self.persona.line("standby"))
 
     # -- dispatch (also the unit-test entry point) --------------------------
 
@@ -202,7 +225,7 @@ class Orchestrator:
                     break
                 self.standby = False
                 try:
-                    await self._turn()
+                    await self._session()
                 finally:
                     self.state = "idle"
                     self.standby = True

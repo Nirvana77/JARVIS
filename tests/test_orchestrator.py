@@ -15,8 +15,12 @@ from jarvis.nlu.corpus import intent_meta
 # -- fakes ------------------------------------------------------------------
 
 class FakeMic:
-    def __init__(self, utterance=b"x"):
-        self._utterance = utterance
+    """``script`` is a list of bools: True -> a spoken utterance, False -> silence.
+    Values past the end read as silence."""
+
+    def __init__(self, script=(True,)):
+        self._script = list(script)
+        self._i = 0
         self.started = False
 
     def start(self):
@@ -29,22 +33,31 @@ class FakeMic:
         return np.zeros(1280, dtype=np.int16)
 
     def record_utterance(self, *a, **k):
-        if self._utterance is None:
+        has_speech = self._script[self._i] if self._i < len(self._script) else False
+        self._i += 1
+        if not has_speech:
             return np.zeros(0, dtype=np.float32)
         return np.ones(16000, dtype=np.float32) * 0.1
 
 
 class FakeWake:
-    def __init__(self, fire_after=1):
-        self._calls = 0
-        self._fire_after = fire_after
+    """Fires ``fires`` times, then calls ``stop`` (if set) so run() can exit."""
+
+    def __init__(self, fires=1):
+        self.calls = 0
+        self.fires = fires
+        self.stop = None
 
     def reset(self):
         pass
 
     def triggered(self, frame):
-        self._calls += 1
-        return self._calls >= self._fire_after
+        self.calls += 1
+        if self.calls <= self.fires:
+            return True
+        if self.stop:
+            self.stop()
+        return False
 
 
 class FakeSTT:
@@ -122,6 +135,7 @@ def orch():
         intent_meta=intent_meta(),
     )
     o._persona = persona
+    o.wake.stop = o.stop
     return o
 
 
@@ -191,3 +205,23 @@ def test_run_loop_wake_to_dispatch(orch):
     assert orch.registry.calls == [("search", {"query": "black holes"})]
     assert orch.mic.started is False  # stopped cleanly
     assert orch.state == "idle"
+
+
+def test_stays_awake_for_followups_then_announces_standby(orch):
+    # one command, then a silent follow-up window
+    orch.mic = FakeMic(script=[True, False])
+    asyncio.run(orch.run())
+    assert orch.registry.calls == [("search", {"query": "black holes"})]
+    assert "<standby>" in orch._persona.spoken  # deferred standby announcement
+    assert orch.standby is True
+
+
+def test_two_commands_in_one_wake_session(orch):
+    orch.mic = FakeMic(script=[True, True, False])
+    orch.stt.text = "search black holes"  # both utterances transcribe the same
+    asyncio.run(orch.run())
+    assert orch.registry.calls == [
+        ("search", {"query": "black holes"}),
+        ("search", {"query": "black holes"}),
+    ]
+    assert "<standby>" in orch._persona.spoken

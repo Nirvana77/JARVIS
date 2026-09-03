@@ -19,7 +19,7 @@ point; the legacy `main.py` / `libs/` / `actions/` are untouched.
 | Persona | `jarvis/core/persona.py`, `personas/jarvis`, `personas/plain` | see below |
 | Reasoner | `jarvis/core/reasoner.py` | Ollama HTTP, capability-probed; `available=False` ⇒ plain phrasing |
 | Audio | `jarvis/audio/{wake,capture,stt,tts}.py` | see below |
-| Orchestrator | `jarvis/core/orchestrator.py` | single asyncio loop; blocking work via `asyncio.to_thread`; injected components |
+| Orchestrator | `jarvis/core/orchestrator.py` | single asyncio loop; blocking work via `asyncio.to_thread`; injected components; after a command it keeps listening `capture.follow_up_s` (default 10s) for a follow-up with no wake word, then speaks the standby line |
 | Skills | `jarvis/skills/registry.py`, `jarvis/skills/builtin/{search,open_app,play,note}.py` | ported from `actions/*`; each returns the line to speak |
 | CLI | `jarvis/__main__.py`, `jarvis/app.py` | `run` \| `--selftest` \| `models pull` \| `nlu rebuild` |
 | Tests | `tests/test_{nlu,persona,audio,orchestrator,skills}.py` | 49 tests, `python -m pytest` |
