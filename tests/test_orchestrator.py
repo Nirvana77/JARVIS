@@ -10,7 +10,7 @@ import pytest
 import threading
 
 from jarvis.config import load_config
-from jarvis.core.orchestrator import Orchestrator, _Cancelled
+from jarvis.core.orchestrator import Orchestrator
 from jarvis.nlu.corpus import intent_meta
 
 
@@ -249,6 +249,8 @@ def test_transcript_and_intent_are_printed(orch, capsys):
 
 
 def test_voice_barge_in_abandons_the_in_flight_command(orch, capsys):
+    # opt-in extra (off by default); force it on for this test
+    orch._interrupter.enabled_barge = True
     # transcription is slow (0.5s block); the user starts talking over it, so the
     # onset detector fires and the decode is abandoned
     orch.stt = FakeSTT(text="search black holes", block=threading.Event())
@@ -258,17 +260,17 @@ def test_voice_barge_in_abandons_the_in_flight_command(orch, capsys):
     assert "barge-in" in out
     # only the post-barge-in command dispatched (once); the abandoned one didn't
     assert orch.registry.calls == [("search", {"query": "black holes"})]
-    assert all(f.done() for f in orch._draining)
+    assert all(f.done() for f in orch._interrupter._draining)
 
 
 def test_enter_cancels_transcription_and_stays_listening(orch):
-    orch.barge_in = False  # isolate the Enter path
+    orch._interrupter.enabled_barge = False  # isolate the Enter path
     orch.stt = FakeSTT(block=threading.Event())  # 0.5s block
     orch.mic = FakeMic(script=[True, False])
 
     async def press_enter_soon():
         await asyncio.sleep(0.05)
-        orch._interrupt.set()
+        orch._interrupter._interrupt.set()
 
     async def scenario():
         await asyncio.gather(orch.run(), press_enter_soon())

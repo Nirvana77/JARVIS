@@ -19,9 +19,9 @@ point; the legacy `main.py` / `libs/` / `actions/` are untouched.
 | Persona | `jarvis/core/persona.py`, `personas/jarvis`, `personas/plain` | see below |
 | Reasoner | `jarvis/core/reasoner.py` | Ollama HTTP, capability-probed; `available=False` ⇒ plain phrasing |
 | Audio | `jarvis/audio/{wake,capture,stt,tts}.py` | see below |
-| Orchestrator | `jarvis/core/orchestrator.py` | single asyncio loop; blocking work via `asyncio.to_thread`; injected components; after a command it keeps listening `capture.follow_up_s` (default 10s) for a follow-up with no wake word, then speaks the standby line. **Voice barge-in**: while a command is being transcribed an onset detector runs; ~`capture.barge_in_min_speech_s` (0.6s) of sustained speech abandons the in-flight decode, then the rest of the new utterance is captured and transcribed instead — no wake word. The abandoned decode runs loose to completion (faster-whisper tolerates concurrent calls) and its result is dropped. Also **press Enter** (TTY) to cancel. Barge-in is only armed during transcription, not during TTS playback (self-echo without AEC — M4). |
+| Orchestrator | `jarvis/core/orchestrator.py` | single asyncio loop; blocking work via `asyncio.to_thread`; injected components; after a command it keeps listening `capture.follow_up_s` (default 10s) for a follow-up with no wake word, then speaks the standby line. **Press Enter** (TTY, `capture.allow_interrupt`) cancels the current listen / transcription. |
 | Skills | `jarvis/skills/registry.py`, `jarvis/skills/builtin/{search,open_app,play,note}.py` | ported from `actions/*`; each returns the line to speak |
-| CLI | `jarvis/__main__.py`, `jarvis/app.py` | `run` \| `--selftest` \| `models pull` \| `nlu rebuild` |
+| CLI | `jarvis/__main__.py`, `jarvis/app.py`, `jarvis-run` | `run` \| `--selftest` \| `--debug` \| `mic` \| `models pull` \| `nlu rebuild`. `./jarvis-run <args>` wraps `python -m jarvis` with `./.venv` so the interpreter is never wrong. |
 | Tests | `tests/test_{nlu,persona,audio,orchestrator,skills}.py` | 49 tests, `python -m pytest` |
 
 ## NLU
@@ -107,6 +107,26 @@ JARVIS_PERSONA=plain python -m jarvis # fixed-response wording changes
 
 `pytest` added to the venv (dev/test only). All runtime deps were already
 installed in Phase 0. No `pyproject.toml` yet (M4).
+
+## Shelved extra: command interrupt (`jarvis/core/interrupt.py`)
+
+Extracted into its own utility (`Interrupter`) so it sits *on top of* the core
+loop and doesn't touch M1's scope. The orchestrator holds one and calls
+`guard_transcription()` around each decode; with everything off it's a plain
+`await`.
+
+- **Enter-to-cancel** (`capture.allow_interrupt`, TTY) — on by default, cheap
+  and reliable.
+- **voice barge-in** (`capture.barge_in`) — **off by default.** Talk over a
+  transcription and the new sentence takes over. Needs per-mic VAD tuning
+  (`./jarvis-run mic` → set `capture.barge_in_threshold`), and only fires during
+  transcription, not during TTS. The proper version (silero VAD, barge-in over
+  TTS) is M4.
+
+Diagnostics (useful regardless): `./jarvis-run mic` (live RMS meter with the
+real VAD maths), `./jarvis-run --debug` (DEBUG logging + per-frame barge-in
+trace). `./jarvis-run` wraps `python -m jarvis` with `./.venv` so the
+interpreter is never wrong.
 
 ## Deferred to later milestones (unchanged from the PRD)
 

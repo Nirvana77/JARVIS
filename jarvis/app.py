@@ -152,6 +152,60 @@ def selftest(config: Config) -> int:
     return 0
 
 
+def mic_meter(config: Config) -> int:
+    """Live RMS meter with the same VAD maths the orchestrator uses, so you can
+    see whether normal speech crosses the barge-in threshold."""
+    from jarvis.audio.capture import Microphone
+
+    mic = Microphone(config.capture.sample_rate, config.capture.frame_samples)
+    override = getattr(config.capture, "barge_in_threshold", 0.0)
+    print("Microphone level meter — speak normally. Ctrl-C to stop.")
+    print("The │ marker is the speech threshold; a bar reaching it = 'SPEECH'.")
+    if override:
+        print(f"(threshold pinned to barge_in_threshold = {override})")
+    print()
+
+    mic.start()
+    early: list[float] = []
+    floor: float | None = None
+    peak = 0.0
+    span = 0.35
+    try:
+        i = 0
+        while True:
+            try:
+                frame = mic.read(0.5)
+            except Exception:
+                continue
+            rms = Microphone.frame_rms(frame)
+            peak = max(peak, rms)
+            if i < 20:
+                early.append(rms)
+            elif floor is None:
+                floor = Microphone.calibrate_floor(early)
+            thr = override or Microphone.speech_threshold(floor or 0.012)
+
+            width = 52
+            filled = int(min(rms, span) / span * width)
+            mark = int(min(thr, span) / span * width)
+            bar = "".join(
+                "│" if k == mark else ("#" if k < filled else " ") for k in range(width)
+            )
+            tag = "SPEECH" if rms > thr else " ...  "
+            print(
+                f"\r  {tag}  rms={rms:.3f}  floor={floor or 0:.3f}  thr={thr:.3f}  "
+                f"peak={peak:.3f}  [{bar}]",
+                end="",
+                flush=True,
+            )
+            i += 1
+    except KeyboardInterrupt:
+        print("\n")
+    finally:
+        mic.stop()
+    return 0
+
+
 def nlu_rebuild(config: Config) -> int:
     registry = Registry.discover(config, Reasoner.from_config(config))
     result = rebuild_nlu(config, registry)

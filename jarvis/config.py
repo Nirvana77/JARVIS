@@ -53,11 +53,15 @@ class CaptureConfig:
     #: after a command, keep listening this long for a follow-up (no wake word)
     #: before announcing standby
     follow_up_s: float = 10.0
-    #: voice barge-in: a fresh sentence spoken while a command is being
-    #: transcribed abandons that transcription and becomes the new command
-    barge_in: bool = True
-    #: a barge-in must contain at least this much speech (noise filter)
+    #: EXTRA (off by default, needs per-mic tuning): voice barge-in — a fresh
+    #: sentence spoken while a command is being transcribed abandons that
+    #: transcription and becomes the new command. Not part of the core loop.
+    barge_in: bool = False
+    #: a barge-in needs this much sustained speech before it fires (noise filter)
     barge_in_min_speech_s: float = 0.6
+    #: absolute RMS threshold for barge-in speech detection; 0 = auto-calibrate.
+    #: set this from `python -m jarvis mic` if auto-calibration misjudges your mic
+    barge_in_threshold: float = 0.0
     #: press Enter in the terminal to cancel the current listen / transcription
     allow_interrupt: bool = True
 
@@ -193,8 +197,9 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             window_timeout_s=float(capture.get("window_timeout_s", 8.0)),
             silence_s=float(capture.get("silence_s", 1.0)),
             follow_up_s=float(capture.get("follow_up_s", 10.0)),
-            barge_in=bool(capture.get("barge_in", True)),
+            barge_in=bool(capture.get("barge_in", False)),
             barge_in_min_speech_s=float(capture.get("barge_in_min_speech_s", 0.6)),
+            barge_in_threshold=float(capture.get("barge_in_threshold", 0.0)),
             allow_interrupt=bool(capture.get("allow_interrupt", True)),
         ),
         stt=STTConfig(

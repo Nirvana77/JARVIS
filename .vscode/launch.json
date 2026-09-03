@@ -1,0 +1,93 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "JARVIS: run",
+			"type": "python",
+			"request": "launch",
+			"module": "jarvis",
+			"console": "integratedTerminal",
+			"cwd": "${workspaceFolder}",
+			"justMyCode": false
+		},
+		{
+			"name": "JARVIS: run (--debug)",
+			"type": "python",
+			"request": "launch",
+			"module": "jarvis",
+			"args": ["--debug"],
+			"console": "integratedTerminal",
+			"cwd": "${workspaceFolder}",
+			"justMyCode": false
+		},
+		{
+			"name": "JARVIS: mic level meter",
+			"type": "python",
+			"request": "launch",
+			"module": "jarvis",
+			"args": ["mic"],
+			"console": "integratedTerminal",
+			"cwd": "${workspaceFolder}",
+			"justMyCode": false
+		},
+		{
+			"name": "JARVIS: --selftest",
+			"type": "python",
+			"request": "launch",
+			"module": "jarvis",
+			"args": ["--selftest"],
+			"console": "integratedTerminal",
+			"cwd": "${workspaceFolder}",
+			"justMyCode": false
+		},
+		{
+			"name": "JARVIS: nlu rebuild",
+			"type": "python",
+			"request": "launch",
+			"module": "jarvis",
+			"args": ["nlu", "rebuild"],
+			"console": "integratedTerminal",
+			"cwd": "${workspaceFolder}",
+			"justMyCode": false
+		},
+		{
+			"name": "JARVIS: models pull",
+			"type": "python",
+			"request": "launch",
+			"module": "jarvis",
+			"args": ["models", "pull"],
+			"console": "integratedTerminal",
+			"cwd": "${workspaceFolder}",
+			"justMyCode": false
+		},
+		{
+			"name": "pytest (all)",
+			"type": "python",
+			"request": "launch",
+			"module": "pytest",
+			"args": ["-q"],
+			"console": "integratedTerminal",
+			"cwd": "${workspaceFolder}",
+			"justMyCode": false
+		},
+		{
+			"name": "pytest (current file)",
+			"type": "python",
+			"request": "launch",
+			"module": "pytest",
+			"args": ["-q", "${file}"],
+			"console": "integratedTerminal",
+			"cwd": "${workspaceFolder}",
+			"justMyCode": false
+		},
+		{
+			"name": "Python: current file",
+			"type": "python",
+			"request": "launch",
+			"program": "${file}",
+			"console": "integratedTerminal",
+			"cwd": "${workspaceFolder}",
+			"justMyCode": false
+		}
+	]
+}

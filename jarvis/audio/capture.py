@@ -75,6 +75,24 @@ class Microphone:
             except queue.Empty:
                 break
 
+    # -- shared VAD maths -------------------------------------------------
+
+    @staticmethod
+    def frame_rms(frame: np.ndarray) -> float:
+        f = frame.astype(np.float32) / 32768.0
+        return float(np.sqrt(np.mean(f * f)) + 1e-9)
+
+    @staticmethod
+    def speech_threshold(noise_floor: float) -> float:
+        """RMS above which a frame counts as speech, given a calibrated floor."""
+        return max(noise_floor * 2.5, 0.008)
+
+    @staticmethod
+    def calibrate_floor(rms_values: list[float]) -> float:
+        """Noise floor = quietest early frame, clamped. Robust even if the user
+        is already talking (a running average would sit at speech level)."""
+        return min(max(min(rms_values), 0.003), 0.02)
+
     # -- utterance recording -----------------------------------------------
 
     def record_utterance(
@@ -113,17 +131,13 @@ class Microphone:
                 break
             collected.append(frame)
 
-            rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)) + 1e-9)
+            rms = self.frame_rms(frame)
             if i < calibrate_frames:
                 early_rms.append(rms)
                 if i == calibrate_frames - 1:
-                    # use the *quietest* early frame, clamped: robust even when
-                    # the user is already talking as the window opens (a running
-                    # average would set the floor to speech level and then never
-                    # detect anything)
-                    floor = min(max(min(early_rms), 0.003), 0.02)
+                    floor = self.calibrate_floor(early_rms)
 
-            is_speech = rms > max(floor * 2.5, 0.008)
+            is_speech = rms > self.speech_threshold(floor)
             if is_speech:
                 speech_started = True
                 speech_frames += 1
