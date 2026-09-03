@@ -10,11 +10,11 @@
 				"JARVIS are you awake?",
 				"JARVIS are you listening?",
 				"JARVIS are you ready?",
-				"JARVIS are you ok?",
-				"JARVIS are you busy?",
-				"JARVIS are you free?",
-				"JARVIS are you working?",
-				"JARVIS are you available?",
+				"JARVIS are you with me?",
+				"wake up JARVIS",
+				"you there JARVIS",
+				"hello JARVIS",
+				"good morning JARVIS",
 				"JARVIS"
 			],
 			"responses": ["Good to see you again", "Hi there, how can I help?", "Hello, how can I help?"],
@@ -26,29 +26,39 @@
 				"Bye",
 				"See you later",
 				"Goodbye",
-				"shutdown JARVIS",
-				"stop JARVIS",
-				"exit JARVIS",
-				"quit JARVIS",
-				"close JARVIS",
-				"standby JARVIS",
-				"sleep JARVIS",
+				"Goodnight",
+				"That's all",
+				"That will be all",
+				"Nevermind",
+				"stand by JARVIS",
+				"go to standby",
+				"go to standby mode",
+				"go to sleep",
 				"go to sleep JARVIS",
-				"go to standby JARVIS",
-				"go to standby mode JARVIS"
+				"you can rest now",
+				"go on standby"
 			],
-			"responses": ["I will be here if you need me", "See you later", "Goodbye!", ""],
+			"responses": ["I will be here if you need me", "See you later", "Goodbye!", "Standing by"],
 			"action": "exit"
 		},
 		{
 			"tag": "shutdown",
-			"patterns": ["shutdown JARVIS", "stop JARVIS", "exit JARVIS", "quit JARVIS", "close JARVIS", "sleep JARVIS", "JARVIS shutdown"],
-			"responses": ["I will shutdown now!", "Goodbye!"],
+			"patterns": [
+				"shut down",
+				"shut yourself down",
+				"shut down JARVIS",
+				"power down",
+				"power yourself down",
+				"turn yourself off",
+				"turn off JARVIS",
+				"JARVIS shutdown"
+			],
+			"responses": ["I will shut down now", "Powering down. Goodbye!"],
 			"action": "shutdown"
 		},
 		{
 			"tag": "thanks",
-			"patterns": ["Thanks", "Thank you", "That's helpful"],
+			"patterns": ["Thanks", "Thank you", "That's helpful", "Thanks a lot", "Much appreciated"],
 			"responses": ["Happy to help!", "Any time!", "My pleasure"],
 			"action": "none"
 		},
@@ -71,28 +81,64 @@
 			"action": "none"
 		},
 		{
-			"tag": "open",
-			"patterns": ["Open {intent}", "Open {intent} for me", "Open {intent} please", "Open {intent} JARVIS"],
-			"responses": ["Opening {intent}"],
-			"action": "open"
-		},
-		{
-			"tag": "search",
-			"patterns": ["Search {intent}", "Search {intent} for me", "Search {intent} please", "Search {intent} JARVIS"],
-			"responses": ["Searching for {intent}"],
-			"action": "search"
-		},
-		{
 			"tag": "weather",
 			"patterns": ["What's the weather like?", "How's the weather today?", "What's the weather today?"],
 			"responses": ["The weather is nice", "It's sunny", "It's raining"],
 			"action": "none"
 		},
 		{
-			"tag": "train",
-			"patterns": ["JARVIS, train with the new data", "JARVIS, train with the new data please", "JARVIS, train with the new data now"],
-			"responses": ["Training with the new data..."],
-			"action": "train"
+			"tag": "search",
+			"patterns": [
+				"Search {intent}",
+				"Search for {intent}",
+				"Search {intent} for me",
+				"Search {intent} please",
+				"Look up {intent}",
+				"What is {intent}",
+				"Who is {intent}",
+				"Tell me about {intent}"
+			],
+			"responses": ["Searching for {intent}"],
+			"action": "search"
+		},
+		{
+			"tag": "open_app",
+			"patterns": [
+				"Open {intent}",
+				"Open {intent} for me",
+				"Open {intent} please",
+				"Open up {intent}",
+				"Launch {intent}",
+				"Go to {intent}"
+			],
+			"responses": ["Opening {intent}"],
+			"action": "open_app"
+		},
+		{
+			"tag": "play",
+			"patterns": [
+				"Play {intent}",
+				"Play {intent} for me",
+				"Play some {intent}",
+				"Put on {intent}",
+				"Play {intent} on YouTube"
+			],
+			"responses": ["Playing {intent}"],
+			"action": "play"
+		},
+		{
+			"tag": "note",
+			"patterns": [
+				"Note that {intent}",
+				"Make a note that {intent}",
+				"Take a note that {intent}",
+				"Remember that {intent}",
+				"Write down {intent}",
+				"Note this down",
+				"Take a note"
+			],
+			"responses": ["Noted"],
+			"action": "note"
 		}
 	]
 }

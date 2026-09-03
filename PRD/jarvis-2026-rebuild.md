@@ -33,8 +33,8 @@ The intended product is bigger than the POC:
   actions, no "do I have the new skill yet?" ambiguity.
 - JARVIS speaks in a **selectable persona** (env var / config). The default is
   JARVIS-from-Iron-Man, defined by a style description plus a corpus of
-  in-character lines (the repo's `Movies/Iron Man 1.txt`) that condition how the
-  model phrases replies; swapping the persona is dropping in another folder.
+  in-character lines (the repo's `Movies/*.txt` transcripts) that condition how
+  the model phrases replies; swapping the persona is dropping in another folder.
 - A **local knowledge base (RAG)** is the source for recall / "what is …"
   answers. Claude is *not* wired in as a knowledge fallback.
 
@@ -112,7 +112,7 @@ config.toml                # non-secret config
 personas/
   <name>/
     persona.toml           # display name, style description + rules, address term ("sir"), preferred Piper voice
-    style/                 # any number of .txt transcripts conditioning the LLM rewrite (seeded from Movies/Iron Man 1.txt)
+    style/                 # any number of .txt transcripts conditioning the LLM rewrite (seeded from every Movies/*.txt)
     responses.toml         # in-voice canned lines for fixed events (greeting, standby, error, skill-learned, disambiguation)
 ```
 
@@ -239,8 +239,8 @@ A persona is a folder under `personas/`, never code — adding one is dropping a
 directory, no sandboxing involved.
 
 - **Selection**: `JARVIS_PERSONA` env var → else `persona.active` in
-  `config.toml` → else `"jarvis"`. Ships with `jarvis` (seeded from
-  `Movies/Iron Man 1.txt`) and `plain` (neutral, no style corpus).
+  `config.toml` → else `"jarvis"`. Ships with `jarvis` (seeded from every
+  `Movies/*.txt`) and `plain` (neutral, no style corpus).
 - `persona.toml`: display name, style description + rules, address term
   (`"sir"`), preferred Piper voice model.
 - `style/*.txt`: transcripts of in-character lines / exchanges. `core/persona.py`
@@ -280,7 +280,7 @@ directory, no sandboxing involved.
 | `libs/training.py` `train_model()` | `jarvis/nlu/train.py` + `jarvis/nlu/corpus.py` (worker process) |
 | `JARVIS_model.keras`, `words.pkl`, `classes.pkl` | `data/models/nlu/v<N>/…` (versioned, delete old files) |
 | `libs/voice.py` (pyttsx3) | `jarvis/audio/tts.py` (Piper) + `jarvis/core/persona.py` |
-| `Movies/Iron Man 1.txt` | `personas/jarvis/style/Iron Man 1.txt` (persona style corpus; drop in more transcripts) |
+| `Movies/*.txt` (all transcripts) | `personas/jarvis/style/*.txt` (persona style corpus; the `Irom Man 2.txt` typo is fixed in the copy; drop in more transcripts and `persona.py` picks them up) |
 | `libs/anthropic_helper.py` / removed `libs/openai_helper.py` | `jarvis/factory/build.py` (Claude, host-only) + `jarvis/core/reasoner.py` (Ollama, optional) |
 | `actions/search.py` | `jarvis/skills/builtin/search.py` (`MANIFEST` + `run(ctx, query)`) |
 | `actions/openApp.py` | `jarvis/skills/builtin/open_app.py` |
@@ -311,10 +311,10 @@ interpreter. Extend `check_setup.py` with these rows.
 - `check_setup.py` gained a "2026 rebuild stack (PRD Phase 0)" section; all
   rows green.
 
-### Milestone 1 — local voice loop (no learning, no RAG)
+### Milestone 1 — local voice loop (no learning, no RAG) — ✅ DONE (2026-09-03)
 - `jarvis/` skeleton, `config.toml`, `Context`, `Skill` contract, `registry`.
 - `audio/{wake,capture,stt,tts}.py`; `core/persona.py` with `personas/jarvis`
-  (seeded from `Movies/Iron Man 1.txt`) + `personas/plain`, selected by
+  (seeded from every `Movies/*.txt`) + `personas/plain`, selected by
   `JARVIS_PERSONA` / `config.toml`; canned `responses.toml` verbatim, LLM
   style-rewrite only when Ollama is present.
 - `nlu/{corpus,classifier,slots,train}.py`; produce `v1` from `intents.json` +
@@ -324,6 +324,22 @@ interpreter. Extend `check_setup.py` with these rows.
 - Port builtin skills: `search`, `open_app`, `play`, `note`.
 - **Outcome**: *"Jarvis, search black holes"* runs end-to-end, offline except the
   skill's own web calls.
+
+**Delivered (full detail in `PRD/milestone-1-voice-loop.md`):**
+- `python -m jarvis` (run | `--selftest` | `models pull` | `nlu rebuild`).
+  `main.py` / `libs/` / `actions/` left in place, untouched.
+- Wake word is **"hey jarvis"** (openwakeword 0.4.0's bundled model, offline).
+- NLU = fastembed MiniLM + `LogisticRegression`; `unknown` via a probability
+  threshold **and** a nearest-neighbour similarity floor (LR is overconfident
+  on out-of-domain junk). Held-out accuracy ~0.95.
+- 49 automated tests (`python -m pytest`); NLU tests skip cleanly if the
+  embedding model can't be fetched offline.
+- Not verified here (no audio device): live mic/STT, Piper playback, the
+  Ollama style-rewrite path, `models pull` downloads. Manual steps in the
+  outcome doc.
+- Deviation: no separate `sleep` intent — "go to sleep" folded into `goodbye`
+  (action `exit`); `goodbye`/`shutdown` pattern overlap the PRD flagged is
+  split.
 
 ### Milestone 2 — skill factory + seamless hot-swap
 - `factory/{build,validate,sandbox}.py` (`SubprocessSandbox` primary).
