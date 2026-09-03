@@ -1,0 +1,19 @@
+# In-voice canned lines for fixed events. Spoken verbatim — no LLM required, so
+# these stay in character on a pure-CPU box.
+
+wake_ack      = ["At your service, sir.", "Yes, sir?", "Standing by, sir.", "Sir?"]
+greeting      = ["For you, sir, always.", "At your service, sir.", "Online and ready, sir."]
+already_awake = ["I am already awake, sir.", "Still here, sir.", "You have my attention, sir."]
+standby       = ["Very good, sir. I shall be here.", "Entering standby, sir.", "As you wish, sir."]
+goodbye       = ["Goodbye, sir.", "Until next time, sir.", "A pleasure, as always, sir."]
+shutdown      = ["Powering down. Goodbye, sir.", "Shutting down now, sir."]
+unknown       = [
+  "I'm afraid I didn't catch that, sir.",
+  "Could you rephrase that, sir?",
+  "I have no skill for that yet, sir.",
+]
+skill_missing = [
+  "I don't know how to do that yet, sir.",
+  "That is beyond my current capabilities, sir.",
+]
+error         = ["Something went wrong, sir.", "I have run into a problem, sir."]

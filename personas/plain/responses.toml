@@ -1,0 +1,11 @@
+# Neutral fixed-event lines.
+
+wake_ack      = ["Yes?", "Listening.", "Go ahead."]
+greeting      = ["Ready.", "I'm here.", "How can I help?"]
+already_awake = ["I'm already awake.", "Still listening."]
+standby       = ["Going to standby.", "Standing by.", "Okay."]
+goodbye       = ["Goodbye.", "Talk to you later."]
+shutdown      = ["Shutting down. Goodbye.", "Powering off."]
+unknown       = ["Sorry, I didn't catch that.", "Could you say that again?", "I don't have a skill for that yet."]
+skill_missing = ["I can't do that yet.", "That's not something I know how to do."]
+error         = ["Something went wrong.", "I ran into a problem."]
