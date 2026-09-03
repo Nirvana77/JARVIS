@@ -28,7 +28,8 @@ voice = "en_GB-alan-medium"   # Piper voice; files resolved under <data>/models/
 
 [nlu]
 embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
-threshold = 0.45         # max class probability below this -> "unknown"
+threshold = 0.35            # max class probability below this -> "unknown"
+similarity_floor = 0.30     # min cosine similarity to any training phrase, else "unknown"
 
 [reasoner]
 enabled = true           # still capability-probed; false disables Ollama entirely

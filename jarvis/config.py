@@ -68,7 +68,9 @@ class TTSConfig:
 @dataclass(frozen=True)
 class NLUConfig:
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    threshold: float = 0.45
+    threshold: float = 0.35
+    #: min cosine similarity to any training phrase; below this -> "unknown"
+    similarity_floor: float = 0.30
 
 
 @dataclass(frozen=True)
@@ -184,7 +186,8 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             embedding_model=nlu.get(
                 "embedding_model", "sentence-transformers/all-MiniLM-L6-v2"
             ),
-            threshold=float(nlu.get("threshold", 0.45)),
+            threshold=float(nlu.get("threshold", 0.35)),
+            similarity_floor=float(nlu.get("similarity_floor", 0.30)),
         ),
         reasoner=ReasonerConfig(
             enabled=bool(reasoner.get("enabled", True)),
