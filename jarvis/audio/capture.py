@@ -82,11 +82,13 @@ class Microphone:
         max_seconds: float = 8.0,
         silence_seconds: float = 1.0,
         start_grace_seconds: float = 2.0,
+        stop_event=None,
     ) -> np.ndarray:
         """Collect frames until trailing silence or ``max_seconds``.
 
         Returns float32 mono in [-1, 1] (what faster-whisper wants). An empty
-        array means nothing but silence was heard.
+        array means nothing but silence was heard, or ``stop_event`` was set
+        (the user asked to cancel).
         """
         frame_dur = self.frame_samples / self.sample_rate
         max_frames = int(max_seconds / frame_dur)
@@ -102,6 +104,8 @@ class Microphone:
         calibrate_frames = 8
 
         for i in range(max_frames):
+            if stop_event is not None and stop_event.is_set():
+                return np.zeros(0, dtype=np.float32)
             try:
                 frame = self.read(timeout=max(1.0, frame_dur * 4))
             except queue.Empty:

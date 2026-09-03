@@ -53,6 +53,8 @@ class CaptureConfig:
     #: after a command, keep listening this long for a follow-up (no wake word)
     #: before announcing standby
     follow_up_s: float = 10.0
+    #: press Enter in the terminal to cancel the current listen / transcription
+    allow_interrupt: bool = True
 
     @property
     def frame_samples(self) -> int:
@@ -62,7 +64,7 @@ class CaptureConfig:
 @dataclass(frozen=True)
 class STTConfig:
     # ".en" models beat the multilingual ones for English at the same size/speed
-    model: str = "small.en"
+    model: str = "medium.en"
     compute_type: str = "int8"
     device: str = "cpu"
     language: str = "en"
@@ -186,9 +188,10 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             window_timeout_s=float(capture.get("window_timeout_s", 8.0)),
             silence_s=float(capture.get("silence_s", 1.0)),
             follow_up_s=float(capture.get("follow_up_s", 10.0)),
+            allow_interrupt=bool(capture.get("allow_interrupt", True)),
         ),
         stt=STTConfig(
-            model=stt.get("model", "small.en"),
+            model=stt.get("model", "medium.en"),
             compute_type=stt.get("compute_type", "int8"),
             device=stt.get("device", "cpu"),
             language=stt.get("language", language),

@@ -7,8 +7,10 @@ import asyncio
 import numpy as np
 import pytest
 
+import threading
+
 from jarvis.config import load_config
-from jarvis.core.orchestrator import Orchestrator
+from jarvis.core.orchestrator import Orchestrator, _Cancelled
 from jarvis.nlu.corpus import intent_meta
 
 
@@ -64,10 +66,13 @@ class FakeWake:
 
 
 class FakeSTT:
-    def __init__(self, text="search black holes"):
+    def __init__(self, text="search black holes", block=None):
         self.text = text
+        self.block = block  # a threading.Event; transcribe waits on it
 
     def transcribe(self, audio):
+        if self.block is not None:
+            self.block.wait(0.5)
         return self.text
 
 
@@ -232,6 +237,67 @@ def test_transcript_and_intent_are_printed(orch, capsys):
     out = capsys.readouterr().out
     assert 'heard   : "search black holes"' in out
     assert "intent  : search" in out
+
+
+def test_cancellable_returns_result_when_not_interrupted(orch):
+    async def scenario():
+        orch._interrupt = asyncio.Event()
+
+        async def quick():
+            return "hello"
+
+        assert await orch._cancellable(quick(), "x") == "hello"
+        assert orch._draining == []
+
+    asyncio.run(scenario())
+
+
+def test_cancellable_raises_and_stashes_work_when_interrupted(orch):
+    async def scenario():
+        orch._interrupt = asyncio.Event()
+
+        async def slow():
+            await asyncio.sleep(5)
+            return "done"
+
+        task = asyncio.create_task(orch._cancellable(slow(), "transcription"))
+        await asyncio.sleep(0.01)
+        orch._interrupt.set()  # "user pressed Enter"
+        with pytest.raises(_Cancelled):
+            await task
+        assert len(orch._draining) == 1  # abandoned, not lost
+        orch._draining[0].cancel()
+
+    asyncio.run(scenario())
+
+
+def test_enter_during_transcription_cancels_the_turn(orch):
+    gate = threading.Event()  # never set -> transcribe blocks (then times out)
+    orch.stt = FakeSTT(block=gate)
+    orch.mic = FakeMic(script=[True, False])  # one utterance, then silence
+
+    async def driver():
+        # fire the interrupt shortly after the run loop starts transcribing
+        await asyncio.sleep(0.05)
+        assert orch._interrupt is not None
+        orch._interrupt.set()
+
+    async def scenario():
+        await asyncio.gather(orch.run(), driver())
+
+    asyncio.run(scenario())
+    assert orch.registry.calls == []          # nothing dispatched
+    assert "<standby>" in orch._persona.spoken  # session ended normally after
+
+
+def test_record_utterance_honours_stop_event():
+    from jarvis.audio.capture import Microphone
+
+    ev = threading.Event()
+    ev.set()
+    m = Microphone(16000, 1280)
+    m.read = lambda timeout=None: np.zeros(1280, dtype=np.int16)
+    assert len(m.record_utterance(max_seconds=2, stop_event=ev)) == 0
 
 
 def test_two_commands_in_one_wake_session(orch):

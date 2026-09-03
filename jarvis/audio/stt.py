@@ -32,7 +32,7 @@ def _normalize(audio: np.ndarray, target_peak: float = 0.95) -> np.ndarray:
 class Transcriber:
     def __init__(
         self,
-        model: str = "small.en",
+        model: str = "medium.en",
         device: str = "cpu",
         compute_type: str = "int8",
         download_root: str | Path | None = None,

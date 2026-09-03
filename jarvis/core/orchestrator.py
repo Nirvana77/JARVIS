@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import queue
 import random
+import sys
+import threading
 from typing import Literal
 
 from jarvis.nlu import slots as _slots
@@ -27,6 +30,10 @@ from jarvis.nlu.classifier import UNKNOWN
 log = logging.getLogger(__name__)
 
 State = Literal["idle", "listening", "thinking", "acting", "speaking"]
+
+
+class _Cancelled(Exception):
+    """The user hit Enter to abandon the current listen / transcription."""
 
 # intent tags handled inline by the orchestrator (not skills), and the action
 # they map to. Everything else is either action "none" (canned reply) or a skill.
@@ -68,9 +75,60 @@ class Orchestrator:
         self.running = False
         self._staged = None  # M2: a gate-passed replacement NLU
 
+        # cancel / interrupt support (press Enter in the terminal)
+        self.allow_interrupt = getattr(config.capture, "allow_interrupt", True)
+        self._cancel_flag = threading.Event()   # seen by the capture worker thread
+        self._interrupt: asyncio.Event | None = None  # wakes the transcribe race
+        self._stt_lock = asyncio.Lock()         # serialise whisper calls
+        self._draining: list[asyncio.Future] = []  # abandoned-but-still-running work
+        self._stdin_fd: int | None = None
+
     @property
     def busy(self) -> bool:
         return self.state != "idle"
+
+    # -- cancel / interrupt ---------------------------------------------------
+
+    def _clear_cancel(self) -> None:
+        self._cancel_flag.clear()
+        if self._interrupt is not None:
+            self._interrupt.clear()
+
+    def _on_stdin(self) -> None:
+        """stdin became readable — the user pressed Enter. Flag a cancel."""
+        try:
+            data = os.read(self._stdin_fd, 4096)
+        except (BlockingIOError, OSError):
+            return
+        if not data:  # EOF — stop watching
+            if self._stdin_fd is not None:
+                asyncio.get_running_loop().remove_reader(self._stdin_fd)
+                self._stdin_fd = None
+            return
+        if self.state in ("listening", "thinking"):
+            print("  (cancelling…)", flush=True)
+        self._cancel_flag.set()
+        if self._interrupt is not None:
+            self._interrupt.set()
+
+    async def _cancellable(self, awaitable, what: str):
+        """Await ``awaitable`` but raise :class:`_Cancelled` if Enter is pressed.
+
+        The underlying work (a whisper call holding ``_stt_lock``) is *not*
+        killed — it runs to completion in the background so the model isn't
+        touched concurrently; we just stop waiting for it and drop the result.
+        """
+        assert self._interrupt is not None
+        work = asyncio.ensure_future(awaitable)
+        intr = asyncio.ensure_future(self._interrupt.wait())
+        try:
+            await asyncio.wait({work, intr}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            intr.cancel()
+        if work.done():
+            return work.result()
+        self._draining.append(work)
+        raise _Cancelled(what)
 
     # -- speaking ---------------------------------------------------------
 
@@ -107,16 +165,27 @@ class Orchestrator:
 
     # -- one wake session --------------------------------------------------
 
+    async def _transcribe(self, audio) -> str:
+        async with self._stt_lock:  # never two whisper calls at once
+            return await asyncio.to_thread(self.stt.transcribe, audio)
+
     async def _listen(self, window: float, grace: float | None = None) -> str:
+        """Capture one utterance and transcribe it. Raises :class:`_Cancelled`
+        if the user hits Enter during either step."""
+        self._clear_cancel()
         audio = await asyncio.to_thread(
             self.mic.record_utterance,
             window,
             self.config.capture.silence_s,
             window if grace is None else grace,
+            self._cancel_flag,
         )
+        if self._cancel_flag.is_set():
+            raise _Cancelled("listening")
         if len(audio) == 0:
             return ""
-        text = await asyncio.to_thread(self.stt.transcribe, audio)
+        self.state = "thinking"
+        text = await self._cancellable(self._transcribe(audio), "transcription")
         return (text or "").strip()
 
     async def _session(self) -> None:
@@ -133,7 +202,13 @@ class Orchestrator:
 
         while self.running:
             self.state = "listening"
-            text = await self._listen(window, grace)
+            try:
+                text = await self._listen(window, grace)
+            except _Cancelled as exc:
+                print(f"  (cancelled {exc} — still listening)", flush=True)
+                acked = True
+                window = grace = self.config.capture.follow_up_s
+                continue
 
             if not text:
                 if not acked:
@@ -247,9 +322,32 @@ class Orchestrator:
 
     # -- main loop --------------------------------------------------------
 
+    def _install_interrupt(self) -> None:
+        self._interrupt = asyncio.Event()
+        if not self.allow_interrupt:
+            return
+        try:
+            if not sys.stdin or not sys.stdin.isatty():
+                return
+            fd = sys.stdin.fileno()
+            asyncio.get_running_loop().add_reader(fd, self._on_stdin)
+            self._stdin_fd = fd
+            print("(press Enter to cancel the current command)", flush=True)
+        except (ValueError, OSError, NotImplementedError):
+            self._stdin_fd = None  # no usable stdin / loop doesn't support it
+
+    def _remove_interrupt(self) -> None:
+        if self._stdin_fd is not None:
+            try:
+                asyncio.get_running_loop().remove_reader(self._stdin_fd)
+            except (ValueError, OSError, RuntimeError):
+                pass
+            self._stdin_fd = None
+
     async def run(self) -> None:
         self.running = True
         self.mic.start()
+        self._install_interrupt()
         try:
             while self.running:
                 self.state = "idle"
@@ -264,6 +362,9 @@ class Orchestrator:
                     self.standby = True
         finally:
             self.running = False
+            self._remove_interrupt()
+            if self._draining:  # let abandoned whisper calls finish
+                await asyncio.gather(*self._draining, return_exceptions=True)
             self.mic.stop()
             close = getattr(self.tts, "close", None)
             if callable(close):
