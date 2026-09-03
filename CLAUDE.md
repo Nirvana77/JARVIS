@@ -19,8 +19,9 @@ Create a `.env` file in the project root:
 ```
 language="en"
 ANTHROPIC_API_KEY="YOUR_ANTHROPIC_API_KEY"
+HF_TOKEN="hf_..."   # optional — faster / rate-limited Hugging Face model downloads
 ```
-`libs/anthropic_helper.py` reads `ANTHROPIC_API_KEY` (the name the Anthropic SDK picks up on its own), falling back to the legacy `api_key` name if that's all an older `.env` has. Optional: `ANTHROPIC_MODEL` overrides the default model (`claude-opus-5`); `ANTHROPIC_WORKSPACE_ID` is sent as the `anthropic-workspace-id` header and is **required for identity-linked API keys** (otherwise calls 400 with `anthropic-workspace-id is required`). `language` overrides the default in `command_helper` and is passed to Google Web Speech for recognition.
+`libs/anthropic_helper.py` reads `ANTHROPIC_API_KEY` (the name the Anthropic SDK picks up on its own), falling back to the legacy `api_key` name if that's all an older `.env` has. Optional: `ANTHROPIC_MODEL` overrides the default model (`claude-opus-5`); `ANTHROPIC_WORKSPACE_ID` is sent as the `anthropic-workspace-id` header and is **required for identity-linked API keys** (otherwise calls 400 with `anthropic-workspace-id is required`). `language` overrides the default in `command_helper` and is passed to Google Web Speech for recognition. `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) is read by `jarvis.config` and exported so `fastembed` / `faster-whisper` / `huggingface_hub` download the NLU, STT, and Piper models authenticated instead of anonymously.
 
 Run `python check_setup.py` to verify the environment: it prints a ✓/✗/– report for imports, NLTK data, the API key (masked), and whether the configured Claude model resolves.
 

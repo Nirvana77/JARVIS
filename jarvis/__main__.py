@@ -11,14 +11,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 import warnings
 
 from jarvis import app
 from jarvis.config import load_config
 
-# onnxruntime logs this once per model on a CPU-only box; it is expected.
+# Expected, noisy third-party chatter on a CPU-only / no-token box.
 warnings.filterwarnings("ignore", message=r".*CUDAExecutionProvider.*")
+warnings.filterwarnings("ignore", message=r".*unauthenticated requests to the HF Hub.*")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -40,6 +42,9 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
     config = load_config()
+    if config.hf_token:  # make sure every HF client sees it, under either name
+        os.environ.setdefault("HF_TOKEN", config.hf_token)
+        os.environ.setdefault("HUGGING_FACE_HUB_TOKEN", config.hf_token)
 
     if args.selftest:
         return app.selftest(config)
@@ -48,12 +53,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "nlu":
         return app.nlu_rebuild(config)
 
-    orchestrator = app.build_orchestrator(config)
-    print(f"JARVIS ready — persona '{config.persona.active}', say \"hey jarvis\". Ctrl-C to quit.")
     try:
+        orchestrator = app.build_orchestrator(config)
+        print(
+            f"JARVIS ready — persona '{config.persona.active}', "
+            f'say "hey jarvis". Ctrl-C to quit.',
+            flush=True,
+        )
         asyncio.run(orchestrator.run())
     except KeyboardInterrupt:
-        pass
+        print("\nShutting down.", flush=True)
+        # a worker thread may be mid-transcribe / mid-download and won't join;
+        # skip the atexit thread-join that would otherwise dump a traceback
+        sys.stdout.flush()
+        os._exit(0)
     return 0
 
 

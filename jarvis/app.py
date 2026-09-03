@@ -59,15 +59,34 @@ def build_orchestrator(config: Config) -> Orchestrator:
     from jarvis.audio.tts import Speaker
     from jarvis.audio.wake import WakeWord
 
+    # Everything heavy is loaded here, with progress, so a first-run model
+    # download happens visibly at startup instead of silently mid-conversation.
+    print(f"· persona '{config.persona.active}'", flush=True)
     reasoner = Reasoner.from_config(config)
     persona = Persona.load(config.persona.active, config, reasoner)
     tts = Speaker(persona.voice or config.tts.voice, config.piper_dir)
+    if not tts.available():
+        print(
+            f"  ! Piper voice '{tts.voice}' not downloaded — replies will be "
+            f"printed only. Run: python -m jarvis models pull",
+            flush=True,
+        )
+
     registry = Registry.discover(config, reasoner, say=tts.say)
+    print("· NLU model", flush=True)
     ensure_nlu(config, registry)
     nlu = load_classifier(config)
+    print(
+        f"  NLU v{nlu.version} · {len(registry.names())} skills · "
+        f"reasoner: {'ollama:' + reasoner.model if reasoner.available else 'none'}",
+        flush=True,
+    )
 
-    wake = WakeWord(config.wake.model, config.wake.threshold)
-    mic = Microphone(config.capture.sample_rate, config.capture.frame_samples)
+    print(
+        f"· speech recogniser '{config.stt.model}' "
+        f"(first run downloads it, ~30-60s)",
+        flush=True,
+    )
     stt = Transcriber(
         config.stt.model,
         config.stt.device,
@@ -75,6 +94,13 @@ def build_orchestrator(config: Config) -> Orchestrator:
         config.whisper_dir,
         config.stt.language,
     )
+    stt.load()
+
+    print("· wake word", flush=True)
+    wake = WakeWord(config.wake.model, config.wake.threshold)
+    wake.load()
+    mic = Microphone(config.capture.sample_rate, config.capture.frame_samples)
+
     return Orchestrator(
         config=config,
         wake=wake,
@@ -137,6 +163,7 @@ def nlu_rebuild(config: Config) -> int:
 
 def models_pull(config: Config) -> int:
     ok = True
+    print(f"Hugging Face auth: {'token set' if config.hf_token else 'anonymous'}")
 
     print("warming fastembed NLU model...")
     try:
@@ -188,6 +215,7 @@ def _pull_piper_voice(config: Config) -> None:
             repo_id="rhasspy/piper-voices",
             filename=f"{base}{suffix}",
             local_dir=str(config.piper_dir),
+            token=config.hf_token,
         )
     # hf_hub_download nests the file under the repo path; flatten it
     import shutil

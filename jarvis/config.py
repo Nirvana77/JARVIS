@@ -99,6 +99,8 @@ class Config:
     reasoner: ReasonerConfig = field(default_factory=ReasonerConfig)
     #: repo-root-relative directory for models / NLU artifacts / skill scratch
     data_dir: Path = field(default_factory=lambda: _REPO_ROOT / "data")
+    #: Hugging Face token (from .env / env) for authenticated model downloads
+    hf_token: str | None = None
 
     # -- derived paths -------------------------------------------------------
     @property
@@ -163,6 +165,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     # Environment overrides (kept from the legacy code).
     language = os.getenv("language") or general.get("language", "en")
     active_persona = os.getenv("JARVIS_PERSONA") or persona.get("active", "jarvis")
+    hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
 
     data_dir_raw = paths.get("data_dir", "data")
     data_dir = Path(data_dir_raw)
@@ -203,4 +206,5 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             model=reasoner.get("model", "qwen2.5:3b"),
         ),
         data_dir=data_dir,
+        hf_token=hf_token,
     )
