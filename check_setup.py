@@ -166,6 +166,60 @@ line(
 
 
 # --------------------------------------------------------------------------
+# PRD Phase 0 — dependency spike for the 2026 rebuild (see
+# PRD/jarvis-2026-rebuild.md and PRD/phase-0-dependency-spike.md).
+# The rebuild drops TensorFlow; this is the replacement local stack. Every
+# row below has a CPU wheel for Python 3.14 as of the spike, so a missing
+# import here is a real setup failure, not a "no wheel yet" skip.
+section("2026 rebuild stack (PRD Phase 0)")
+REBUILD_STACK = [
+    ("faster_whisper", "faster-whisper (STT)"),
+    ("ctranslate2", "ctranslate2 (faster-whisper backend)"),
+    ("openwakeword", "openwakeword (wake word)"),
+    ("piper", "piper-tts (TTS)"),
+    ("onnxruntime", "onnxruntime (fastembed / openwakeword / piper backend)"),
+    ("fastembed", "fastembed (NLU + knowledge embeddings)"),
+    ("sklearn", "scikit-learn (NLU classifier head)"),
+    ("sqlite_vec", "sqlite-vec (knowledge vector index)"),
+    ("sounddevice", "sounddevice (audio capture)"),
+    ("pypdf", "pypdf (knowledge .pdf loader)"),
+]
+for mod, name in REBUILD_STACK:
+    try:
+        m = importlib.import_module(mod)
+        require(True, name, ok_detail=getattr(m, "__version__", ""))
+    except Exception as e:
+        require(False, name, bad_detail=repr(e))
+
+# Functional probes for the two rows with a system-level dependency.
+try:
+    import sounddevice as _sd
+
+    _n = len(_sd.query_devices())
+    line(OK, "PortAudio (sounddevice backend)", f"{_n} device(s)")
+except Exception as e:
+    line(
+        SKIP,
+        "PortAudio (sounddevice backend)",
+        f"{e!r} — install portaudio-devel / portaudio19-dev (fine on a headless box)",
+    )
+
+try:
+    import sqlite3 as _sqlite3
+
+    import sqlite_vec as _sqlite_vec
+
+    _db = _sqlite3.connect(":memory:")
+    _db.enable_load_extension(True)
+    _sqlite_vec.load(_db)
+    (_vec_version,) = _db.execute("select vec_version()").fetchone()
+    _db.close()
+    require(True, "sqlite-vec extension loads", ok_detail=_vec_version)
+except Exception as e:
+    require(False, "sqlite-vec extension loads", bad_detail=repr(e))
+
+
+# --------------------------------------------------------------------------
 print()
 if failures:
     print(f"{BAD}  {failures} required check(s) failed.")
