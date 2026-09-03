@@ -18,8 +18,13 @@ window_timeout_s = 8.0    # max length of the listening window opened by the wak
 silence_s = 1.0           # trailing silence that ends an utterance
 follow_up_s = 10.0        # after a command, keep listening this long for a follow-up
                           # (no wake word needed) before announcing standby
-allow_interrupt = true    # press Enter in the terminal to cancel the current
-                          # listen / transcription (ignored if stdin isn't a TTY)
+barge_in = true           # speak a new sentence while a command is being
+                          # transcribed -> that transcription is dropped and the
+                          # new sentence is processed instead (no wake word)
+barge_in_min_speech_s = 0.6  # a barge-in needs at least this much speech (filters
+                             # coughs / knocks / short noises)
+allow_interrupt = true    # also: press Enter in the terminal to cancel the
+                          # current listen / transcription (TTY only)
 
 [stt]
 model = "small.en"       # faster-whisper: tiny(.en)/base(.en)/small(.en)/medium(.en).

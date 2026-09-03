@@ -65,7 +65,12 @@ class Transcriber:
         )
         return self
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    def transcribe(self, audio: np.ndarray, cancel_event=None) -> str:
+        """Transcribe ``audio``. ``cancel_event`` (a ``threading.Event``) is
+        checked between decoded segments — if set, decoding stops early and
+        whatever was decoded so far is returned. faster-whisper's segment
+        generator is lazy, so this actually halts work between segments (it
+        can't interrupt a single segment mid-decode)."""
         if audio is None or len(audio) == 0:
             self.last_avg_logprob = None
             return ""
@@ -73,7 +78,7 @@ class Transcriber:
             self.load()
         audio = _normalize(np.asarray(audio, dtype=np.float32))
 
-        segments, _info = self._model.transcribe(
+        segment_iter, _info = self._model.transcribe(
             audio,
             language=self.language,
             beam_size=5,
@@ -86,7 +91,12 @@ class Transcriber:
             hotwords=_HOTWORDS,
         )
 
-        segments = list(segments)
+        segments = []
+        for segment in segment_iter:
+            segments.append(segment)
+            if cancel_event is not None and cancel_event.is_set():
+                break
+
         if segments:
             self.last_avg_logprob = round(
                 float(np.mean([s.avg_logprob for s in segments])), 2

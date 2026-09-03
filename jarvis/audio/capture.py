@@ -83,6 +83,7 @@ class Microphone:
         silence_seconds: float = 1.0,
         start_grace_seconds: float = 2.0,
         stop_event=None,
+        min_speech_frames: int = 3,
     ) -> np.ndarray:
         """Collect frames until trailing silence or ``max_seconds``.
 
@@ -134,8 +135,8 @@ class Microphone:
             elif i >= grace_frames:
                 break  # nobody said anything
 
-        # a couple of loud frames is a cough / a door / JARVIS's own tail, not a
-        # command — require at least ~0.24s of speech
-        if not speech_started or speech_frames < 3:
+        # a few loud frames is a cough / a door / JARVIS's own tail, not a
+        # command — require a minimum amount of actual speech
+        if not speech_started or speech_frames < min_speech_frames:
             return np.zeros(0, dtype=np.float32)
         return np.concatenate(collected).astype(np.float32) / 32768.0

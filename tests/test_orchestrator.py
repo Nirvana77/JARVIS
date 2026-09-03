@@ -69,8 +69,9 @@ class FakeSTT:
     def __init__(self, text="search black holes", block=None):
         self.text = text
         self.block = block  # a threading.Event; transcribe waits on it
+        self.last_avg_logprob = -0.3
 
-    def transcribe(self, audio):
+    def transcribe(self, audio, cancel_event=None):
         if self.block is not None:
             self.block.wait(0.5)
         return self.text
@@ -239,55 +240,32 @@ def test_transcript_and_intent_are_printed(orch, capsys):
     assert "intent  : search" in out
 
 
-def test_cancellable_returns_result_when_not_interrupted(orch):
-    async def scenario():
-        orch._interrupt = asyncio.Event()
-
-        async def quick():
-            return "hello"
-
-        assert await orch._cancellable(quick(), "x") == "hello"
-        assert orch._draining == []
-
-    asyncio.run(scenario())
+def test_voice_barge_in_replaces_the_in_flight_command(orch, capsys):
+    # transcription is slow; a fresh utterance arrives while it runs
+    orch.stt = FakeSTT(text="search black holes", block=threading.Event())  # 0.5s block
+    orch.mic = FakeMic(script=[True, True, False])  # cmd, barge-in, then silence
+    asyncio.run(orch.run())
+    # the first (abandoned) transcription never dispatched; only the barge-in did
+    assert orch.registry.calls == [("search", {"query": "black holes"})]
+    assert "barge-in" in capsys.readouterr().out
+    assert orch._draining == [] or all(f.done() for f in orch._draining)
 
 
-def test_cancellable_raises_and_stashes_work_when_interrupted(orch):
-    async def scenario():
-        orch._interrupt = asyncio.Event()
+def test_enter_cancels_transcription_and_stays_listening(orch):
+    orch.barge_in = False  # isolate the Enter path
+    orch.stt = FakeSTT(block=threading.Event())  # 0.5s block
+    orch.mic = FakeMic(script=[True, False])
 
-        async def slow():
-            await asyncio.sleep(5)
-            return "done"
-
-        task = asyncio.create_task(orch._cancellable(slow(), "transcription"))
-        await asyncio.sleep(0.01)
-        orch._interrupt.set()  # "user pressed Enter"
-        with pytest.raises(_Cancelled):
-            await task
-        assert len(orch._draining) == 1  # abandoned, not lost
-        orch._draining[0].cancel()
-
-    asyncio.run(scenario())
-
-
-def test_enter_during_transcription_cancels_the_turn(orch):
-    gate = threading.Event()  # never set -> transcribe blocks (then times out)
-    orch.stt = FakeSTT(block=gate)
-    orch.mic = FakeMic(script=[True, False])  # one utterance, then silence
-
-    async def driver():
-        # fire the interrupt shortly after the run loop starts transcribing
+    async def press_enter_soon():
         await asyncio.sleep(0.05)
-        assert orch._interrupt is not None
         orch._interrupt.set()
 
     async def scenario():
-        await asyncio.gather(orch.run(), driver())
+        await asyncio.gather(orch.run(), press_enter_soon())
 
     asyncio.run(scenario())
-    assert orch.registry.calls == []          # nothing dispatched
-    assert "<standby>" in orch._persona.spoken  # session ended normally after
+    assert orch.registry.calls == []            # nothing dispatched
+    assert "<standby>" in orch._persona.spoken  # session ended cleanly
 
 
 def test_record_utterance_honours_stop_event():
@@ -301,8 +279,8 @@ def test_record_utterance_honours_stop_event():
 
 
 def test_two_commands_in_one_wake_session(orch):
-    orch.mic = FakeMic(script=[True, True, False])
-    orch.stt.text = "search black holes"  # both utterances transcribe the same
+    # silence during each transcription's barge-in window -> two real commands
+    orch.mic = FakeMic(script=[True, False, True, False])
     asyncio.run(orch.run())
     assert orch.registry.calls == [
         ("search", {"query": "black holes"}),
