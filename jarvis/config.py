@@ -61,7 +61,7 @@ class CaptureConfig:
 
 @dataclass(frozen=True)
 class STTConfig:
-    model: str = "base"
+    model: str = "small"  # "base" is faster but noticeably less accurate
     compute_type: str = "int8"
     device: str = "cpu"
     language: str = "en"
@@ -184,7 +184,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             follow_up_s=float(capture.get("follow_up_s", 10.0)),
         ),
         stt=STTConfig(
-            model=stt.get("model", "base"),
+            model=stt.get("model", "small"),
             compute_type=stt.get("compute_type", "int8"),
             device=stt.get("device", "cpu"),
             language=stt.get("language", language),

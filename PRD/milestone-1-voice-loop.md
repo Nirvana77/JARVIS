@@ -68,8 +68,10 @@ point; the legacy `main.py` / `libs/` / `actions/` are untouched.
 - **capture.py** — `sounddevice` int16 frame stream; `record_utterance()` gated
   by an RMS energy VAD with an adaptive noise floor. silero VAD / barge-in are
   M4.
-- **stt.py** — `faster-whisper base` int8 CPU, lazy load, downloads to
-  `data/models/whisper/`.
+- **stt.py** — faster-whisper int8 CPU, lazy load, downloads to
+  `data/models/whisper/`. Default size is **`small`** (`base` mis-hears too
+  much in practice; `config.toml [stt].model`). `condition_on_previous_text=
+  False` + a command-vocabulary `initial_prompt` cut hallucination.
 - **tts.py** — Piper ONNX; **degrades to `print("Jarvis: <text>")`** when the
   voice model is absent or playback fails (headless-safe, matches
   `libs/voice.py`).

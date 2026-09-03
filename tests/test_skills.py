@@ -74,6 +74,20 @@ def test_search_requires_a_query(config, tmp_path):
     assert "look up" in search.run(_ctx(config, tmp_path), query="").lower()
 
 
+def test_search_trims_wiki_markup_and_extra_sentences(config, tmp_path, monkeypatch):
+    import wikipedia
+
+    raw = (
+        "PG Tips is a brand of tea. It is sold in the UK. Third sentence here.\n\n"
+        "== Brand name ==\n\nIn the 1930s, Brooke Bond launched it."
+    )
+    monkeypatch.setattr(wikipedia, "summary", lambda *a, **k: raw)
+    line = search.run(_ctx(config, tmp_path), query="pg tips")
+    assert "==" not in line
+    assert "Brand name" not in line
+    assert line == "According to Wikipedia: PG Tips is a brand of tea. It is sold in the UK."
+
+
 def test_open_app_builds_a_url(config, tmp_path, monkeypatch):
     seen = {}
     monkeypatch.setattr(open_app.webbrowser, "open", lambda url: seen.setdefault("url", url))

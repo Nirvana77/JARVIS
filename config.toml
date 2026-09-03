@@ -20,7 +20,9 @@ follow_up_s = 10.0        # after a command, keep listening this long for a foll
                           # (no wake word needed) before announcing standby
 
 [stt]
-model = "base"            # faster-whisper model size
+model = "small"          # faster-whisper size: tiny/base/small/medium.
+                         # "base" is ~2x faster on CPU but mis-hears a lot;
+                         # "small" (~460 MB) is the sweet spot.
 compute_type = "int8"
 device = "cpu"
 language = "en"
