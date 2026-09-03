@@ -24,6 +24,8 @@ import sys
 import threading
 from typing import Literal
 
+import numpy as np
+
 from jarvis.nlu import slots as _slots
 from jarvis.nlu.classifier import UNKNOWN
 
@@ -83,15 +85,14 @@ class Orchestrator:
         self.barge_in = getattr(cap, "barge_in", True)
         self.allow_interrupt = getattr(cap, "allow_interrupt", True)
         self._cancel_flag = threading.Event()   # Enter -> stop the capture worker
-        self._barge_stop = threading.Event()    # stop the barge-in listen worker
-        self._stt_cancel = threading.Event()    # stop an abandoned transcription early
+        self._barge_stop = threading.Event()    # stop the onset-detector worker
         self._interrupt: asyncio.Event | None = None  # Enter -> wake the race
-        self._stt_lock = asyncio.Lock()         # never two whisper calls at once
-        self._draining: list[asyncio.Future] = []  # abandoned work, awaited on exit
+        self._draining: list[asyncio.Future] = []  # abandoned decodes, awaited on exit
         self._stdin_fd: int | None = None
 
     @property
-    def _barge_min_frames(self) -> int:
+    def _onset_frames(self) -> int:
+        """Consecutive speech frames that count as 'the user is talking'."""
         secs = getattr(self.config.capture, "barge_in_min_speech_s", 0.6)
         return max(3, round(secs / (self.config.capture.frame_ms / 1000)))
 
@@ -160,13 +161,13 @@ class Orchestrator:
 
     # -- one wake session --------------------------------------------------
 
-    async def _transcribe(self, audio) -> str:
-        async with self._stt_lock:  # never two whisper calls at once
-            return await asyncio.to_thread(
-                self.stt.transcribe, audio, self._stt_cancel
-            )
+    async def _transcribe(self, audio, cancel: threading.Event) -> str:
+        # No lock: faster-whisper / CTranslate2 tolerate concurrent calls, and an
+        # abandoned decode must not block the new one. `cancel` stops it between
+        # decoded segments (a single segment can't be halted mid-decode).
+        return await asyncio.to_thread(self.stt.transcribe, audio, cancel)
 
-    async def _capture(self, window: float, grace: float) -> "object":
+    async def _capture(self, window: float, grace: float, min_speech: int = 3):
         """Record one utterance. Returns the float32 audio, or raises
         :class:`_Cancelled` if Enter was pressed."""
         self._clear_cancel()
@@ -177,46 +178,67 @@ class Orchestrator:
             self.config.capture.silence_s,
             grace,
             self._cancel_flag,
+            min_speech,
         )
         if self._cancel_flag.is_set():
             raise _Cancelled("listening")
         return audio
 
-    async def _capture_barge_in(self):
-        """Listen for a *fresh, complete* sentence while something else runs.
-        Noise-filtered: needs ``barge_in_min_speech_s`` of speech plus a
-        trailing pause. Returns the audio, or ``None`` if stopped first."""
-        self._barge_stop.clear()
-        big = max(30.0, self.config.capture.follow_up_s)
-        audio = await asyncio.to_thread(
-            self.mic.record_utterance,
-            big,                              # max length
-            self.config.capture.silence_s,   # trailing pause ends it
-            big,                              # wait indefinitely for speech to start
-            self._barge_stop,
-            self._barge_min_frames,           # stricter -> filters noise/coughs
-        )
-        return audio if (audio is not None and len(audio)) else None
+    def _onset_worker(self):
+        """Blocking: read mic frames until we hear a sustained run of speech
+        (``_onset_frames`` frames). Returns the collected audio (float32, with a
+        short lead-in), or ``None`` if ``_barge_stop`` is set first."""
+        need = self._onset_frames
+        collected: list = []
+        early: list[float] = []
+        floor = 0.012
+        run = 0
+        idx = 0
+        while not self._barge_stop.is_set():
+            try:
+                frame = self.mic.read(0.2)
+            except queue.Empty:
+                continue
+            collected.append(frame)
+            rms = float(
+                np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)) + 1e-9
+            )
+            if idx < 8:
+                early.append(rms)
+                if idx == 7:
+                    floor = min(max(min(early), 0.004), 0.02)
+            idx += 1
+            if rms > max(floor * 2.8, 0.011):
+                run += 1
+                if run >= need:
+                    return np.concatenate(collected).astype(np.float32) / 32768.0
+            else:
+                run = 0
+                if len(collected) > 25:  # bounded pre-roll during silence
+                    collected = collected[-10:]
+        return None
 
     async def _next_utterance(self, window: float, grace: float) -> str:
-        """Capture a command and transcribe it. While transcribing, keep
-        listening: a full new sentence abandons the in-flight transcription and
-        is transcribed instead (voice barge-in). Enter cancels. Returns the
-        transcript, or "" for silence."""
+        """Capture a command and transcribe it. Voice barge-in: while the
+        transcription runs, keep listening — the moment the user starts speaking
+        a fresh utterance, abandon that transcription and capture + transcribe
+        the new one instead. Enter also cancels. Returns the transcript, or ""
+        for silence."""
         audio = await self._capture(window, grace)
         if audio is None or len(audio) == 0:
             return ""
 
         while True:
             self.state = "thinking"
-            self._stt_cancel.clear()
-            work = asyncio.ensure_future(self._transcribe(audio))
+            stt_cancel = threading.Event()
+            work = asyncio.ensure_future(self._transcribe(audio, stt_cancel))
             waiters = {work}
 
-            monitor = None
+            onset = None
             if self.barge_in:
-                monitor = asyncio.ensure_future(self._capture_barge_in())
-                waiters.add(monitor)
+                self._barge_stop.clear()
+                onset = asyncio.ensure_future(asyncio.to_thread(self._onset_worker))
+                waiters.add(onset)
             intr = None
             if self._interrupt is not None:
                 intr = asyncio.ensure_future(self._interrupt.wait())
@@ -224,30 +246,51 @@ class Orchestrator:
 
             await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
 
-            # Enter pressed -> drop everything, stay listening
+            # Enter -> drop everything, stay listening
             if intr is not None and intr.done():
-                self._stt_cancel.set()
-                self._barge_stop.set()
+                stt_cancel.set()
+                work.cancel()
                 self._draining.append(work)
-                if monitor is not None:
-                    await asyncio.gather(monitor, return_exceptions=True)
+                self._barge_stop.set()
+                if onset is not None:
+                    await asyncio.gather(onset, return_exceptions=True)
                 raise _Cancelled("transcription")
             if intr is not None:
                 intr.cancel()
 
-            # a fresh sentence arrived first -> abandon this transcription
-            if monitor is not None and monitor.done() and monitor.result() is not None:
-                self._stt_cancel.set()          # let the old decode bail early
+            # the user started talking over us -> abandon this decode, capture
+            # the rest of what they're saying, and transcribe that instead
+            if (
+                onset is not None
+                and onset.done()
+                and not onset.cancelled()
+                and onset.result() is not None
+            ):
+                onset_audio = onset.result()
+                stt_cancel.set()
+                work.cancel()
                 self._draining.append(work)
-                audio = monitor.result()
-                print("  (barge-in — switching to the newer command)", flush=True)
+                print("  (barge-in — go on)", flush=True)
+                self.state = "listening"
+                rest = await asyncio.to_thread(
+                    self.mic.record_utterance,
+                    self.config.capture.window_timeout_s,
+                    self.config.capture.silence_s,
+                    0.6,               # short grace — they're already speaking
+                    self._cancel_flag,
+                    1,                 # the onset already counts as speech
+                )
+                audio = (
+                    np.concatenate([onset_audio, rest])
+                    if rest is not None and len(rest)
+                    else onset_audio
+                )
                 continue
 
-            # nothing barged in (monitor came back empty or is still waiting) ->
-            # take the transcription
+            # transcription won -> stop the detector and return the text
             self._barge_stop.set()
-            if monitor is not None:
-                await asyncio.gather(monitor, return_exceptions=True)
+            if onset is not None:
+                await asyncio.gather(onset, return_exceptions=True)
             if not work.done():
                 await work
             return (work.result() or "").strip()
@@ -425,8 +468,9 @@ class Orchestrator:
         finally:
             self.running = False
             self._remove_interrupt()
-            self._stt_cancel.set()
             self._barge_stop.set()
+            for d in self._draining:
+                d.cancel()
             if self._draining:  # let abandoned whisper calls unwind
                 try:
                     await asyncio.wait_for(

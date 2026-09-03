@@ -17,12 +17,17 @@ from jarvis.nlu.corpus import intent_meta
 # -- fakes ------------------------------------------------------------------
 
 class FakeMic:
-    """``script`` is a list of bools: True -> a spoken utterance, False -> silence.
-    Values past the end read as silence."""
+    """``script`` is a list of bools for successive ``record_utterance`` calls:
+    True -> a spoken utterance, False -> silence. Past the end reads as silence.
 
-    def __init__(self, script=(True,)):
+    ``talking_reads`` makes the first N ``read()`` calls return loud frames so the
+    orchestrator's onset detector fires (simulates the user talking over TTS)."""
+
+    def __init__(self, script=(True,), talking_reads=0):
         self._script = list(script)
         self._i = 0
+        self._talking_reads = talking_reads
+        self._reads = 0
         self.started = False
 
     def start(self):
@@ -32,6 +37,9 @@ class FakeMic:
         self.started = False
 
     def read(self, timeout=None):
+        self._reads += 1
+        if self._reads <= self._talking_reads:
+            return np.full(1280, 6000, dtype=np.int16)
         return np.zeros(1280, dtype=np.int16)
 
     def drain(self):
@@ -240,15 +248,17 @@ def test_transcript_and_intent_are_printed(orch, capsys):
     assert "intent  : search" in out
 
 
-def test_voice_barge_in_replaces_the_in_flight_command(orch, capsys):
-    # transcription is slow; a fresh utterance arrives while it runs
-    orch.stt = FakeSTT(text="search black holes", block=threading.Event())  # 0.5s block
-    orch.mic = FakeMic(script=[True, True, False])  # cmd, barge-in, then silence
+def test_voice_barge_in_abandons_the_in_flight_command(orch, capsys):
+    # transcription is slow (0.5s block); the user starts talking over it, so the
+    # onset detector fires and the decode is abandoned
+    orch.stt = FakeSTT(text="search black holes", block=threading.Event())
+    orch.mic = FakeMic(script=[True, False], talking_reads=12)
     asyncio.run(orch.run())
-    # the first (abandoned) transcription never dispatched; only the barge-in did
+    out = capsys.readouterr().out
+    assert "barge-in" in out
+    # only the post-barge-in command dispatched (once); the abandoned one didn't
     assert orch.registry.calls == [("search", {"query": "black holes"})]
-    assert "barge-in" in capsys.readouterr().out
-    assert orch._draining == [] or all(f.done() for f in orch._draining)
+    assert all(f.done() for f in orch._draining)
 
 
 def test_enter_cancels_transcription_and_stays_listening(orch):
@@ -279,8 +289,8 @@ def test_record_utterance_honours_stop_event():
 
 
 def test_two_commands_in_one_wake_session(orch):
-    # silence during each transcription's barge-in window -> two real commands
-    orch.mic = FakeMic(script=[True, False, True, False])
+    # two utterances, no talking-over -> two sequential commands, then standby
+    orch.mic = FakeMic(script=[True, True])
     asyncio.run(orch.run())
     assert orch.registry.calls == [
         ("search", {"query": "black holes"}),
