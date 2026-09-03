@@ -35,8 +35,10 @@ def test_manifest_is_well_formed(name, module):
 
 def test_dispatch_routes_to_the_named_skill(config, monkeypatch):
     reg = Registry.discover(config)
+    monkeypatch.setattr(search, "_search_title", lambda s, q: "Black hole")
     monkeypatch.setattr(
-        "wikipedia.summary", lambda *a, **k: "A black hole is a region of spacetime."
+        search, "_summary",
+        lambda s, t: {"type": "standard", "extract": "A black hole is a region of spacetime."},
     )
     line = reg.dispatch("search", {"query": "black holes"})
     assert "black hole" in line.lower()
@@ -60,14 +62,26 @@ def test_dispatch_drops_params_the_skill_does_not_declare(config, monkeypatch):
 # -- individual skills --------------------------------------------------------
 
 def test_search_disambiguation(config, tmp_path, monkeypatch):
-    import wikipedia
-
-    def _raise(*a, **k):
-        raise wikipedia.exceptions.DisambiguationError("Mercury", ["Mercury (planet)", "Mercury (element)"])
-
-    monkeypatch.setattr(wikipedia, "summary", _raise)
+    monkeypatch.setattr(search, "_search_title", lambda s, q: "Mercury")
+    monkeypatch.setattr(
+        search, "_summary", lambda s, t: {"type": "disambiguation", "extract": "Mercury may refer to..."}
+    )
     line = search.run(_ctx(config, tmp_path), query="mercury")
-    assert "Mercury (planet)" in line
+    assert "several things" in line.lower()
+
+
+def test_search_not_found(config, tmp_path, monkeypatch):
+    monkeypatch.setattr(search, "_search_title", lambda s, q: None)
+    line = search.run(_ctx(config, tmp_path), query="qwertyzxcv nonsense")
+    assert "couldn't find" in line.lower()
+
+
+def test_search_network_error_is_graceful(config, tmp_path, monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(search, "_search_title", _boom)
+    assert search.run(_ctx(config, tmp_path), query="anything") == "I had trouble reaching Wikipedia."
 
 
 def test_search_requires_a_query(config, tmp_path):
@@ -75,13 +89,12 @@ def test_search_requires_a_query(config, tmp_path):
 
 
 def test_search_trims_wiki_markup_and_extra_sentences(config, tmp_path, monkeypatch):
-    import wikipedia
-
     raw = (
         "PG Tips is a brand of tea. It is sold in the UK. Third sentence here.\n\n"
         "== Brand name ==\n\nIn the 1930s, Brooke Bond launched it."
     )
-    monkeypatch.setattr(wikipedia, "summary", lambda *a, **k: raw)
+    monkeypatch.setattr(search, "_search_title", lambda s, q: "PG Tips")
+    monkeypatch.setattr(search, "_summary", lambda s, t: {"type": "standard", "extract": raw})
     line = search.run(_ctx(config, tmp_path), query="pg tips")
     assert "==" not in line
     assert "Brand name" not in line

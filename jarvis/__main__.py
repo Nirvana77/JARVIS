@@ -62,11 +62,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         asyncio.run(orchestrator.run())
     except KeyboardInterrupt:
+        # heavy models load eagerly at startup now, so nothing long-running is
+        # stuck in a worker thread here — a normal shutdown is clean.
         print("\nShutting down.", flush=True)
-        # a worker thread may be mid-transcribe / mid-download and won't join;
-        # skip the atexit thread-join that would otherwise dump a traceback
-        sys.stdout.flush()
-        os._exit(0)
     return 0
 
 
