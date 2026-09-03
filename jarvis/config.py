@@ -15,7 +15,11 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # .env holds only secrets; M1 needs none
+    def load_dotenv(*_a, **_k) -> bool:  # type: ignore[misc]
+        return False
 
 # Repo root = parent of this package directory. Paths in config.toml are
 # resolved against the current working directory first (CLAUDE.md: "always run
