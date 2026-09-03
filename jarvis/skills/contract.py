@@ -24,6 +24,14 @@ PERMISSIONS = frozenset(
 )
 
 
+class SkillNotFound(KeyError):
+    """No registered skill matches the requested intent label."""
+
+
+class SkillError(RuntimeError):
+    """A skill's ``run()`` raised or returned something unusable."""
+
+
 @dataclass(frozen=True)
 class SkillManifest:
     name: str
