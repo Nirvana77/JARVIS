@@ -32,6 +32,9 @@ class FakeMic:
     def read(self, timeout=None):
         return np.zeros(1280, dtype=np.int16)
 
+    def drain(self):
+        pass
+
     def record_utterance(self, *a, **k):
         has_speech = self._script[self._i] if self._i < len(self._script) else False
         self._i += 1

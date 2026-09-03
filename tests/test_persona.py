@@ -78,6 +78,11 @@ def test_canned_line_is_verbatim_from_the_list(config):
     assert p.line("no_such_event", "fallback") == "fallback"
 
 
+def test_standby_line_is_fixed(config):
+    p = Persona.load("jarvis", config)
+    assert {p.line("standby") for _ in range(20)} == {"Standing by, sir."}
+
+
 def test_phrase_is_identity_without_a_reasoner(config):
     p = Persona.load("jarvis", config)
     assert p.phrase("The weather in Malibu is 72 degrees.") == (

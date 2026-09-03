@@ -52,3 +52,36 @@ def test_microphone_constructs_without_opening_a_stream():
     m = Microphone(sample_rate=16000, frame_samples=1280)
     assert m._stream is None
     assert m.frame_samples == 1280
+
+
+def _mic_fed_with(frames):
+    from jarvis.audio.capture import Microphone
+
+    m = Microphone(sample_rate=16000, frame_samples=1280)
+    it = iter(frames)
+    m.read = lambda timeout=None: next(it)  # type: ignore[method-assign]
+    return m
+
+
+def test_record_utterance_returns_empty_on_silence():
+    silence = [np.zeros(1280, dtype=np.int16)] * 200
+    audio = _mic_fed_with(silence).record_utterance(max_seconds=2, silence_seconds=0.5)
+    assert len(audio) == 0
+
+
+def test_record_utterance_ignores_a_short_blip():
+    # 5 frames ambient, 2 loud frames (a cough), then silence
+    frames = [np.zeros(1280, dtype=np.int16)] * 5
+    frames += [np.full(1280, 8000, dtype=np.int16)] * 2
+    frames += [np.zeros(1280, dtype=np.int16)] * 200
+    audio = _mic_fed_with(frames).record_utterance(max_seconds=3, silence_seconds=0.5)
+    assert len(audio) == 0  # < 3 speech frames -> treated as noise
+
+
+def test_record_utterance_captures_real_speech():
+    frames = [np.zeros(1280, dtype=np.int16)] * 5
+    frames += [np.full(1280, 8000, dtype=np.int16)] * 20   # ~1.6s of "speech"
+    frames += [np.zeros(1280, dtype=np.int16)] * 200
+    audio = _mic_fed_with(frames).record_utterance(max_seconds=5, silence_seconds=0.5)
+    assert len(audio) > 16000  # more than a second of audio
+    assert audio.dtype == np.float32

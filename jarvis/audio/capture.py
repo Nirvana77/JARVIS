@@ -96,6 +96,7 @@ class Microphone:
         collected: list[np.ndarray] = []
         noise_rms = None
         speech_started = False
+        speech_frames = 0
         trailing_silence = 0
 
         for i in range(max_frames):
@@ -115,6 +116,7 @@ class Microphone:
             is_speech = rms > max(noise_rms * 3.0, 0.01)
             if is_speech:
                 speech_started = True
+                speech_frames += 1
                 trailing_silence = 0
             elif speech_started:
                 trailing_silence += 1
@@ -123,7 +125,9 @@ class Microphone:
             elif i > grace_frames:
                 break  # nobody said anything
 
-        if not speech_started:
+        # a couple of loud frames is a cough / a door / JARVIS's own tail, not a
+        # command — require at least ~0.24s of speech
+        if not speech_started or speech_frames < 3:
             return np.zeros(0, dtype=np.float32)
         audio = np.concatenate(collected).astype(np.float32) / 32768.0
         return audio

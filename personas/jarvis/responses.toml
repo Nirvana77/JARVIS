@@ -4,7 +4,7 @@
 wake_ack      = ["At your service, sir.", "Yes, sir?", "Standing by, sir.", "Sir?"]
 greeting      = ["For you, sir, always.", "At your service, sir.", "Online and ready, sir."]
 already_awake = ["I am already awake, sir.", "Still here, sir.", "You have my attention, sir."]
-standby       = ["Very good, sir. I shall be here.", "Entering standby, sir.", "As you wish, sir."]
+standby       = ["Standing by, sir."]
 goodbye       = ["Goodbye, sir.", "Until next time, sir.", "A pleasure, as always, sir."]
 shutdown      = ["Powering down. Goodbye, sir.", "Shutting down now, sir."]
 unknown       = [

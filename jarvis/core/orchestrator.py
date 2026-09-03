@@ -75,14 +75,27 @@ class Orchestrator:
     # -- speaking ---------------------------------------------------------
 
     async def _speak(self, text: str) -> None:
-        if text:
-            await asyncio.to_thread(self.tts.say, text)
+        if not text:
+            return
+        await asyncio.to_thread(self.tts.say, text)
+        # Half-duplex: while JARVIS was speaking, the mic recorded its own
+        # voice. Let the tail settle, then drop those frames so the wake word
+        # and the VAD don't trigger on them. (Real echo cancellation / barge-in
+        # is M4.)
+        await asyncio.sleep(0.2)
+        self._drain_mic()
+
+    def _drain_mic(self) -> None:
+        drain = getattr(self.mic, "drain", None)
+        if callable(drain):
+            drain()
 
     # -- wake -----------------------------------------------------------------
 
     async def _await_wake(self) -> bool:
         """Block until the wake word fires. False if the loop was stopped."""
         await asyncio.to_thread(self.wake.reset)
+        self._drain_mic()
         while self.running:
             try:
                 frame = await asyncio.to_thread(self.mic.read, 1.0)

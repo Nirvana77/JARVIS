@@ -12,9 +12,13 @@ import argparse
 import asyncio
 import logging
 import sys
+import warnings
 
 from jarvis import app
 from jarvis.config import load_config
+
+# onnxruntime logs this once per model on a CPU-only box; it is expected.
+warnings.filterwarnings("ignore", message=r".*CUDAExecutionProvider.*")
 
 
 def _build_parser() -> argparse.ArgumentParser:
