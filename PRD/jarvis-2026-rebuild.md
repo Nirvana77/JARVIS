@@ -386,7 +386,62 @@ plan/design decisions in `PRD/milestone-2-skill-factory.md`):**
   (`.txt`/`.md`/`.pdf`), plus a `remember` builtin for spoken facts; `note.py`
   mirrors dictated notes into the docs dir.
 
-### Milestone 4 — polish
+### Milestone 4 — misheard-command reasoning
+
+**Motivation**: STT is never perfect, and it's at its worst on exactly the
+words JARVIS most needs right — a freshly-taught skill's name has no
+language-model prior behind it, so faster-whisper reaches for the nearest
+real word it knows (*"flip a coin"* → *"flip a corn"*; *"flip three coins"* →
+*"flip three chords"*). Today, once NLU confidence lands below the "unknown"
+cutoff (or, since the confidence-gate fix, below `meta_action_threshold` for
+teach/edit_skill/revert_skill), JARVIS just gives up: *"I'm afraid I didn't
+catch that, sir."* This milestone gives it one more move first: ask whether
+the raw transcript is a plausible mishearing of something it actually knows
+how to do — the same kind of correction a person would make silently
+("he obviously means *coin*, not *corn*") — before admitting defeat.
+
+- **Reasoner-only, never Claude.** This is exactly the "Reasoning / persona
+  phrasing" row of the degradation-chain table doing a new job, not a new
+  network dependency: `core/reasoner.py`'s existing Ollama client (optional,
+  capability-probed, already used for persona style-rewriting). Consistent
+  with "Claude is a teacher invoked rarely, never a runtime dependency" —
+  when no Ollama is running, this whole step is skipped and behavior is
+  identical to today.
+- **New orchestrator step**, e.g. `_reason_about_unclear(text) -> str | None`,
+  called exactly where `persona.line("unknown")` currently fires unconditionally
+  — in the `UNKNOWN` branch of `handle()`, and in the low-confidence
+  meta-action branch added for the STT-garbling fix. Only invoked when
+  `self.reasoner.available`.
+- **Prompt**: the raw heard text, plus the vocabulary to compare it against —
+  every registered skill's name and a few of its `MANIFEST.examples`
+  (`registry.manifests()`), and the seed intents' patterns from
+  `intent_meta()`. Ask for its single best guess at the intended command, or
+  an explicit "none" when nothing is plausible — this is a small, fast,
+  local call (no code generation, no `max_tokens` pressure), not the skill
+  factory's `build()` path.
+- **Never act on a guess directly.** Compounding STT error + NLU uncertainty
+  + an LLM's own guess into an unconfirmed action is worse than just asking
+  again. The corrected phrase is either (a) confirmed by voice first — *"Did
+  you mean 'flip a coin', sir?"* — before being re-run through the real NLU
+  classifier and dispatched normally, or (b) if declined or nothing plausible
+  came back, JARVIS falls back to today's plain "didn't catch that" line.
+  One guess, one confirmation, per turn — it doesn't loop trying to guess
+  again after a "no."
+- Reuses the confirm-by-voice pattern already built for M2 (`_ask_yes_no`) —
+  no new dialog machinery needed, just a new caller of it.
+
+**Verification**: unit tests with an injected fake reasoner (deterministic
+canned guess) covering — reasoner absent → behavior unchanged from today;
+reasoner present with a plausible correction → confirms → the *corrected*
+text is what gets classified and dispatched (not the reasoner's raw guess
+verbatim); user declines the "did you mean" confirm → falls back to the
+plain unknown line, nothing dispatched; reasoner returns "none" → same
+fallback, no confirm asked. Manual: with Ollama running, say a command whose
+skill name is likely to be misheard, verify the "did you mean" confirm fires
+and a "yes" correctly dispatches; without Ollama running, verify the exact
+same misheard command falls back to the current plain response.
+
+### Milestone 5 — polish
 - Barge-in during TTS, systemd user service, packaging (`pyproject.toml`),
   tests, README/CLAUDE.md rewrite.
 
@@ -417,5 +472,8 @@ plan/design decisions in `PRD/milestone-2-skill-factory.md`):**
 - **M3**: ingest a sample doc, ask *"Jarvis, what does X say about Y"*, verify a
   grounded answer with a source and **no network call to Claude** (assert via
   logs / a blocked key).
+- **M4**: fake-reasoner unit tests per the milestone's own Verification
+  paragraph above; manual, with and without Ollama running, on a real
+  misheard command.
 - Regression: `python check_setup.py` stays green; `python -m jarvis --selftest`
   loads the current NLU model, lists registered skills, and exits 0.
