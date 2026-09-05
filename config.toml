@@ -30,6 +30,16 @@ allow_interrupt = true    # press Enter in the terminal to cancel the current
                           # listen / transcription (TTY only) — this one is cheap
                           # and reliable, so it stays on
 
+# If commands get cut short / transcribed as nonsense near the end: the VAD's
+# auto-calibrated noise floor can be thrown off if you start talking
+# immediately after the wake word (with no pause, it calibrates against your
+# own loud opening words instead of silence). Run `./jarvis-run mic`, speak
+# normally, and if the meter shows the level dropping under the │ marker
+# while you're still talking, pin a lower absolute threshold here instead of
+# auto-calibrating (pick a value comfortably below your quietest speech but
+# above the ambient noise floor shown by the meter).
+vad_threshold = 0.0       # absolute RMS threshold; 0 = auto-calibrate
+
 [stt]
 model = "small.en"       # faster-whisper: tiny(.en)/base(.en)/small(.en)/medium(.en).
                          # ".en" models are more accurate for English at the same
@@ -46,11 +56,25 @@ voice = "en_GB-alan-medium"   # Piper voice; files resolved under <data>/models/
 embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
 threshold = 0.35            # max class probability below this -> "unknown"
 similarity_floor = 0.30     # min cosine similarity to any training phrase, else "unknown"
+meta_action_threshold = 0.6 # teach/edit_skill/revert_skill need this confidence before
+                            # JARVIS commits to the dialog instead of saying "unknown" —
+                            # higher than `threshold` because a wrong guess here costs a
+                            # whole multi-turn conversation, not just a wrong one-line reply
 
 [reasoner]
 enabled = true           # still capability-probed; false disables Ollama entirely
 base_url = "http://localhost:11434"
 model = "qwen2.5:3b"
+
+[factory]
+model = "claude-opus-5"    # overridden by the ANTHROPIC_MODEL env var
+fast_budget_s = 8.0         # how long to wait inline for a retrain before
+                            # detaching it to the background drain loop
+sandbox_timeout_s = 10.0    # wall-clock limit for a sandboxed test/dry-run
+sandbox_mem_mb = 512        # RLIMIT_AS for a sandboxed subprocess — pytest's
+                            # plugin-rewrite discovery alone needs >256MB in a venv
+                            # this size (scans every installed dist-info)
+sandbox_cpu_s = 5           # RLIMIT_CPU for a sandboxed subprocess
 
 [paths]
 data_dir = "data"        # models, nlu artifacts, per-skill scratch (git-ignored)

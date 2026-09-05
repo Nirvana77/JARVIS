@@ -139,6 +139,41 @@
 			],
 			"responses": ["Noted"],
 			"action": "note"
+		},
+		{
+			"tag": "teach",
+			"patterns": [
+				"learn how to {intent}",
+				"can you learn to {intent}",
+				"teach yourself to {intent}",
+				"I want to teach you something",
+				"learn a new skill",
+				"can you learn a new skill"
+			],
+			"responses": [],
+			"action": "teach"
+		},
+		{
+			"tag": "edit_skill",
+			"patterns": [
+				"edit the {intent} skill",
+				"change how the {intent} skill works",
+				"update the {intent} skill",
+				"I want to change a skill"
+			],
+			"responses": [],
+			"action": "edit_skill"
+		},
+		{
+			"tag": "revert_skill",
+			"patterns": [
+				"revert the {intent} skill",
+				"undo the last change to {intent}",
+				"roll back the {intent} skill",
+				"go back to the old version of {intent}"
+			],
+			"responses": [],
+			"action": "revert_skill"
 		}
 	]
 }

@@ -85,3 +85,44 @@ def test_record_utterance_captures_real_speech():
     audio = _mic_fed_with(frames).record_utterance(max_seconds=5, silence_seconds=0.5)
     assert len(audio) > 16000  # more than a second of audio
     assert audio.dtype == np.float32
+
+
+def test_calibration_window_catches_a_brief_pause_even_after_a_loud_start():
+    """Regression: talking immediately (no lead-in silence) used to let the
+    noise-floor calibration sample nothing but the speaker's own loud opening
+    words, inflating the threshold enough that a normal, quieter drop-off in
+    volume toward the end of a sentence got misread as silence — cutting the
+    command short (and, in practice, feeding Whisper a truncated clip it then
+    hallucinates a wrong transcription for). A wider calibration window gives
+    a real chance of catching a natural inter-word pause instead."""
+    loud = np.full(1280, 8000, dtype=np.int16)     # rms ~0.244
+    pause = np.full(1280, 300, dtype=np.int16)     # rms ~0.009 — a brief breath
+    quieter_tail = np.full(1280, 900, dtype=np.int16)  # rms ~0.027 — trailing off
+
+    frames = (
+        [loud] * 8         # fills the *old* 8-frame calibration window entirely
+        + [pause] * 2      # only a *wider* window would ever see this dip
+        + [loud] * 10
+        + [quieter_tail] * 15   # the sentence trailing off — still real speech
+        + [np.zeros(1280, dtype=np.int16)] * 200  # then real silence
+    )
+    audio = _mic_fed_with(frames).record_utterance(max_seconds=10, silence_seconds=0.5)
+    # with the old 8-frame window the floor calibrates against continuous loud
+    # speech, the threshold ends up above the quieter tail's level, and the
+    # utterance is cut short well before the ~34 speech frames + tail land —
+    # assert the wider window keeps enough of the tail that this doesn't happen.
+    assert len(audio) >= 1280 * 30
+
+
+def test_vad_threshold_override_is_used_instead_of_auto_calibration():
+    from jarvis.audio.capture import Microphone
+
+    quiet_speech = np.full(1280, 200, dtype=np.int16)  # rms ~0.006
+    frames = [quiet_speech] * 10 + [np.zeros(1280, dtype=np.int16)] * 200
+
+    m = Microphone(sample_rate=16000, frame_samples=1280, vad_threshold=0.003)
+    it = iter(frames)
+    m.read = lambda timeout=None: next(it)  # type: ignore[method-assign]
+
+    audio = m.record_utterance(max_seconds=5, silence_seconds=0.5)
+    assert len(audio) > 0  # a low pinned threshold correctly hears quiet speech

@@ -119,11 +119,12 @@ class FakeTTS:
 
 
 class FakeRegistry:
-    def __init__(self, on_dispatch=None, result="done"):
+    def __init__(self, on_dispatch=None, result="done", manifests=()):
         self.calls = []
         self.on_dispatch = on_dispatch
         self.result = result
         self.raises = None
+        self._manifests = list(manifests)
 
     def dispatch(self, label, params):
         self.calls.append((label, params))
@@ -132,6 +133,19 @@ class FakeRegistry:
         if self.raises:
             raise self.raises
         return f"{self.result}:{label}:{params}"
+
+    # -- M2: the factory flows only need read access -------------------------
+    def names(self):
+        return [m.name for m in self._manifests]
+
+    def manifests(self):
+        return list(self._manifests)
+
+    def manifest(self, name):
+        return next(m for m in self._manifests if m.name == name)
+
+    def __contains__(self, name):
+        return name in self.names()
 
 
 @pytest.fixture
@@ -206,6 +220,36 @@ def test_unknown_speaks_the_unknown_line(orch):
     assert "<unknown>" in orch._persona.spoken
 
 
+def test_unknown_does_not_auto_offer_to_teach(orch):
+    """A garbled/unrecognized command should just say so — it must not
+    proactively launch into "shall I learn how to do that, sir?"."""
+    orch.standby = False
+    orch.claude_client = type("FakeAvailableClient", (), {"available": True})()
+    asyncio.run(orch.handle("unknown", "flibber"))
+    assert orch.registry.calls == []
+    assert orch._persona.spoken == ["<unknown>"]
+
+
+def test_low_confidence_meta_action_falls_back_to_unknown(orch):
+    """Regression: "flip of corn" (a garbled "flip a coin") once classified as
+    revert_skill at 0.43 confidence — barely above the general "unknown" cutoff
+    — and launched the whole revert dialog instead of just saying it didn't
+    catch the command."""
+    orch.standby = False
+    asyncio.run(orch.handle("revert_skill", "flip of corn", confidence=0.43))
+    assert orch.registry.calls == []
+    assert orch._persona.spoken == ["<unknown>"]
+
+
+def test_high_confidence_meta_action_still_proceeds(orch):
+    orch.standby = False
+    asyncio.run(orch.handle("revert_skill", "revert the timer skill", confidence=0.9))
+    # it reached the real revert_skill flow (which then reports no matching
+    # skill on the empty FakeRegistry) rather than bailing out as "unknown"
+    assert "<unknown>" not in orch._persona.spoken
+    assert any("skills" in s.lower() for s in orch._persona.spoken)
+
+
 def test_none_action_speaks_canned_response(orch):
     orch.standby = False
     asyncio.run(orch.handle("thanks", "thanks"))
@@ -246,6 +290,33 @@ def test_transcript_and_intent_are_printed(orch, capsys):
     out = capsys.readouterr().out
     assert 'heard   : "search black holes"' in out
     assert "intent  : search" in out
+
+
+def test_ask_does_not_print_heard_by_default(orch, capsys):
+    """A teach/edit_skill/revert_skill clarifying question's answer isn't
+    classified (no intent to show) — unlike a normal command it stays quiet
+    unless verbose logging is on."""
+    import logging
+
+    from jarvis.core import orchestrator as orchestrator_module
+
+    assert not orchestrator_module.log.isEnabledFor(logging.INFO)  # default (WARNING)
+    asyncio.run(orch._ask("What should I call this skill?"))
+    assert 'heard' not in capsys.readouterr().out
+
+
+def test_ask_prints_heard_when_verbose(orch, capsys):
+    import logging
+
+    from jarvis.core import orchestrator as orchestrator_module
+
+    original = orchestrator_module.log.level
+    orchestrator_module.log.setLevel(logging.INFO)
+    try:
+        asyncio.run(orch._ask("What should I call this skill?"))
+    finally:
+        orchestrator_module.log.setLevel(original)
+    assert 'heard   : "search black holes"' in capsys.readouterr().out
 
 
 def test_voice_barge_in_abandons_the_in_flight_command(orch, capsys):
@@ -299,3 +370,61 @@ def test_two_commands_in_one_wake_session(orch):
         ("search", {"query": "black holes"}),
     ]
     assert "<standby>" in orch._persona.spoken
+
+
+# -- M2: merge gate + skill factory degradation ------------------------------
+
+def test_merge_gate_does_not_swap_while_busy(orch):
+    """PRD M2 verification: a staged replacement must not be promoted mid-turn."""
+    new_nlu, new_registry = object(), object()
+    orch.state = "acting"
+    orch._staged = (new_nlu, new_registry)
+    orch._pending_announcement = "I've learned 'timer', sir."
+
+    asyncio.run(orch._merge_gate())
+
+    assert orch.nlu is not new_nlu
+    assert orch.registry is not new_registry
+    assert orch._staged is not None
+    assert orch._pending_announcement is not None
+    assert "timer" not in " ".join(orch._persona.spoken)
+
+
+def test_merge_gate_swaps_and_announces_once_idle(orch):
+    new_nlu, new_registry = object(), object()
+    orch.state = "idle"
+    orch._staged = (new_nlu, new_registry)
+    orch._pending_announcement = "I've learned 'timer', sir."
+
+    asyncio.run(orch._merge_gate())
+
+    assert orch.nlu is new_nlu
+    assert orch.registry is new_registry
+    assert orch._staged is None
+    assert orch._pending_announcement is None
+    assert "I've learned 'timer', sir." in orch._persona.spoken
+
+
+def test_merge_gate_is_a_noop_with_nothing_staged(orch):
+    old_nlu, old_registry = orch.nlu, orch.registry
+    orch.state = "idle"
+    asyncio.run(orch._merge_gate())
+    assert orch.nlu is old_nlu
+    assert orch.registry is old_registry
+
+
+def test_teach_degrades_gracefully_without_a_factory(orch):
+    orch.standby = False
+    orch.claude_client = None
+    asyncio.run(orch.handle("teach", "learn how to set a timer"))
+    assert "factory" in orch._persona.spoken[-1].lower()
+    assert orch.registry.calls == []
+
+
+def test_revert_skill_does_not_require_a_factory(orch):
+    orch.standby = False
+    orch.claude_client = None
+    asyncio.run(orch.handle("revert_skill", "revert the timer skill"))
+    # no factory needed — it just can't find a matching learned skill on the
+    # bare FakeRegistry, so it should ask, get no reply, and give up quietly
+    assert orch.registry.calls == []

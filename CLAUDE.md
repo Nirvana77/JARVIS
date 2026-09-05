@@ -2,6 +2,37 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**The rebuild is underway.** `PRD/jarvis-2026-rebuild.md` is the canonical
+spec; `PRD/milestone-N-*.md` are per-milestone plans and
+`PRD/milestone-N-*-outcome.md` their outcomes once shipped. The rebuilt
+package lives in `jarvis/` (`python -m jarvis ...`) alongside the untouched
+legacy `main.py`/`libs/`/`actions/` this file otherwise describes — see the
+PRD for the target architecture and the migration mapping between the two.
+There **is** now a test suite (`python -m pytest`, `tests/`) covering
+`jarvis/` — the "There is no test suite" note further down is about the
+legacy code only.
+
+## Implementing PRD work
+
+Follow this order for any PRD/milestone item — don't skip or reorder steps:
+
+1. **Write the tests first**, derived from the PRD's "Verification" section
+   and the milestone plan's acceptance criteria — before writing the
+   implementation itself. Match the conventions already in `tests/`
+   (dependency-injected fakes per component; `tests/conftest.py`'s
+   `config`/`embedding_model`/`embedder` fixtures).
+2. **Implement** the code the tests describe.
+3. **Run the full suite**: `python -m pytest`. If anything fails, **fix the
+   code — never the test** — the one exception is a test that turns out to
+   be factually wrong about what the PRD/plan actually specified, and even
+   then say so explicitly rather than quietly loosening it.
+4. Once the suite is green, **dry-run the program** — actually converse with
+   it — via `python -m jarvis text` (or `--script FILE` for a saved
+   conversation; see `jarvis/audio/text_io.py`). This is a separate check
+   from the unit tests passing: it confirms the *real* wiring (NLU, registry,
+   persona, the skill factory) behaves the way the PRD describes end-to-end,
+   not just that the pieces work in isolation behind fakes.
+
 ## Setup
 
 Install dependencies:
@@ -35,7 +66,8 @@ python libs/brain.py     # Type sentences to see raw intent classification
 
 Always run from the repo root. All file paths are resolved relative to the current working directory: `intents.json`, `JARVIS_model.keras`, `words.pkl`, `classes.pkl`.
 
-There is no test suite.
+There is no test suite for this legacy code path. (`jarvis/` — the rebuild —
+has one: `python -m pytest`, see the top of this file and the PRD.)
 
 ### Model (re)training triggers
 

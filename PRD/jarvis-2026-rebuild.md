@@ -341,7 +341,7 @@ interpreter. Extend `check_setup.py` with these rows.
   (action `exit`); `goodbye`/`shutdown` pattern overlap the PRD flagged is
   split.
 
-### Milestone 2 — skill factory + seamless hot-swap
+### Milestone 2 — skill factory + seamless hot-swap — ✅ DONE (2026-09-05)
 - `factory/{build,validate,sandbox}.py` (`SubprocessSandbox` primary).
 - `teach` meta-skill: no-match → offer → clarify → build → sandbox → confirm →
   stage.
@@ -349,6 +349,35 @@ interpreter. Extend `check_setup.py` with these rows.
 - Merge gate (swap `nlu` + `registry` only at `state == idle`), announcement,
   3-version retention, quarantine-on-self-check-fail, fast/slow UX split.
 - `edit_skill` / `revert_skill` meta-skills; `timer.v<N>.py` retention.
+
+**Outcome (full detail in `PRD/milestone-2-skill-factory-outcome.md`;
+plan/design decisions in `PRD/milestone-2-skill-factory.md`):**
+- All of the above shipped and is exercised against real subprocesses (real
+  `pytest`, real `unshare` network isolation, a real `multiprocessing`
+  retrain) — 113 tests pass (was 67 before this milestone).
+- Added a `python -m jarvis text` mode (`jarvis/audio/text_io.py`) — the real
+  pipeline, text in/out instead of mic/wake-word/STT/speaker — specifically
+  so `teach`/`edit_skill`/`revert_skill` could be driven and verified
+  end-to-end without a mic. Now the required last step for any PRD work
+  (see `CLAUDE.md`).
+- Found and fixed via smoke-testing: the sandbox's default `RLIMIT_AS`
+  (256MB) was too tight for `pytest.main()` to even start in this venv; the
+  default is now 512MB.
+- Found and fixed via the `text`-mode dry-run (after the full test suite was
+  already green): a generated skill's manifest always defaulted to
+  `origin="builtin"` (nothing ever set it to `"learned"`), which silently
+  made `edit_skill`/`revert_skill` unable to find *any* real taught skill.
+  Fixed at the one authoritative point — `Registry.discover()` now sets
+  `origin` from the package a module was actually found in, regardless of
+  what the module's own code claims.
+- Deviation: skill-version history lives at `data/skills/_versions/<name>/
+  vN.py` (mirrors the existing `data/models/nlu/v<N>/` convention) rather
+  than the literal `timer.v1.py`, since a dotted filename isn't an
+  importable module name.
+- Not verified here: a live Claude call (blocked by the pre-existing
+  `ANTHROPIC_WORKSPACE_ID` gap noted below and in `check_setup.py`) and the
+  mic/wake-word/STT path itself (no audio device in this environment) —
+  everything downstream of transcription was verified via text mode instead.
 
 ### Milestone 3 — knowledge base (RAG)
 - `knowledge/{store,ingest}.py`; recall intent → retrieve → compose (Ollama) or
