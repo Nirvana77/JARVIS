@@ -18,15 +18,27 @@ log = logging.getLogger(__name__)
 
 
 class Microphone:
+    #: how many leading frames `record_utterance` (and `python -m jarvis mic`,
+    #: so the preview matches reality) sample to calibrate the noise floor —
+    #: wide enough (~1.2s @ 80ms frames) to have a real chance of catching a
+    #: natural inter-word pause even if the user starts talking immediately.
+    CALIBRATION_FRAMES = 15
+
     def __init__(
         self,
         sample_rate: int = 16000,
         frame_samples: int = 1280,
         device: int | str | None = None,
+        vad_threshold: float = 0.0,
     ) -> None:
         self.sample_rate = sample_rate
         self.frame_samples = frame_samples
         self.device = device
+        #: absolute RMS threshold `record_utterance` uses instead of
+        #: auto-calibrating; 0 = auto-calibrate. See `capture.vad_threshold`
+        #: in config.toml — set this from `python -m jarvis mic` if
+        #: auto-calibration is cutting off the ends of your sentences.
+        self.vad_threshold = vad_threshold
         self._q: "queue.Queue[np.ndarray]" = queue.Queue()
         self._stream = None
 
@@ -120,7 +132,8 @@ class Microphone:
         speech_started = False
         speech_frames = 0
         trailing_silence = 0
-        calibrate_frames = 8
+        calibrate_frames = self.CALIBRATION_FRAMES
+        pinned_threshold = self.vad_threshold or 0.0
 
         for i in range(max_frames):
             if stop_event is not None and stop_event.is_set():
@@ -137,7 +150,7 @@ class Microphone:
                 if i == calibrate_frames - 1:
                     floor = self.calibrate_floor(early_rms)
 
-            is_speech = rms > self.speech_threshold(floor)
+            is_speech = rms > (pinned_threshold or self.speech_threshold(floor))
             if is_speech:
                 speech_started = True
                 speech_frames += 1

@@ -64,6 +64,12 @@ class CaptureConfig:
     barge_in_threshold: float = 0.0
     #: press Enter in the terminal to cancel the current listen / transcription
     allow_interrupt: bool = True
+    #: absolute RMS threshold the *main* utterance recorder uses instead of
+    #: auto-calibrating; 0 = auto-calibrate. Set this from `python -m jarvis
+    #: mic` if commands are getting cut short / transcribed as nonsense near
+    #: the end — auto-calibration can mistake your own loud opening words for
+    #: the noise floor if you start talking immediately after the wake word.
+    vad_threshold: float = 0.0
 
     @property
     def frame_samples(self) -> int:
@@ -90,6 +96,12 @@ class NLUConfig:
     threshold: float = 0.35
     #: min cosine similarity to any training phrase; below this -> "unknown"
     similarity_floor: float = 0.30
+    #: teach/edit_skill/revert_skill launch a whole multi-turn dialog (and
+    #: revert_skill mutates a skill's live code) — a wrong guess there costs
+    #: far more than a wrong guess on an ordinary skill, so they need a
+    #: higher bar than the general "unknown" cutoff above before JARVIS
+    #: commits to one instead of just saying it didn't catch the command.
+    meta_action_threshold: float = 0.6
 
 
 @dataclass(frozen=True)
@@ -97,6 +109,21 @@ class ReasonerConfig:
     enabled: bool = True
     base_url: str = "http://localhost:11434"
     model: str = "qwen2.5:3b"
+
+
+@dataclass(frozen=True)
+class FactoryConfig:
+    """M2: the Claude-backed skill factory. The API key/workspace id are
+    secrets and stay in ``.env`` — see ``Config.anthropic_api_key`` /
+    ``Config.anthropic_workspace_id``."""
+
+    model: str = "claude-opus-5"
+    #: how long to wait inline for a retrain before detaching it to the
+    #: background drain loop (see PRD "fast/slow UX split")
+    fast_budget_s: float = 8.0
+    sandbox_timeout_s: float = 10.0
+    sandbox_mem_mb: int = 512
+    sandbox_cpu_s: int = 5
 
 
 @dataclass(frozen=True)
@@ -109,10 +136,15 @@ class Config:
     tts: TTSConfig = field(default_factory=TTSConfig)
     nlu: NLUConfig = field(default_factory=NLUConfig)
     reasoner: ReasonerConfig = field(default_factory=ReasonerConfig)
+    factory: FactoryConfig = field(default_factory=FactoryConfig)
     #: repo-root-relative directory for models / NLU artifacts / skill scratch
     data_dir: Path = field(default_factory=lambda: _REPO_ROOT / "data")
     #: Hugging Face token (from .env / env) for authenticated model downloads
     hf_token: str | None = None
+    #: Anthropic credentials (.env only; never in config.toml) — used solely
+    #: by the M2 skill factory, never on the hot path
+    anthropic_api_key: str | None = None
+    anthropic_workspace_id: str | None = None
 
     # -- derived paths -------------------------------------------------------
     @property
@@ -133,6 +165,16 @@ class Config:
 
     def skill_data_dir(self, name: str) -> Path:
         return self.data_dir / "skills" / name
+
+    def skill_versions_dir(self, name: str) -> Path:
+        """M2: last-3 rollback history for a learned skill (`vN.py` + meta.json)."""
+        return self.data_dir / "skills" / "_versions" / name
+
+    @property
+    def skill_quarantine_dir(self) -> Path:
+        """M2: self-check failures and skills displaced by `revert_skill` — kept
+        for inspection, never imported."""
+        return self.data_dir / "skills" / "_quarantine"
 
 
 def _find_config(path: str | os.PathLike[str] | None) -> Path | None:
@@ -172,12 +214,17 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     tts = _section(raw, "tts")
     nlu = _section(raw, "nlu")
     reasoner = _section(raw, "reasoner")
+    factory = _section(raw, "factory")
     paths = _section(raw, "paths")
 
     # Environment overrides (kept from the legacy code).
     language = os.getenv("language") or general.get("language", "en")
     active_persona = os.getenv("JARVIS_PERSONA") or persona.get("active", "jarvis")
     hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
+    # Same fallback anthropic_helper.py uses: ANTHROPIC_API_KEY is the SDK's own
+    # env var; `api_key` is what older .env files used.
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("api_key")
+    anthropic_workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID")
 
     data_dir_raw = paths.get("data_dir", "data")
     data_dir = Path(data_dir_raw)
@@ -201,6 +248,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             barge_in_min_speech_s=float(capture.get("barge_in_min_speech_s", 0.6)),
             barge_in_threshold=float(capture.get("barge_in_threshold", 0.0)),
             allow_interrupt=bool(capture.get("allow_interrupt", True)),
+            vad_threshold=float(capture.get("vad_threshold", 0.0)),
         ),
         stt=STTConfig(
             model=stt.get("model", "medium.en"),
@@ -215,12 +263,22 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             ),
             threshold=float(nlu.get("threshold", 0.35)),
             similarity_floor=float(nlu.get("similarity_floor", 0.30)),
+            meta_action_threshold=float(nlu.get("meta_action_threshold", 0.6)),
         ),
         reasoner=ReasonerConfig(
             enabled=bool(reasoner.get("enabled", True)),
             base_url=reasoner.get("base_url", "http://localhost:11434"),
             model=reasoner.get("model", "qwen2.5:3b"),
         ),
+        factory=FactoryConfig(
+            model=os.getenv("ANTHROPIC_MODEL") or factory.get("model", "claude-opus-5"),
+            fast_budget_s=float(factory.get("fast_budget_s", 8.0)),
+            sandbox_timeout_s=float(factory.get("sandbox_timeout_s", 10.0)),
+            sandbox_mem_mb=int(factory.get("sandbox_mem_mb", 512)),
+            sandbox_cpu_s=int(factory.get("sandbox_cpu_s", 5)),
+        ),
         data_dir=data_dir,
         hf_token=hf_token,
+        anthropic_api_key=anthropic_api_key,
+        anthropic_workspace_id=anthropic_workspace_id,
     )

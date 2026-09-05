@@ -7,7 +7,7 @@ import pytest
 from jarvis.core.context import Context
 from jarvis.skills.builtin import note, open_app, play, search
 from jarvis.skills.contract import PERMISSIONS, SkillManifest, SkillNotFound
-from jarvis.skills.registry import Registry
+from jarvis.skills.registry import BUILTIN_PACKAGE, Registry
 
 BUILTINS = {"search": search, "open_app": open_app, "play": play, "note": note}
 
@@ -19,7 +19,12 @@ def _ctx(config, tmp_path):
 # -- manifests / registry -------------------------------------------------
 
 def test_registry_discovers_the_four_builtins(config):
-    reg = Registry.discover(config)
+    # `packages=(BUILTIN_PACKAGE,)` — deliberately not the default, which also
+    # scans `jarvis.skills.learned`. That directory is real, per-install state
+    # (M2's `teach`/`edit_skill` write to it), so a test asserting the exact
+    # builtin roster must not be coupled to whatever a developer has actually
+    # taught their local JARVIS.
+    reg = Registry.discover(config, packages=(BUILTIN_PACKAGE,))
     assert reg.names() == ["note", "open_app", "play", "search"]
 
 
@@ -120,3 +125,78 @@ def test_note_appends_and_confirms(config, tmp_path):
 
 def test_note_without_text_prompts(config, tmp_path):
     assert "note" in note.run(_ctx(config, tmp_path), text="").lower()
+
+
+# -- M2: skills/learned/ discovery ---------------------------------------------
+
+def test_registry_discovers_a_learned_skill(config, tmp_path):
+    import sys
+
+    import jarvis.skills.learned as learned_pkg
+
+    (tmp_path / "coin_flip.py").write_text(
+        "from jarvis.skills.contract import SkillManifest\n"
+        "MANIFEST = SkillManifest(name='coin_flip', description='Flip a coin.', "
+        "examples=['flip a coin'], origin='learned')\n"
+        "def run(ctx, **params):\n    return 'Heads.'\n",
+        encoding="utf-8",
+    )
+    original_path = list(learned_pkg.__path__)
+    learned_pkg.__path__ = [str(tmp_path)]
+    try:
+        reg = Registry.discover(config)
+        assert "coin_flip" in reg.names()
+        assert reg.manifest("coin_flip").origin == "learned"
+    finally:
+        learned_pkg.__path__ = original_path
+        sys.modules.pop("jarvis.skills.learned.coin_flip", None)
+
+
+def test_a_learned_skills_origin_is_forced_even_if_the_code_omits_it(config, tmp_path):
+    """Regression: Claude has no reason to declare `origin` correctly (the
+    factory prompt never mentions it, and `validate()` can't enforce a value
+    that only matters after promotion) — a generated MANIFEST that omits
+    `origin` defaults to "builtin" per SkillManifest's own default, which
+    silently broke edit_skill/revert_skill's `origin="learned"` filter until
+    Registry.discover() started normalizing it by package location."""
+    import sys
+
+    import jarvis.skills.learned as learned_pkg
+
+    (tmp_path / "coin_flip.py").write_text(
+        "from jarvis.skills.contract import SkillManifest\n"
+        "MANIFEST = SkillManifest(name='coin_flip', description='Flip a coin.', "
+        "examples=['flip a coin'])\n"  # no `origin=` — defaults to "builtin"
+        "def run(ctx, **params):\n    return 'Heads.'\n",
+        encoding="utf-8",
+    )
+    original_path = list(learned_pkg.__path__)
+    learned_pkg.__path__ = [str(tmp_path)]
+    try:
+        reg = Registry.discover(config)
+        assert reg.manifest("coin_flip").origin == "learned"
+    finally:
+        learned_pkg.__path__ = original_path
+        sys.modules.pop("jarvis.skills.learned.coin_flip", None)
+
+
+def test_a_builtins_origin_is_forced_to_builtin_even_if_misdeclared(config, tmp_path):
+    import sys
+
+    import jarvis.skills.builtin as builtin_pkg
+
+    (tmp_path / "fake_builtin.py").write_text(
+        "from jarvis.skills.contract import SkillManifest\n"
+        "MANIFEST = SkillManifest(name='fake_builtin', description='x', "
+        "examples=['x'], origin='learned')\n"  # deliberately wrong for this package
+        "def run(ctx, **params):\n    return 'x'\n",
+        encoding="utf-8",
+    )
+    original_path = list(builtin_pkg.__path__)
+    builtin_pkg.__path__ = [str(tmp_path)]
+    try:
+        reg = Registry.discover(config, packages=(BUILTIN_PACKAGE,))
+        assert reg.manifest("fake_builtin").origin == "builtin"
+    finally:
+        builtin_pkg.__path__ = original_path
+        sys.modules.pop("jarvis.skills.builtin.fake_builtin", None)

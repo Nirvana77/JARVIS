@@ -6,6 +6,9 @@
     python -m jarvis --selftest      load NLU + persona, list skills, exit 0
     python -m jarvis models pull     download whisper + Piper voice, warm fastembed
     python -m jarvis nlu rebuild     rebuild the corpus and retrain the NLU head
+    python -m jarvis text            real pipeline, no mic/wake-word/STT/speaker —
+                                      type lines or pipe them in; --script FILE
+                                      reads a scripted conversation from a file
 """
 
 from __future__ import annotations
@@ -46,6 +49,12 @@ def _build_parser() -> argparse.ArgumentParser:
     nlu = sub.add_parser("nlu", help="NLU model management")
     nlu.add_argument("op", choices=["rebuild"])
     sub.add_parser("mic", help="live microphone level meter")
+    text = sub.add_parser(
+        "text", help="real pipeline, text in/out — no mic/wake-word/STT/speaker"
+    )
+    text.add_argument(
+        "--script", help="read a scripted conversation from this file instead of stdin"
+    )
     return parser
 
 
@@ -70,6 +79,8 @@ def main(argv: list[str] | None = None) -> int:
         return app.nlu_rebuild(config)
     if args.command == "mic":
         return app.mic_meter(config)
+    if args.command == "text":
+        return app.run_text_mode(config, script_path=args.script)
 
     try:
         orchestrator = app.build_orchestrator(config)
