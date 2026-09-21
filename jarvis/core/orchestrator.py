@@ -8,9 +8,10 @@ fakes.
 Turn:  wait for wake word -> open window -> record -> transcribe -> classify
        + slot-fill -> dispatch -> speak -> close window.
 
-The ``_staged`` slot and ``_merge_gate`` are the seam for M2's seamless
-hot-swap (retrain worker -> staged model -> swap only while idle); in M1 the
-gate is a no-op.
+The ``_staged`` slot and ``_merge_gate`` are M2's seamless hot-swap (retrain
+worker -> staged model -> swap only while idle). M2.5 moves everything after
+the teach/edit/revert dialog into background learning jobs; their questions
+and notices are spoken only at safe points (``_safe_point``) between turns.
 """
 
 from __future__ import annotations
@@ -22,20 +23,23 @@ import queue
 import random
 import shutil
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from jarvis.core.interrupt import Cancelled as _Cancelled
 from jarvis.core.interrupt import Interrupter
+from jarvis.factory import flows as _flows
 from jarvis.factory.flows import (
     EditSkillFlow,
     FlowOutcome,
+    LearningRequest,
     RevertSkillFlow,
     TeachFlow,
     ask_yes_no,
-    learned_source_path,
-    staging_dir,
+    ask_yes_no_or_none,
 )
+from jarvis.factory.jobs import LearningJob
 from jarvis.nlu import slots as _slots
 from jarvis.nlu.classifier import UNKNOWN, Classifier
 from jarvis.nlu.corpus import build_corpus
@@ -66,6 +70,18 @@ _SELF_CHECK_SEED_PROBES = (
     ("go to sleep", "goodbye"),
 )
 
+#: a background question answered unclearly this many times counts as "no"
+_MAX_UNCLEAR_ANSWERS = 3
+
+
+@dataclass
+class _Decision:
+    """A background job's yes/no question, waiting for a safe point."""
+
+    prompt: str
+    future: asyncio.Future
+    unclear: int = 0
+
 
 class Orchestrator:
     def __init__(
@@ -83,6 +99,7 @@ class Orchestrator:
         slot_extract=_slots.extract,
         claude_client=None,
         sandbox=None,
+        train_and_load=None,
     ) -> None:
         self.config = config
         self.wake = wake
@@ -99,14 +116,24 @@ class Orchestrator:
         # right now", never a hard crash (same pattern as the reasoner).
         self.claude_client = claude_client
         self.sandbox = sandbox
+        # M2.5: `async (examples) -> ("ok", (TrainResult, classifier)) |
+        # ("error", message)`. Default: a worker-process retrain + load;
+        # tests inject a fake (no process, no fastembed).
+        self._train_and_load = train_and_load or self._default_train_and_load
 
         self.state: State = "idle"
         self.standby = True
         self.running = False
         self._staged = None  # M2: a gate-passed replacement (nlu, registry)
         self._pending_announcement: str | None = None
-        self._pending_retrains: dict[str, tuple[RetrainWorker, FlowOutcome, str]] = {}
-        self._drain_task: asyncio.Task | None = None
+        # M2.5: background learning. `_jobs` is name -> task in queue order;
+        # jobs run one at a time (each waits for `_last_job`).
+        self._jobs: dict[str, asyncio.Task] = {}
+        self._last_job: asyncio.Task | None = None
+        self._notices: list[str] = []
+        self._decisions: list[_Decision] = []
+        self._in_session = False
+        self._idle_task: asyncio.Task | None = None
 
         # Optional mid-command interrupt (Enter, and off-by-default voice
         # barge-in). Self-contained utility — see jarvis/core/interrupt.py.
@@ -247,20 +274,22 @@ class Orchestrator:
             label, confidence = await self._classify_and_report(text)
             await self.handle(label, text, confidence)
 
-            # Safe point: no turn is in flight between here and the next
-            # capture. A staged retrain (from this turn's `teach`/`edit_skill`,
-            # or one that finished in the background) is promoted now, not
-            # just at the outer wake-session boundary — see design decision 1
-            # in PRD/milestone-2-skill-factory.md.
-            self.state = "idle"
-            await self._merge_gate()
-
             if not self.running or self.standby:
                 return  # shutdown / explicit goodbye already handled the exit
+
+            # Safe point: no turn is in flight between here and the next
+            # capture. A staged retrain is promoted now, not just at the outer
+            # wake-session boundary (PRD/milestone-2-skill-factory.md decision
+            # 1), and background learning jobs get their notices spoken and
+            # their questions asked (PRD/milestone-2.5-background-learning.md).
+            await self._safe_point()
 
             window = grace = self.config.capture.follow_up_s
 
         if self.running:
+            # before the drop to standby: a finished job's question shouldn't
+            # have to wait for the next wake word
+            await self._safe_point()
             self.standby = True
             await self._speak(self.persona.line("standby"))
 
@@ -340,16 +369,13 @@ class Orchestrator:
             if self.claude_client is None or not self.claude_client.available:
                 await self._speak("I can't learn or change skills right now, sir — no factory available.")
                 return
-            if action == "teach":
-                await self._run_teach()
-            else:
-                await self._run_flow(
-                    EditSkillFlow(
-                        ask=self._ask, say=self._speak, registry=self.registry,
-                        generate=self._generate, sandbox=self.sandbox,
-                    ),
-                    versioning="edit",
+            flow_cls = TeachFlow if action == "teach" else EditSkillFlow
+            await self._run_flow(
+                flow_cls(
+                    ask=self._ask, say=self._speak, registry=self._latest_registry(),
+                    busy_names=frozenset(self._jobs),
                 )
+            )
             return
 
         if action == "revert_skill":
@@ -358,9 +384,9 @@ class Orchestrator:
             self.state = "acting"
             await self._run_flow(
                 RevertSkillFlow(
-                    ask=self._ask, say=self._speak, registry=self.registry, config=self.config,
-                ),
-                versioning="revert",
+                    ask=self._ask, say=self._speak, registry=self._latest_registry(),
+                    config=self.config, busy_names=frozenset(self._jobs),
+                )
             )
             return
 
@@ -388,58 +414,148 @@ class Orchestrator:
         `anthropic` — passed as the flows' `generate` callable."""
         return self.claude_client.generate_skill(spec, existing_source)
 
-    # -- M2: skill factory --------------------------------------------------
+    # -- M2/M2.5: skill factory, run as background learning jobs -------------
 
-    async def _run_teach(self) -> None:
-        flow = TeachFlow(
-            ask=self._ask, say=self._speak, registry=self.registry,
-            generate=self._generate, sandbox=self.sandbox,
-        )
-        await self._run_flow(flow, versioning="new")
-
-    async def _run_flow(self, flow, *, versioning: str) -> None:
-        outcome: FlowOutcome = await flow.run()
-        if not outcome.accepted:
-            log.info("%s flow not accepted: %s", versioning, outcome.reason)
+    async def _run_flow(self, flow) -> None:
+        """Run a teach/edit/revert *dialog* in the foreground, then hand what
+        it gathered to a background job and return — the session carries on
+        while the skill is built (PRD/milestone-2.5-background-learning.md)."""
+        request: LearningRequest | None = await flow.run()
+        if request is None:
+            log.info("%s dialog ended without a request", type(flow).__name__)
             return
-        await self._promote_and_retrain(outcome, versioning=versioning)
+        await self._start_learning(request)
 
-    async def _promote_and_retrain(self, outcome: FlowOutcome, *, versioning: str) -> None:
-        """The retrain/self-check/confirm/promote pipeline shared by
-        teach/edit_skill/revert_skill — see PRD/milestone-2-skill-factory.md,
-        design decisions 2 and 3."""
+    async def _start_learning(self, request: LearningRequest) -> None:
+        ahead = list(self._jobs)[-1] if self._jobs else None
+        task = asyncio.ensure_future(self._learn(request, self._last_job))
+        # registered before any await, so a dialog started right after this
+        # already sees the name as busy
+        self._jobs[request.name] = task
+        self._last_job = task
+        if ahead is None:
+            await self._speak("I'll work on that in the background, sir.")
+        else:
+            await self._speak(f"I'll get to that after '{ahead}', sir.")
+
+    def learning_names(self) -> set[str]:
+        """Skills with a queued or running background job."""
+        return set(self._jobs)
+
+    def pending_questions(self) -> list[str]:
+        """Background questions waiting for the next safe point."""
+        return [d.prompt for d in self._decisions if not d.future.done()]
+
+    async def _learn(self, request: LearningRequest, previous: asyncio.Task | None) -> None:
+        """One background job: wait for the one ahead of it, then build →
+        validate → sandbox (`LearningJob`) → retrain → self-check → keep
+        decision → stage. Never raises into the loop."""
+        name = request.name
+        outcome: FlowOutcome | None = None
+        try:
+            if previous is not None:
+                # `wait`, not `await previous`: cancelling this job must not
+                # cancel the one ahead of it
+                await asyncio.wait({previous})
+            job = LearningJob(
+                request,
+                notify=self._notify,
+                decide=self._decide,
+                registry=self._latest_registry(),
+                generate=self._generate,
+                sandbox=self.sandbox,
+            )
+            outcome = await job.run()
+            if outcome.accepted:
+                await self._retrain_and_stage(outcome, request.versioning)
+            else:
+                log.info("%s job not accepted: %s", name, outcome.reason)
+        except asyncio.CancelledError:
+            self._unstage(outcome.name if outcome and outcome.name else name)
+            raise
+        except Exception:  # noqa: BLE001 — a job must never take the loop down
+            log.exception("learning job for %s crashed", name)
+            self._unstage(outcome.name if outcome and outcome.name else name)
+            self._queue_notice(f"Something went wrong while I was learning '{name}', sir.")
+        finally:
+            if self._jobs.get(name) is asyncio.current_task():
+                del self._jobs[name]
+
+    async def _retrain_and_stage(self, outcome: FlowOutcome, versioning: str) -> None:
+        """Retrain against the *latest* registry (staged-but-unmerged skills
+        included, so back-to-back jobs don't erase each other), self-check,
+        ask to keep it (not for revert), then promote + stage for the merge
+        gate — see PRD/milestone-2-skill-factory.md decisions 2–3 and
+        PRD/milestone-2.5-background-learning.md decisions 5–7."""
         name = outcome.name
-        other_manifests = [m for m in self.registry.manifests() if m.name != name]
+        registry = self._latest_registry()
+        other_manifests = [m for m in registry.manifests() if m.name != name]
         examples = build_corpus(manifests=other_manifests + [outcome.manifest])
 
+        kind, payload = await self._train_and_load(examples)
+        if kind != "ok":
+            log.error("retrain failed for %s: %s", name, payload)
+            self._unstage(name)
+            self._queue_notice(f"'{name}' didn't train cleanly, sir. I've set it aside.")
+            return
+
+        train_result, classifier = payload
+        try:
+            if not self._self_check(classifier, outcome.manifest):
+                self._discard_unused_version(train_result)
+                self._unstage(name)
+                self._queue_notice(f"I set '{name}' aside, sir; it didn't check out in practice.")
+                return
+
+            if versioning != "revert":
+                description = outcome.manifest.description.rstrip(".")
+                description = description[:1].lower() + description[1:]
+                keep = await self._decide(
+                    f"I've finished '{name}', sir. I can now {description}. Shall I keep it?"
+                )
+                if not keep:
+                    self._discard_unused_version(train_result)
+                    self._unstage(name)
+                    self._queue_notice(f"I've set '{name}' aside, sir.")
+                    return
+        except BaseException:
+            # cancelled (shutdown) while waiting for the keep answer
+            self._discard_unused_version(train_result)
+            self._unstage(name)
+            raise
+
+        new_registry = self._promote_files(name, outcome.module_source, versioning, outcome)
+        if self._staged is not None:
+            # an earlier job's staged model is superseded — this one was
+            # trained on a corpus that already includes that skill
+            close = getattr(self._staged[0], "close", None)
+            if callable(close):
+                close()
+        self._staged = (classifier, new_registry)
+        verb = {"new": "learned", "edit": "updated", "revert": "reverted"}[versioning]
+        self._queue_announcement(f"I've {verb} '{name}', sir. My capabilities are updated.")
+
+    async def _default_train_and_load(self, examples):
         worker = RetrainWorker()
         await asyncio.to_thread(
             worker.start, examples, self.config.nlu.embedding_model, self.config.nlu_model_dir
         )
-
-        result = await asyncio.to_thread(worker.poll, self.config.factory.fast_budget_s)
-        if result is None:
-            await self._speak("I'll practice that and let you know, sir.")
-            self._pending_retrains[name] = (worker, outcome, versioning)
-            return
-
-        await self._finish_retrain(name, result, outcome, versioning, fast=True)
-
-    async def _finish_retrain(
-        self, name: str, result, outcome: FlowOutcome, versioning: str, *, fast: bool
-    ) -> None:
+        try:
+            while True:
+                result = await asyncio.to_thread(worker.poll, 0.5)
+                if result is not None:
+                    break
+                if worker.exited():
+                    result = await asyncio.to_thread(worker.poll, 0.5)
+                    if result is None:
+                        result = ("error", "retrain worker exited without a result")
+                    break
+        except asyncio.CancelledError:
+            worker.terminate()
+            raise
         kind, payload = result
         if kind != "ok":
-            log.error("retrain failed for %s: %s", name, payload)
-            (staging_dir() / f"{name}.py").unlink(missing_ok=True)
-            msg = f"'{name}' didn't train cleanly, sir. I've set it aside."
-            if fast:
-                await self._speak(msg)
-            else:
-                self._queue_announcement(msg)
-            return
-
-        train_result = payload
+            return result
         classifier = await asyncio.to_thread(
             Classifier.load,
             self.config.nlu_model_dir,
@@ -447,36 +563,104 @@ class Orchestrator:
             self.config.nlu.threshold,
             self.config.nlu.similarity_floor,
         )
-        if not self._self_check(classifier, outcome.manifest):
-            self._discard_unused_version(train_result)
-            (staging_dir() / f"{name}.py").unlink(missing_ok=True)
-            msg = f"I set '{name}' aside, sir; it didn't check out in practice."
-            if fast:
-                await self._speak(msg)
-            else:
-                self._queue_announcement(msg)
-            return
+        return "ok", (payload, classifier)
 
-        if fast and versioning != "revert":
-            description = outcome.manifest.description.rstrip(".")
-            confirmed = await self._ask_yes_no(
-                f"I can now {description}. Shall I keep it, sir?"
-            )
-            if not confirmed:
-                self._discard_unused_version(train_result)
-                (staging_dir() / f"{name}.py").unlink(missing_ok=True)
-                await self._speak("Very well, I'll forget it.")
-                return
+    def _latest_registry(self):
+        """The registry the *next* turn will use: a staged-but-unmerged one if
+        there is one, else the live one."""
+        return self._staged[1] if self._staged is not None else self.registry
 
-        new_registry = self._promote_files(name, outcome.module_source, versioning, outcome)
-        self._staged = (classifier, new_registry)
-        verb = {"new": "learned", "edit": "updated", "revert": "reverted"}[versioning]
-        self._queue_announcement(f"I've {verb} '{name}', sir. My capabilities are updated.")
-        if fast:
-            await self._speak("One moment, sir... done.")
+    def _unstage(self, name: str) -> None:
+        (_flows.staging_dir() / f"{name}.py").unlink(missing_ok=True)
+
+    # -- M2.5: background notices + questions, spoken at safe points --------
 
     def _queue_announcement(self, text: str) -> None:
+        if self._pending_announcement:
+            text = f"{self._pending_announcement} {text}"
         self._pending_announcement = text
+
+    def _queue_notice(self, text: str) -> None:
+        self._notices.append(text)
+
+    async def _notify(self, text: str) -> None:
+        """`LearningJob`'s `notify` — never speaks directly."""
+        self._queue_notice(text)
+
+    async def _decide(self, prompt: str) -> bool:
+        """`LearningJob`'s `decide` — queue a yes/no question and wait until a
+        safe point has asked it and got a clear answer."""
+        decision = _Decision(prompt, asyncio.get_running_loop().create_future())
+        self._decisions.append(decision)
+        try:
+            return await decision.future
+        finally:
+            if decision in self._decisions:
+                self._decisions.remove(decision)
+
+    async def _speak_notices(self) -> None:
+        while self._notices:
+            await self._speak(self._notices.pop(0))
+
+    async def _safe_point(self) -> None:
+        """No turn in flight and the user is present (between turns, or just
+        before the drop to standby): merge a staged model, speak queued
+        notices, and ask pending background questions."""
+        self.state = "idle"
+        await self._merge_gate()
+        await self._speak_notices()
+        for decision in list(self._decisions):
+            if decision.future.done():
+                continue
+            try:
+                answer = await ask_yes_no_or_none(self._ask, decision.prompt)
+            except _Cancelled:
+                answer = None
+            self.state = "idle"
+            if answer is None:
+                decision.unclear += 1
+                if decision.unclear < _MAX_UNCLEAR_ANSWERS:
+                    continue  # still pending; asked again at the next safe point
+                await self._speak("I'll take that as a no, sir.")
+                answer = False
+            if not decision.future.done():
+                decision.future.set_result(answer)
+            # let the job run its synchronous tail (promote + stage, or
+            # discard + notice) so "try me" holds on the very next turn
+            for _ in range(3):
+                await asyncio.sleep(0)
+        await self._merge_gate()
+        await self._speak_notices()
+
+    async def _idle_tick(self) -> None:
+        """Outside a wake session (standby): merge and speak notices, but never
+        ask a question unprompted — those wait for the next session."""
+        if self._in_session:
+            return
+        await self._merge_gate()
+        await self._speak_notices()
+
+    async def _idle_loop(self) -> None:
+        while self.running:
+            await asyncio.sleep(0.5)
+            try:
+                await self._idle_tick()
+            except Exception:  # noqa: BLE001
+                log.exception("idle tick failed")
+
+    async def cancel_learning(self) -> None:
+        """Cancel every queued/running job (shutdown). Each job cleans up its
+        own staging file and unstaged model version on the way out."""
+        tasks = list(self._jobs.values())
+        for task in tasks:
+            task.cancel()
+        for decision in self._decisions:
+            decision.future.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._jobs.clear()
+        self._decisions.clear()
+        self._last_job = None
 
     def _self_check(self, classifier: Classifier, manifest) -> bool:
         """A freshly-trained model must still classify the seed intents *and*
@@ -508,11 +692,12 @@ class Orchestrator:
         quarantine bookkeeping per PRD directory-layout decision 4, and
         return a freshly rebuilt registry. The actual `self.registry` swap
         happens later, through `self._staged` + the merge gate."""
-        learned_path = learned_source_path(name)
+        registry = self._latest_registry()
+        learned_path = _flows.learned_source_path(name)
         learned_path.parent.mkdir(parents=True, exist_ok=True)
 
         if versioning == "edit":
-            old_manifest = self.registry.manifest(name)
+            old_manifest = registry.manifest(name)
             vdir = self.config.skill_versions_dir(name)
             vdir.mkdir(parents=True, exist_ok=True)
             if learned_path.is_file():
@@ -528,8 +713,8 @@ class Orchestrator:
             (vdir / f"v{outcome.reverted_from_version}.py").unlink(missing_ok=True)
 
         learned_path.write_text(module_source, encoding="utf-8")
-        (staging_dir() / f"{name}.py").unlink(missing_ok=True)
-        return self.registry.rebuilt()
+        self._unstage(name)
+        return registry.rebuilt()
 
     @staticmethod
     def _prune_versions(vdir: Path, keep: int = 3) -> None:
@@ -539,20 +724,6 @@ class Orchestrator:
         )
         for stale in versions[keep:]:
             (vdir / f"v{stale}.py").unlink(missing_ok=True)
-
-    async def _drain_retrain_results(self) -> None:
-        """Background task: finishes retrains that missed the fast budget.
-        Runs alongside the main loop for the lifetime of `run()`."""
-        while self.running:
-            for name, (worker, outcome, versioning) in list(self._pending_retrains.items()):
-                result = await asyncio.to_thread(worker.poll, 0.2)
-                if result is None:
-                    continue
-                del self._pending_retrains[name]
-                await self._finish_retrain(name, result, outcome, versioning, fast=False)
-                if self.state == "idle":
-                    await self._merge_gate()
-            await asyncio.sleep(0.5)
 
     # -- M2 seam: seamless hot-swap -----------------------------------------
 
@@ -577,7 +748,7 @@ class Orchestrator:
         self.running = True
         self.mic.start()
         self._interrupter.install()
-        self._drain_task = asyncio.ensure_future(self._drain_retrain_results())
+        self._idle_task = asyncio.ensure_future(self._idle_loop())
         try:
             while self.running:
                 self.state = "idle"
@@ -585,19 +756,22 @@ class Orchestrator:
                 if not await self._await_wake():
                     break
                 self.standby = False
+                self._in_session = True
                 try:
                     await self._session()
                 finally:
+                    self._in_session = False
                     self.state = "idle"
                     self.standby = True
         finally:
             self.running = False
-            if self._drain_task is not None:
-                self._drain_task.cancel()
+            if self._idle_task is not None:
+                self._idle_task.cancel()
                 try:
-                    await self._drain_task
+                    await self._idle_task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+            await self.cancel_learning()
             await self._interrupter.shutdown()
             self.mic.stop()
             close = getattr(self.tts, "close", None)

@@ -65,3 +65,13 @@ class RetrainWorker:
         if self._proc is not None:
             self._proc.join(timeout=1.0)
         return result
+
+    def exited(self) -> bool:
+        """True once the worker process has ended (result or not)."""
+        return self._proc is not None and not self._proc.is_alive()
+
+    def terminate(self) -> None:
+        """M2.5: a cancelled background job (shutdown) stops its retrain."""
+        if self._proc is not None and self._proc.is_alive():
+            self._proc.terminate()
+            self._proc.join(timeout=1.0)

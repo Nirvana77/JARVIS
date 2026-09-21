@@ -77,8 +77,6 @@ model = "qwen2.5:3b"
 
 [factory]
 model = "claude-opus-5"    # overridden by the ANTHROPIC_MODEL env var
-fast_budget_s = 8.0         # how long to wait inline for a retrain before
-                            # detaching it to the background drain loop
 sandbox_timeout_s = 10.0    # wall-clock limit for a sandboxed test/dry-run
 sandbox_mem_mb = 512        # RLIMIT_AS for a sandboxed subprocess — pytest's
                             # plugin-rewrite discovery alone needs >256MB in a venv

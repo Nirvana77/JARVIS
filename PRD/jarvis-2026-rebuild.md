@@ -22,7 +22,17 @@ The intended product is bigger than the POC:
 - An **always-on local daemon**. A spoken wake word (**"Jarvis …"**) opens a
   listening window; everything after the wake word is treated as a command.
 - **All routine work is local** — recognition, dispatch, phrasing, speech.
-  No network on the hot path.
+  No network on the hot path *in the default all-in-one topology*; the
+  optional remote-edge topology (below) deliberately puts a **self-hosted**
+  link on the hot path — still no third-party cloud.
+- JARVIS can **optionally be split in two** (Milestone 3). The **brain** runs
+  on a server with a good GPU: NLU, skills and persona, plus warm local
+  `jarvis-whisper` (STT) and `jarvis-voder` (TTS) services. A thin **edge**
+  device (Raspberry Pi-class) in the room owns the mic and speaker. It cuts
+  speech into segments and sends them to the brain over TLS, possibly across
+  the internet. There is no wake word on the edge: the brain decides from the
+  transcript whether JARVIS was addressed. The voice pipeline is ported from
+  [SBRA-Dynamics/Mike](https://github.com/SBRA-Dynamics/Mike).
 - JARVIS **learns new skills over time**: when it hits something it can't do it
   offers to learn it; **Claude (API) writes a new Python skill module**, JARVIS
   validates and sandboxes it, keeps it on the user's confirmation, retrains its
@@ -64,9 +74,28 @@ to resolve, tracked in `check_setup.py`).
 | TTS | Piper, British male voice (ONNX, CPU) | same | — |
 | Knowledge | `fastembed` + `sqlite-vec` (brute-force cosine fallback) | Ollama composes answer from chunks | read best snippet verbatim with a canned frame + source |
 | Skill factory | Claude API — fires only on `teach` / `edit_skill` | same | needs network only at that moment |
+| Transport (M3) | in-process (all-in-one) | remote edge ↔ brain over `wss://` | edge unreachable → local "offline" earcon, reconnect with backoff |
 
 Startup probes for a running Ollama + model and for a sandbox backend; degrades
 silently and logs what tier it got.
+
+### Deployment topologies
+
+| Layer | All-in-one (default, `python -m jarvis`) | Remote: edge (`python -m jarvis edge`) | Remote: brain (`python -m jarvis serve`) |
+|---|---|---|---|
+| Mic capture | local | ✓ | — |
+| Speech gating | openwakeword "hey jarvis" + VAD | segmenter (energy VAD, adaptive floor), PTT button | addressing modes on the transcript (ByName / Always / PushToTalk / Ignore) + hold window |
+| STT (faster-whisper) | in-process | — | ✓ `jarvis-whisper` loopback service (GPU) |
+| NLU, skills, persona, reasoner, factory, knowledge | local | — | ✓ |
+| TTS (Piper) | in-process | — | ✓ `jarvis-voder` loopback service, sentence by sentence |
+| Playback | local | ✓ (`speech` parts) | — |
+
+The remote topology is opt-in. The orchestrator is the same in every mode. Only
+the injected `wake`/`mic`/`stt`/`tts` objects differ: `RemoteLink` on the brain
+feeds it gated, merged transcripts, the same way `TextIO` does in text mode.
+The wire protocol, segmenter, addressing, services, security (TLS required,
+per-device tokens) and resilience rules are in
+`PRD/milestone-3-remote-edge.md`.
 
 ### Package layout (replaces the flat scripts)
 
@@ -79,11 +108,15 @@ jarvis/
     context.py             # Context handed to every skill (say/schedule/data_dir/llm/http)
     persona.py             # loads the active persona; canned lines verbatim + optional Ollama style-rewrite
     reasoner.py            # optional local LLM client (Ollama HTTP), capability-probed
+    speech.py              # speakable text + sentence split for the voder (M3)
   audio/
     wake.py                # openWakeWord
     capture.py             # sounddevice + VAD
     stt.py                 # faster-whisper
     tts.py                 # Piper
+    player.py              # PCM playback with stop() (M3; shared by Speaker and the edge)
+    segment.py             # pure frames→segments VAD, ported from Mike (M3)
+    whisper_client.py      # client for the jarvis-whisper service + NullTranscriber (M3)
   nlu/
     classifier.py          # fastembed embed + sklearn head + threshold/unknown
     slots.py               # entity/slot extraction (durations, times, app names, query tail)
@@ -92,15 +125,24 @@ jarvis/
   skills/
     contract.py            # SkillManifest + Skill protocol
     registry.py            # discovery, hot-reload, quarantine
-    builtin/               # search.py, open_app.py, play.py, note.py, remember.py (M3), + meta: teach.py, edit_skill.py, revert_skill.py, sleep.py
+    builtin/               # search.py, open_app.py, play.py, note.py, remember.py (M5), + meta: teach.py, edit_skill.py, revert_skill.py, sleep.py
     learned/               # Claude-generated skills land here after confirmation
   factory/
     build.py               # host-only: Claude API → module + manifest + test
     validate.py            # AST import/call allowlist, manifest completeness, signature check
     sandbox.py             # SubprocessSandbox (primary); DockerSandbox/PodmanSandbox (optional)
+  remote/                  # M3 — optional brain/edge split (pipeline ported from Mike)
+    protocol.py            # versioned JSON schema (base64 PCM segments), validate_c2s, close codes
+    intake.py              # decode_segment bounds, transcribe, `heard`
+    addressing.py          # ByName/Always/PushToTalk/Ignore, always-live mode commands, hold window
+    server.py              # `serve`: wss:// server, auth, RemoteLink (wake/mic/stt/tts roles)
+    edge.py                # `edge`: mic → segmenter → audio; play speech; PTT; light imports only
   knowledge/
     store.py               # fastembed + sqlite-vec vector store
     ingest.py              # document + fact ingestion
+services/                  # M3 — warm loopback services on the brain host, own venvs + systemd units
+  whisper/serve.py         # POST /transcribe (PCM → text), GET /healthz
+  voder/serve.py           # POST /speak (text → PCM), GET /voices, GET /healthz
 data/
   models/nlu/v<N>/{head.joblib, labels.json, meta.json}
   nlu/corpus.sqlite
@@ -180,9 +222,11 @@ self._staged: NLU | None            # a fully-loaded, gate-passed replacement
 - **Rollback**: keep the last **3** model versions and skill-file versions
   (`timer.v1.py`, `timer.v2.py`, …). `revert_skill` un-promotes + swaps back +
   quarantines the newer one.
-- **UX split** (orchestrator estimates from example count / container job):
-  fast → *"One moment, sir… done. Try me."*; slow → *"I'll practice that and let
-  you know."* then serve on the old model and announce on merge.
+- **Background learning** (M2.5; replaces M2's fast/slow UX split): after the
+  teach/edit/revert dialog, the whole build → sandbox → retrain pipeline runs
+  as a background job. JARVIS keeps serving commands on the old model. It asks
+  the job's questions (permission grant, keep-confirm) and makes its
+  announcements only at safe points between turns, then merges.
 
 ### Skill factory
 
@@ -379,12 +423,112 @@ plan/design decisions in `PRD/milestone-2-skill-factory.md`):**
   mic/wake-word/STT path itself (no audio device in this environment) —
   everything downstream of transcription was verified via text mode instead.
 
-### Milestone 3 — knowledge base (RAG)
-- `knowledge/{store,ingest}.py`; recall intent → retrieve → compose (Ollama) or
-  verbatim-snippet fallback; no Claude.
-- Ingestion: startup + interval scan of `knowledge.docs_dir`
-  (`.txt`/`.md`/`.pdf`), plus a `remember` builtin for spoken facts; `note.py`
-  mirrors dictated notes into the docs dir.
+### Milestone 2.5 — background skill learning (addition to M2) — ✅ DONE (2026-09-21)
+
+Full plan: `PRD/milestone-2.5-background-learning.md`; outcome:
+`PRD/milestone-2.5-background-learning-outcome.md`.
+
+**Motivation**: M2 keeps the *model swap* off the hot path, but everything
+after the teach/edit/revert dialog still runs inside the turn: the Claude
+build (10–60 s), sandbox, retrain and confirm. JARVIS can't take another
+command until learning is done.
+
+- Each flow splits into a **dialog** (foreground, the questions only the user
+  can answer) and a **job** (background: build → validate → permission grant →
+  sandbox → retrain → self-check → keep-confirm → stage).
+- After the dialog, JARVIS says it will work on it and the session carries on.
+  The user can ask for other things while the skill is learned.
+- The job never speaks directly. Its announcements and yes/no questions
+  (permission grant, "Shall I keep it?") are queued. They are spoken at
+  **safe points**: after a turn, or before the drop to standby. They are
+  never spoken mid-turn, and questions are never asked in standby. An unclear
+  answer leaves the question pending instead of counting as "no".
+- Generated code still never runs before a needed permission is granted.
+- Jobs are serialized, and each job retrains on the latest registry, so
+  back-to-back teaches can't erase each other.
+- Replaces M2's fast/slow UX split. The slow path's auto-confirm is dropped
+  and every new or edited skill gets an explicit keep-confirm.
+
+**Verification**: see the plan doc. In short: control returns after the
+dialog while a fake `generate` is still blocked, and a second command
+dispatches. Questions are asked only at safe points. Permissions are granted
+before the sandbox. Serialized jobs keep both skills. Shutdown cancels
+cleanly. Text-mode dry run with a delayed fake Claude.
+
+### Milestone 3 — remote edge (brain server + audio satellite)
+
+Full plan and design decisions: `PRD/milestone-3-remote-edge.md`. The voice
+pipeline is **ported from [SBRA-Dynamics/Mike](https://github.com/SBRA-Dynamics/Mike)**
+(its PRD 5a voice, PRD 6 hold window and PRD 8.3 voder), not reinvented.
+
+**Motivation**: the best STT and the local LLM want a GPU, but the place
+JARVIS needs to *hear and speak* is a room. A room is where a small, quiet,
+cheap device belongs, not a GPU server. Splitting the two lets the brain live
+on the strong machine while a Raspberry Pi-class edge sits where the user is,
+even when the two are on different networks.
+
+- **Two runnables and two services.** `python -m jarvis serve` is the brain.
+  `python -m jarvis edge --server wss://…` is the satellite. `jarvis-whisper`
+  (faster-whisper, GPU) and `jarvis-voder` (Piper) are warm services on
+  127.0.0.1 next to the brain. They survive brain restarts, a hang means
+  killing one process, and the brain degrades honestly when one is down
+  ("Cannot hear you: …"). All-in-one `python -m jarvis` (with its local wake
+  word) and `text` mode stay the default and are unchanged.
+- **Thin edge, no wake word, no models.** A pure segmenter (Mike's
+  `segment.ts`, ported) turns mic frames into speech segments. It uses energy
+  VAD with a minimum-statistics noise floor, 300 ms pre-roll, 700 ms hangover,
+  a 15 s cap cut at a pause, and per-segment diagnostics. The edge sends one
+  `audio` message per segment, plus `speaking{on}` the moment speech starts or
+  stops. The edge installs only numpy, sounddevice and websockets.
+- **The addressing modes are the wake word.** The brain transcribes every
+  segment, sends `heard` back *before* routing, and gates on the transcript:
+  ByName ("Jarvis, …", the default), Always, PushToTalk (a button on the Pi,
+  with the mic truly off otherwise) or Ignore. The mode commands ("pause
+  input", "continue input", "change input to …", "turn off the mic") work in
+  every mode. A conversation window after replies and `_ask` prompts skips the
+  name. An empty transcription produces nothing.
+- **Hold window.** Fragments within 2 s are merged into one turn. The countdown
+  pauses while the edge reports `speaking`, and a 20 s cap releases what is
+  held. A sentence with a pause in it is therefore one command, not two.
+- **Speech out, sentence by sentence.** Text is made speakable, then the first
+  sentence is synthesized and sent at once (< 500 ms budget). It goes as
+  `speech` parts only to a connection that asked for them. A button press
+  stops playback at once and drops the unsent sentences.
+- **No orchestrator rewrite.** The brain-side `RemoteLink` plays the
+  `wake`/`mic`/`stt`/`tts` roles over gated transcripts, as `TextIO` does in
+  text mode. `Interrupter` gains a public `trigger_cancel()`.
+- **Internet-safe.**
+  - Transport: a versioned JSON protocol over `wss://`, with TLS required (own
+    certificate or a reverse proxy), and the edge verifies the server cert.
+  - Auth: per-device tokens in `.env`, compared in constant time; a hello
+    timeout; close codes.
+  - Input handling: base64 and size bounds checked before decoding, and
+    validation that never raises.
+  - Logging: no audio or tokens in logs.
+  - Privacy, stated plainly in the README: with no wake word, all speech the
+    Pi hears is transcribed on the self-hosted server. PushToTalk and "turn
+    off the mic" are the ways to stop it.
+- **Resilient**: ping keepalive, edge reconnect with backoff and an offline
+  earcon, and a clean session end on disconnect. Mike's durable session replay
+  is deliberately not adopted. There is one edge per brain for now, and
+  `device_id` is in the protocol for multi-room later.
+
+**Verification**: tests with no real network, mic or GPU:
+- segmenter determinism and floor behaviour on synthetic and recorded PCM;
+- protocol and intake bounds;
+- every addressing mode and mode command;
+- the hold window on a fake clock;
+- loopback WebSocket round trips with fake whisper and fake voder (addressed
+  command → `heard` → skill → `speech`; un-addressed speech → `heard` only;
+  `_ask` without the name; interrupt; whisper down; disconnect);
+- auth rejections;
+- the whisper service on `--port 0`;
+- an edge-import test.
+
+Text-mode regression is unchanged. Manual checks follow Mike-style acceptance
+criteria on a real GPU brain and Pi edge over the internet, with per-stage
+latency logged against the budget: segment flush < 200 ms, transcription
+< 800 ms, first speech < 500 ms.
 
 ### Milestone 4 — misheard-command reasoning
 
@@ -441,9 +585,50 @@ skill name is likely to be misheard, verify the "did you mean" confirm fires
 and a "yes" correctly dispatches; without Ollama running, verify the exact
 same misheard command falls back to the current plain response.
 
-### Milestone 5 — polish
-- Barge-in during TTS, systemd user service, packaging (`pyproject.toml`),
-  tests, README/CLAUDE.md rewrite.
+### Milestone 5 — knowledge base (RAG)
+- `knowledge/{store,ingest}.py`; recall intent → retrieve → compose (Ollama) or
+  verbatim-snippet fallback; no Claude.
+- Ingestion: startup + interval scan of `knowledge.docs_dir`
+  (`.txt`/`.md`/`.pdf`), plus a `remember` builtin for spoken facts; `note.py`
+  mirrors dictated notes into the docs dir.
+
+### Milestone 6 — polish
+- Voice barge-in during TTS: AEC on the all-in-one path and on the edge, so
+  `speaking:on` can stop a reply without the button.
+- Optionally, switch the all-in-one mic path from `Microphone.record_utterance`
+  to the M3 segmenter.
+- systemd user services for the all-in-one mode, `serve` and `edge`. The
+  `jarvis-whisper` / `jarvis-voder` units already ship in M3.
+- Packaging (`pyproject.toml`, including a light edge-only install), tests,
+  README/CLAUDE.md rewrite.
+- **Skill factory repair loop.** Today `factory/jobs.py` runs one pass of
+  build → validate → sandbox tests → dry-run, and the first failure ends the
+  learning job. Instead, run it as a loop: when a stage fails, send the failure
+  back to Claude and ask it to fix the code, then re-run the whole gate on the
+  new code.
+  - **Continue the conversation.** A repair is a follow-up turn in the same
+    `messages` list, not a fresh prompt. It carries Claude's previous reply,
+    then a user turn that names the failed stage and includes its output. The
+    output is the `ValidationError` message, or the sandbox's
+    stdout/stderr/exit code for a failed test run or dry-run. It is truncated
+    to a fixed size and sent as data. The turn asks for both code blocks again,
+    in the same format.
+  - **Bounded, not `while True`.** At most `factory.max_repair_attempts`
+    repairs (default 3, in `config.toml`), so a stuck skill can't burn API
+    spend forever. When the cap is reached, the job fails as it does today and
+    the last failure is logged.
+  - **What loops and what doesn't.** Code failures loop: a malformed reply
+    (`BuildError` from a missing code block), a validation rejection, failing
+    generated tests, and a failing dry-run. Everything else ends the job at
+    once: no API key, a network or API error, the user declining a
+    permission, or cancellation/shutdown. The permission set is fixed for the
+    whole job. A repair can use a different approach to avoid a banned
+    import, but it can never gain a permission the user didn't grant.
+  - **Every attempt passes the full gate.** A repaired module is validated
+    and sandboxed from scratch like the first one. Nothing from a failed
+    attempt is staged. It still all runs in the background learning job
+    (M2.5), and the only thing the user hears is the final "learned" or
+    "couldn't learn" announcement.
 
 ---
 
@@ -469,11 +654,25 @@ same misheard command falls back to the current plain response.
   - manual: *"Jarvis, learn how to set a timer"* → full teach → confirm →
     hear *"I've learned 'timer'"* → *"Jarvis, set a timer for 10 seconds"* fires.
   - manual rollback: *"Jarvis, revert the timer skill"*.
-- **M3**: ingest a sample doc, ask *"Jarvis, what does X say about Y"*, verify a
-  grounded answer with a source and **no network call to Claude** (assert via
-  logs / a blocked key).
+- **M3**: tests per the milestone's own Verification paragraph above
+  (segmenter, protocol/intake bounds, addressing modes and mode commands, hold
+  window, loopback round trips with fake whisper/voder, auth, whisper service,
+  edge imports). Manual: a GPU brain with both services and a Pi edge over the
+  internet. Check "Jarvis, …" is answered aloud, un-addressed talk yields
+  `heard` only, "pause/continue input" work by voice, PushToTalk keeps the mic
+  off, and whisper-down says "Cannot hear you".
 - **M4**: fake-reasoner unit tests per the milestone's own Verification
   paragraph above; manual, with and without Ollama running, on a real
   misheard command.
+- **M5**: ingest a sample doc, ask *"Jarvis, what does X say about Y"*, verify a
+  grounded answer with a source and **no network call to Claude** (assert via
+  logs / a blocked key).
+- **M6 repair loop**: fake `generate` unit tests, with no network:
+  - a first attempt that fails its sandbox tests and then passes is accepted,
+    and the repair turn carried the failure output;
+  - a skill that keeps failing stops after exactly `max_repair_attempts`
+    repairs with `accepted=False`;
+  - a declined permission or an API error triggers no repair call;
+  - a repair that adds a banned import is rejected by validation.
 - Regression: `python check_setup.py` stays green; `python -m jarvis --selftest`
   loads the current NLU model, lists registered skills, and exits 0.

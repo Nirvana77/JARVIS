@@ -1,8 +1,9 @@
-"""`TeachFlow`/`EditSkillFlow`/`RevertSkillFlow` — the voice dialogs, with a
-fake `generate` and a fake sandbox so no network or real subprocess is
-involved. These only exercise the dialog + build/validate/sandbox wiring;
-retrain/confirm/promote are the orchestrator's job (see `test_orchestrator.py`
-for the merge-gate side)."""
+"""`TeachFlow`/`EditSkillFlow`/`RevertSkillFlow` — the voice dialogs only.
+
+M2.5: a flow ends when the questions only the user can answer are answered,
+and returns a `LearningRequest`. Build/validate/sandbox is the background
+`LearningJob` (`test_jobs.py`); retrain/confirm/promote is the orchestrator
+(`test_background_learning.py`)."""
 
 from __future__ import annotations
 
@@ -10,9 +11,13 @@ import asyncio
 
 import pytest
 
-from jarvis.factory.claude_client import GeneratedSkill
-from jarvis.factory.flows import EditSkillFlow, RevertSkillFlow, TeachFlow
-from jarvis.factory.sandbox import SandboxResult
+from jarvis.factory.flows import (
+    EditSkillFlow,
+    LearningRequest,
+    RevertSkillFlow,
+    TeachFlow,
+    ask_yes_no_or_none,
+)
 
 _MODULE_TEMPLATE = '''\
 from __future__ import annotations
@@ -78,25 +83,6 @@ class FakeRegistry:
         return name in self.names()
 
 
-class FakeSandbox:
-    def __init__(self, tests_ok=True, dry_run_ok=True):
-        self.tests_ok = tests_ok
-        self.dry_run_ok = dry_run_ok
-        self.calls = []
-
-    def run_tests(self, module_path, test_path, permissions):
-        self.calls.append(("run_tests", module_path.name, permissions))
-        return SandboxResult(ok=self.tests_ok, stdout="", stderr="boom", returncode=0 if self.tests_ok else 1)
-
-    def dry_run(self, module_path, params, permissions):
-        self.calls.append(("dry_run", module_path.name, permissions))
-        return SandboxResult(ok=self.dry_run_ok, stdout="", stderr="boom", returncode=0 if self.dry_run_ok else 1)
-
-
-def fake_generate(spec, existing_source):
-    return GeneratedSkill(name=spec.name, module_source=_good_module(spec.name), test_source=GOOD_TEST)
-
-
 @pytest.fixture(autouse=True)
 def _clean_staging():
     import shutil
@@ -111,18 +97,30 @@ def _clean_staging():
             p.unlink(missing_ok=True)
 
 
-def test_teach_flow_happy_path_is_accepted():
+def test_teach_flow_returns_a_request_after_the_dialog():
     script = Script(["coin flip", "yes", "flip a coin for me"])
     recorder = Recorder()
     flow = TeachFlow(
         ask=script.ask, say=recorder.say, registry=FakeRegistry(),
-        generate=fake_generate, sandbox=FakeSandbox(),
         seed_description="flip a coin and tell me heads or tails",
     )
-    outcome = asyncio.run(flow.run())
-    assert outcome.accepted
-    assert outcome.name == "coin_flip"
-    assert outcome.manifest.permissions == {"pure"}
+    request = asyncio.run(flow.run())
+    assert isinstance(request, LearningRequest)
+    assert request.versioning == "new"
+    assert request.name == "coin_flip"
+    assert request.spec.examples == ["flip a coin and tell me heads or tails", "flip a coin for me"]
+    assert request.existing_source is None
+    assert request.allow_name is None
+
+
+def test_teach_flow_does_not_build_anything():
+    """The dialog must not generate or sandbox — that's the background job."""
+    from jarvis.factory.flows import staging_dir
+
+    script = Script(["coin flip", "yes", "flip a coin for me"])
+    flow = TeachFlow(ask=script.ask, say=Recorder().say, registry=FakeRegistry(), seed_description="flip a coin")
+    asyncio.run(flow.run())
+    assert list(staging_dir().glob("*.py")) == []
 
 
 def test_teach_flow_rejects_a_name_that_already_exists():
@@ -133,75 +131,29 @@ def test_teach_flow_rejects_a_name_that_already_exists():
     recorder = Recorder()
     flow = TeachFlow(
         ask=script.ask, say=recorder.say, registry=FakeRegistry([existing]),
-        generate=fake_generate, sandbox=FakeSandbox(),
         seed_description="flip a coin",
     )
-    outcome = asyncio.run(flow.run())
-    assert outcome.accepted
-    assert outcome.name == "timer"
+    request = asyncio.run(flow.run())
+    assert request.name == "timer"
     assert any("already have" in s for s in recorder.said)
 
 
-def test_teach_flow_aborts_when_sandbox_tests_fail():
-    script = Script(["coin flip", "yes", "flip a coin for me"])
+def test_teach_flow_rejects_a_name_already_being_learned():
+    script = Script(["coin flip", "timer", "yes", "flip a coin for me"])
     recorder = Recorder()
     flow = TeachFlow(
         ask=script.ask, say=recorder.say, registry=FakeRegistry(),
-        generate=fake_generate, sandbox=FakeSandbox(tests_ok=False),
-        seed_description="flip a coin",
+        seed_description="flip a coin", busy_names=frozenset({"coin_flip"}),
     )
-    outcome = asyncio.run(flow.run())
-    assert not outcome.accepted
-    assert outcome.reason == "sandbox tests failed"
+    request = asyncio.run(flow.run())
+    assert request.name == "timer"
+    assert any("already working on 'coin_flip'" in s for s in recorder.said)
 
 
-def test_teach_flow_aborts_when_dry_run_fails():
-    script = Script(["coin flip", "yes", "flip a coin for me"])
-    recorder = Recorder()
-    flow = TeachFlow(
-        ask=script.ask, say=recorder.say, registry=FakeRegistry(),
-        generate=fake_generate, sandbox=FakeSandbox(dry_run_ok=False),
-        seed_description="flip a coin",
-    )
-    outcome = asyncio.run(flow.run())
-    assert not outcome.accepted
-    assert outcome.reason == "sandbox dry-run failed"
-
-
-def test_teach_flow_asks_for_permission_grant_beyond_pure_and_notify():
-    net_module = GOOD_MODULE.replace('permissions={"pure"}', 'permissions={"net"}')
-
-    def generate_net(spec, existing_source):
-        return GeneratedSkill(name=spec.name, module_source=net_module, test_source=GOOD_TEST)
-
-    script = Script(["coin flip", "yes", "flip a coin for me", "yes"])
-    recorder = Recorder()
-    flow = TeachFlow(
-        ask=script.ask, say=recorder.say, registry=FakeRegistry(),
-        generate=generate_net, sandbox=FakeSandbox(),
-        seed_description="flip a coin",
-    )
-    outcome = asyncio.run(flow.run())
-    assert outcome.accepted
-    assert any("access" in p.lower() for p in script.prompts)
-
-
-def test_teach_flow_declined_permission_grant_is_not_accepted():
-    net_module = GOOD_MODULE.replace('permissions={"pure"}', 'permissions={"net"}')
-
-    def generate_net(spec, existing_source):
-        return GeneratedSkill(name=spec.name, module_source=net_module, test_source=GOOD_TEST)
-
-    script = Script(["coin flip", "yes", "flip a coin for me", "no"])
-    recorder = Recorder()
-    flow = TeachFlow(
-        ask=script.ask, say=recorder.say, registry=FakeRegistry(),
-        generate=generate_net, sandbox=FakeSandbox(),
-        seed_description="flip a coin",
-    )
-    outcome = asyncio.run(flow.run())
-    assert not outcome.accepted
-    assert outcome.reason == "permission declined"
+def test_teach_flow_with_no_usable_name_returns_none():
+    script = Script(["", ""])
+    flow = TeachFlow(ask=script.ask, say=Recorder().say, registry=FakeRegistry())
+    assert asyncio.run(flow.run()) is None
 
 
 def test_edit_skill_flow_reads_existing_source(tmp_path, monkeypatch):
@@ -214,24 +166,32 @@ def test_edit_skill_flow_reads_existing_source(tmp_path, monkeypatch):
     monkeypatch.setattr(flows_mod, "learned_source_path", lambda name: learned_dir / f"{name}.py")
 
     existing = SkillManifest(name="coin_flip", description="Flip a coin.", examples=["flip a coin"], version=1, origin="learned")
-    seen = {}
-
-    def capture_generate(spec, existing_source):
-        seen["existing_source"] = existing_source
-        return GeneratedSkill(name=spec.name, module_source=GOOD_MODULE, test_source=GOOD_TEST)
-
     script = Script(["coin flip", "also say tails sometimes"])
+    flow = EditSkillFlow(ask=script.ask, say=Recorder().say, registry=FakeRegistry([existing]))
+    request = asyncio.run(flow.run())
+    assert request.versioning == "edit"
+    assert request.name == "coin_flip"
+    assert request.existing_source == GOOD_MODULE
+    assert request.allow_name == "coin_flip"
+    assert request.spec.description == "also say tails sometimes"
+    assert request.spec.based_on_version == 1
+
+
+def test_edit_skill_flow_refuses_a_skill_already_being_learned():
+    from jarvis.skills.contract import SkillManifest
+
+    existing = SkillManifest(name="coin_flip", description="x", examples=["x"], origin="learned")
+    script = Script(["coin flip", "also say tails"])
     recorder = Recorder()
     flow = EditSkillFlow(
         ask=script.ask, say=recorder.say, registry=FakeRegistry([existing]),
-        generate=capture_generate, sandbox=FakeSandbox(),
+        busy_names=frozenset({"coin_flip"}),
     )
-    outcome = asyncio.run(flow.run())
-    assert outcome.accepted
-    assert seen["existing_source"] == GOOD_MODULE
+    assert asyncio.run(flow.run()) is None
+    assert any("already working on 'coin_flip'" in s for s in recorder.said)
 
 
-def test_revert_skill_flow_with_no_history_is_declined():
+def test_revert_skill_flow_with_no_history_returns_none():
     from jarvis.skills.contract import SkillManifest
 
     existing = SkillManifest(name="coin_flip", description="x", examples=["x"], origin="learned")
@@ -244,9 +204,8 @@ def test_revert_skill_flow_with_no_history_is_declined():
             return pathlib.Path("/nonexistent/path/for/test")
 
     flow = RevertSkillFlow(ask=script.ask, say=recorder.say, registry=FakeRegistry([existing]), config=Cfg())
-    outcome = asyncio.run(flow.run())
-    assert not outcome.accepted
-    assert outcome.reason == "no earlier version"
+    assert asyncio.run(flow.run()) is None
+    assert any("earlier version" in s for s in recorder.said)
 
 
 def test_revert_skill_flow_picks_the_highest_version(tmp_path):
@@ -263,8 +222,31 @@ def test_revert_skill_flow_picks_the_highest_version(tmp_path):
             return vdir
 
     script = Script(["coin flip"])
-    recorder = Recorder()
-    flow = RevertSkillFlow(ask=script.ask, say=recorder.say, registry=FakeRegistry([existing]), config=Cfg())
-    outcome = asyncio.run(flow.run())
-    assert outcome.accepted
-    assert outcome.reverted_from_version == 2
+    flow = RevertSkillFlow(ask=script.ask, say=Recorder().say, registry=FakeRegistry([existing]), config=Cfg())
+    request = asyncio.run(flow.run())
+    assert request.versioning == "revert"
+    assert request.name == "coin_flip"
+    assert request.reverted_from_version == 2
+    assert request.module_source == GOOD_MODULE
+    assert request.manifest.name == "coin_flip"
+
+
+# -- ask_yes_no_or_none (M2.5: background questions) -------------------------
+
+@pytest.mark.parametrize(
+    "reply, expected",
+    [
+        ("yes", True),
+        ("yes please", True),
+        ("sure", True),
+        ("no", False),
+        ("no thanks", False),
+        ("never mind", False),
+        ("", None),
+        ("what time is it", None),
+        ("search black holes", None),
+    ],
+)
+def test_ask_yes_no_or_none(reply, expected):
+    script = Script([reply])
+    assert asyncio.run(ask_yes_no_or_none(script.ask, "Shall I keep it, sir?")) is expected

@@ -34,3 +34,22 @@ def embedder(embedding_model):
         return model
     except Exception as exc:  # network down, disk full, etc.
         pytest.skip(f"fastembed model unavailable: {exc!r}")
+
+
+@pytest.fixture(autouse=True)
+def no_leaked_threads():
+    """CLAUDE.md step 5: a test that starts a thread must leave none behind.
+    M2.5's background jobs run on daemon threads (`jobs.run_detached`), so a
+    job that isn't finished or cancelled would show up here."""
+    import threading
+    import time
+
+    before = {t.ident for t in threading.enumerate()}
+    yield
+    deadline = time.monotonic() + 1.0  # let just-finished threads exit
+    while True:
+        leaked = [t for t in threading.enumerate() if t.ident not in before and t.is_alive()]
+        if not leaked or time.monotonic() > deadline:
+            break
+        time.sleep(0.02)
+    assert not leaked, f"test left threads running: {[t.name for t in leaked]}"
