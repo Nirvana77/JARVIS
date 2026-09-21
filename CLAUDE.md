@@ -32,6 +32,22 @@ Follow this order for any PRD/milestone item — don't skip or reorder steps:
    from the unit tests passing: it confirms the *real* wiring (NLU, registry,
    persona, the skill factory) behaves the way the PRD describes end-to-end,
    not just that the pieces work in isolation behind fakes.
+5. **Monitor thread spawning** during both the test run (step 3) and the
+   dry-run (step 4). JARVIS starts threads in several places:
+   `jarvis/factory/jobs.py` (background learning), `jarvis/core/interrupt.py`,
+   `jarvis/core/orchestrator.py`, `jarvis/audio/stt.py`, plus sounddevice's
+   audio callback threads. A leaked or runaway thread doesn't fail a test on
+   its own, so check for one explicitly:
+   - **Tests**: compare `threading.enumerate()` before and after the code
+     under test. A test that starts a thread must leave none behind once it
+     finishes (join or stop it). Any count that keeps growing across tests is
+     a leak.
+   - **Dry-run**: watch the live process with
+     `watch -n1 "ps -T -p $(pgrep -f 'python -m jarvis') | tail -n +2 | wc -l"`
+     (or `top -H -p <pid>`). The thread count should go back to its baseline
+     after each turn, each learning job, and each cancel/interrupt. If it
+     climbs turn after turn, treat that as a bug.
+   Report the thread counts you observed along with the test results.
 
 ## Setup
 

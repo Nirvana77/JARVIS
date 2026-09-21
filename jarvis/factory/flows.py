@@ -1,23 +1,23 @@
 """The voice dialogs — `teach`, `edit_skill`, `revert_skill`.
 
-Each flow only talks (`ask`/`say`, both async — bound to the orchestrator's
-`_ask`/`_speak`), builds/validates/sandboxes a candidate module, and returns a
-:class:`FlowOutcome`. **None of them touch `orchestrator._staged` or the
-registry** — retraining, the final voice confirm, and promotion are the
-orchestrator's `_promote_and_retrain()`, which is the sole writer of that
-state (see PRD/milestone-2-skill-factory.md, decision 2).
+M2.5: a flow is **only the dialog** — the questions only the user can
+answer. It returns a :class:`LearningRequest` and is done; building,
+validating, sandboxing and retraining happen afterwards in a background
+:class:`jarvis.factory.jobs.LearningJob`, so the session keeps serving
+commands meanwhile. **None of them touch `orchestrator._staged` or the
+registry** — the orchestrator is the sole writer of that state (see
+PRD/milestone-2-skill-factory.md, decision 2, and
+PRD/milestone-2.5-background-learning.md).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Literal
 
-from jarvis.factory.build import BuildError, build
 from jarvis.factory.spec import SkillSpec
 from jarvis.factory.validate import ValidationError, validate
 from jarvis.skills.contract import SkillManifest
@@ -29,6 +29,26 @@ Say = Callable[[str], Awaitable[None]]
 
 _YES = {"yes", "yeah", "yep", "sure", "confirm", "affirmative", "correct", "please do"}
 _NO = {"no", "nope", "don't", "do not", "negative", "cancel", "never mind", "stop"}
+
+
+Versioning = Literal["new", "edit", "revert"]
+
+
+@dataclass
+class LearningRequest:
+    """What a finished dialog hands to the background job.
+
+    ``new``/``edit`` carry a ``spec`` for Claude; ``revert`` carries the
+    already-approved archived source to restore (no Claude, no sandbox)."""
+
+    versioning: Versioning
+    name: str
+    spec: SkillSpec | None = None
+    existing_source: str | None = None
+    allow_name: str | None = None
+    module_source: str | None = None
+    manifest: SkillManifest | None = None
+    reverted_from_version: int | None = None
 
 
 @dataclass
@@ -46,6 +66,23 @@ async def ask_yes_no(ask: Ask, prompt: str) -> bool:
     if any(word in reply for word in _NO):
         return False
     return any(word in reply for word in _YES)
+
+
+def _words(reply: str) -> str:
+    return " " + " ".join(re.findall(r"[a-z']+", reply.lower())) + " "
+
+
+async def ask_yes_no_or_none(ask: Ask, prompt: str) -> bool | None:
+    """Like :func:`ask_yes_no`, but anything that is neither a clear yes nor a
+    clear no is ``None`` — M2.5's background questions land while the user
+    may be thinking about something else, so silence or an unrelated reply
+    must not count as "no". Whole-word matching, so "know"/"now" aren't "no"."""
+    words = _words(await ask(prompt))
+    if any(f" {w} " in words for w in _NO):
+        return False
+    if any(f" {w} " in words for w in _YES):
+        return True
+    return None
 
 
 def staging_dir() -> Path:
@@ -67,16 +104,9 @@ def _slugify(text: str) -> str:
     return text if text.isidentifier() else ""
 
 
-def _sample_params(manifest: SkillManifest) -> dict:
-    defaults = {"integer": 1, "number": 1.0, "boolean": True}
-    return {
-        key: defaults.get((spec or {}).get("type", "string"), "test")
-        for key, spec in manifest.params.items()
-    }
-
-
 async def _match_skill_name(
-    ask: Ask, say: Say, registry, prompt: str, *, origin: str
+    ask: Ask, say: Say, registry, prompt: str, *, origin: str,
+    busy_names: frozenset[str] = frozenset(),
 ) -> str | None:
     candidates = [m.name for m in registry.manifests() if m.origin == origin]
     if not candidates:
@@ -85,85 +115,12 @@ async def _match_skill_name(
     reply = (await ask(prompt)).strip().lower()
     for name in candidates:
         if name in reply or name.replace("_", " ") in reply:
+            if name in busy_names:
+                await say(f"I'm already working on '{name}', sir.")
+                return None
             return name
     await say("I couldn't tell which skill you meant, sir.")
     return None
-
-
-async def _generate_validate_sandbox(
-    spec: SkillSpec,
-    *,
-    ask: Ask,
-    say: Say,
-    registry,
-    generate,
-    sandbox,
-    existing_source: str | None,
-    allow_name: str | None,
-) -> FlowOutcome:
-    await say(f"One moment, sir, let me work on '{spec.name}'.")
-    try:
-        generated = await asyncio.to_thread(
-            build, spec, generate=generate, existing_source=existing_source
-        )
-    except BuildError as exc:
-        log.warning("build failed for %s: %s", spec.name, exc)
-        await say("I couldn't put that together, sir.")
-        return FlowOutcome(accepted=False, reason=str(exc))
-
-    try:
-        # `validate()` checks `manifest.name` (whatever Claude actually named
-        # it) against `known_names` — not `spec.name` — so a model that
-        # ignores the requested name still can't collide with an existing skill.
-        manifest = validate(
-            generated.module_source, frozenset(registry.names()), allow_name=allow_name
-        )
-    except ValidationError as exc:
-        log.warning("validation failed for %s: %s", spec.name, exc)
-        await say("What I came up with didn't check out, sir.")
-        return FlowOutcome(accepted=False, reason=str(exc))
-
-    extra_perms = manifest.permissions - {"pure", "notify"}
-    if extra_perms:
-        granted = await ask_yes_no(
-            ask,
-            f"This skill needs {', '.join(sorted(extra_perms))} access. Allow it, sir?",
-        )
-        if not granted:
-            await say("Very well, I won't build that.")
-            return FlowOutcome(accepted=False, reason="permission declined")
-
-    module_path = staging_dir() / f"{manifest.name}.py"
-    test_path = staging_dir() / f"_test_{manifest.name}.py"
-    module_path.write_text(generated.module_source, encoding="utf-8")
-    test_path.write_text(generated.test_source, encoding="utf-8")
-    try:
-        test_result = await asyncio.to_thread(
-            sandbox.run_tests, module_path, test_path, manifest.permissions
-        )
-        if not test_result.ok:
-            log.warning("sandbox tests failed for %s:\n%s", manifest.name, test_result.stderr)
-            await say("The tests I wrote for that didn't pass, sir. I'll set it aside.")
-            module_path.unlink(missing_ok=True)
-            return FlowOutcome(accepted=False, reason="sandbox tests failed")
-
-        dry_result = await asyncio.to_thread(
-            sandbox.dry_run, module_path, _sample_params(manifest), manifest.permissions
-        )
-        if not dry_result.ok:
-            log.warning("sandbox dry-run failed for %s:\n%s", manifest.name, dry_result.stderr)
-            await say("That didn't run cleanly, sir. I'll set it aside.")
-            module_path.unlink(missing_ok=True)
-            return FlowOutcome(accepted=False, reason="sandbox dry-run failed")
-    finally:
-        test_path.unlink(missing_ok=True)
-
-    return FlowOutcome(
-        accepted=True,
-        name=manifest.name,
-        module_source=generated.module_source,
-        manifest=manifest,
-    )
 
 
 class TeachFlow:
@@ -173,40 +130,34 @@ class TeachFlow:
         ask: Ask,
         say: Say,
         registry,
-        generate,
-        sandbox,
         seed_description: str | None = None,
+        busy_names: frozenset[str] = frozenset(),
     ) -> None:
         self.ask = ask
         self.say = say
         self.registry = registry
-        self.generate = generate
-        self.sandbox = sandbox
         self.seed_description = seed_description
+        #: skills a background job is already learning — not re-teachable yet
+        self.busy_names = busy_names
 
-    async def run(self) -> FlowOutcome:
+    async def run(self) -> LearningRequest | None:
         name = await self._ask_name()
         if name is None:
             await self.say("Very well, sir.")
-            return FlowOutcome(accepted=False, reason="no usable name")
+            return None
 
         description = await self._ask_description()
         if not description:
             await self.say("Never mind, then.")
-            return FlowOutcome(accepted=False, reason="no description given")
+            return None
 
         extra = (await self.ask("Give me another way you might ask me to do that.")).strip()
         examples = [description] + ([extra] if extra else [])
 
-        return await _generate_validate_sandbox(
-            SkillSpec(name=name, description=description, examples=examples),
-            ask=self.ask,
-            say=self.say,
-            registry=self.registry,
-            generate=self.generate,
-            sandbox=self.sandbox,
-            existing_source=None,
-            allow_name=None,
+        return LearningRequest(
+            versioning="new",
+            name=name,
+            spec=SkillSpec(name=name, description=description, examples=examples),
         )
 
     async def _ask_name(self) -> str | None:
@@ -218,6 +169,9 @@ class TeachFlow:
                 continue
             if name in self.registry:
                 await self.say(f"I already have a skill called '{name}', sir.")
+                continue
+            if name in self.busy_names:
+                await self.say(f"I'm already working on '{name}', sir.")
                 continue
             return name
         return None
@@ -234,25 +188,27 @@ class TeachFlow:
 
 
 class EditSkillFlow:
-    def __init__(self, *, ask: Ask, say: Say, registry, generate, sandbox) -> None:
+    def __init__(
+        self, *, ask: Ask, say: Say, registry, busy_names: frozenset[str] = frozenset()
+    ) -> None:
         self.ask = ask
         self.say = say
         self.registry = registry
-        self.generate = generate
-        self.sandbox = sandbox
+        self.busy_names = busy_names
 
-    async def run(self) -> FlowOutcome:
+    async def run(self) -> LearningRequest | None:
         name = await _match_skill_name(
             self.ask, self.say, self.registry,
             "Which skill would you like to edit, sir?", origin="learned",
+            busy_names=self.busy_names,
         )
         if name is None:
-            return FlowOutcome(accepted=False, reason="no matching skill")
+            return None
 
         change = (await self.ask(f"What would you like to change about '{name}'?")).strip()
         if not change:
             await self.say("Never mind, then.")
-            return FlowOutcome(accepted=False, reason="no change given")
+            return None
 
         current = self.registry.manifest(name)
         try:
@@ -260,39 +216,40 @@ class EditSkillFlow:
         except OSError as exc:
             log.error("could not read learned source for %s: %s", name, exc)
             await self.say(f"I couldn't find my own source for '{name}', sir.")
-            return FlowOutcome(accepted=False, reason="missing source")
+            return None
 
-        return await _generate_validate_sandbox(
-            SkillSpec(
+        return LearningRequest(
+            versioning="edit",
+            name=name,
+            spec=SkillSpec(
                 name=name,
                 description=change,
                 examples=current.examples,
                 based_on_version=current.version,
             ),
-            ask=self.ask,
-            say=self.say,
-            registry=self.registry,
-            generate=self.generate,
-            sandbox=self.sandbox,
             existing_source=existing_source,
             allow_name=name,
         )
 
 
 class RevertSkillFlow:
-    def __init__(self, *, ask: Ask, say: Say, registry, config) -> None:
+    def __init__(
+        self, *, ask: Ask, say: Say, registry, config, busy_names: frozenset[str] = frozenset()
+    ) -> None:
         self.ask = ask
         self.say = say
         self.registry = registry
         self.config = config
+        self.busy_names = busy_names
 
-    async def run(self) -> FlowOutcome:
+    async def run(self) -> LearningRequest | None:
         name = await _match_skill_name(
             self.ask, self.say, self.registry,
             "Which skill would you like to revert, sir?", origin="learned",
+            busy_names=self.busy_names,
         )
         if name is None:
-            return FlowOutcome(accepted=False, reason="no matching skill")
+            return None
 
         versions_dir = self.config.skill_versions_dir(name)
         versions = sorted(
@@ -301,7 +258,7 @@ class RevertSkillFlow:
         ) if versions_dir.is_dir() else []
         if not versions:
             await self.say(f"I don't have an earlier version of '{name}' to revert to, sir.")
-            return FlowOutcome(accepted=False, reason="no earlier version")
+            return None
 
         target = versions[0]
         source = (versions_dir / f"v{target}.py").read_text(encoding="utf-8")
@@ -312,10 +269,10 @@ class RevertSkillFlow:
             # promote something that no longer checks out
             log.error("archived version v%d of %s no longer validates: %s", target, name, exc)
             await self.say(f"That earlier version of '{name}' doesn't check out anymore, sir.")
-            return FlowOutcome(accepted=False, reason="archived version invalid")
+            return None
 
-        return FlowOutcome(
-            accepted=True,
+        return LearningRequest(
+            versioning="revert",
             name=name,
             module_source=source,
             manifest=manifest,

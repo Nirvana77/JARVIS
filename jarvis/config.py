@@ -126,9 +126,6 @@ class FactoryConfig:
     ``Config.anthropic_workspace_id``."""
 
     model: str = "claude-opus-5"
-    #: how long to wait inline for a retrain before detaching it to the
-    #: background drain loop (see PRD "fast/slow UX split")
-    fast_budget_s: float = 8.0
     sandbox_timeout_s: float = 10.0
     sandbox_mem_mb: int = 512
     sandbox_cpu_s: int = 5
@@ -285,7 +282,6 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         ),
         factory=FactoryConfig(
             model=os.getenv("ANTHROPIC_MODEL") or factory.get("model", "claude-opus-5"),
-            fast_budget_s=float(factory.get("fast_budget_s", 8.0)),
             sandbox_timeout_s=float(factory.get("sandbox_timeout_s", 10.0)),
             sandbox_mem_mb=int(factory.get("sandbox_mem_mb", 512)),
             sandbox_cpu_s=int(factory.get("sandbox_cpu_s", 5)),
