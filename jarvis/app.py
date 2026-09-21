@@ -71,7 +71,11 @@ def build_orchestrator(config: Config) -> Orchestrator:
     print(f"· persona '{config.persona.active}'", flush=True)
     reasoner = Reasoner.from_config(config)
     persona = Persona.load(config.persona.active, config, reasoner)
-    tts = Speaker(persona.voice or config.tts.voice, config.piper_dir)
+    tts = Speaker(
+        persona.voice or config.tts.voice,
+        config.piper_dir,
+        pipewire_node=config.tts.pipewire_node,
+    )
     if not tts.available():
         print(
             f"  ! Piper voice '{tts.voice}' not downloaded — replies will be "
@@ -110,6 +114,8 @@ def build_orchestrator(config: Config) -> Orchestrator:
         config.capture.sample_rate,
         config.capture.frame_samples,
         vad_threshold=config.capture.vad_threshold,
+        device=config.capture.device,
+        pipewire_node=config.capture.pipewire_node,
     )
 
     claude_client = ClaudeClient.from_config(config)
@@ -260,7 +266,12 @@ def mic_meter(config: Config) -> int:
     crosses the threshold that would actually be used."""
     from jarvis.audio.capture import Microphone
 
-    mic = Microphone(config.capture.sample_rate, config.capture.frame_samples)
+    mic = Microphone(
+        config.capture.sample_rate,
+        config.capture.frame_samples,
+        device=config.capture.device,
+        pipewire_node=config.capture.pipewire_node,
+    )
     vad_override = getattr(config.capture, "vad_threshold", 0.0)
     barge_override = getattr(config.capture, "barge_in_threshold", 0.0)
     override = vad_override or barge_override
@@ -273,6 +284,9 @@ def mic_meter(config: Config) -> int:
         print(f"(threshold pinned to vad_threshold = {vad_override})")
     elif barge_override:
         print(f"(threshold pinned to barge_in_threshold = {barge_override})")
+    source = config.capture.pipewire_node or config.capture.device
+    print(f"Input: {source if source is not None else 'system default'}"
+          " ([capture] pipewire_node / device in config.toml)")
     print()
 
     mic.start()

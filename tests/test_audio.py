@@ -126,3 +126,128 @@ def test_vad_threshold_override_is_used_instead_of_auto_calibration():
 
     audio = m.record_utterance(max_seconds=5, silence_seconds=0.5)
     assert len(audio) > 0  # a low pinned threshold correctly hears quiet speech
+
+
+# -- input device selection ------------------------------------------------
+
+
+class _FakeStream:
+    """Stands in for ``sounddevice.InputStream``; records how it was opened
+    and what PIPEWIRE_NODE was at that moment."""
+
+    opened: list[dict] = []
+
+    def __init__(self, **kwargs):
+        import os
+
+        _FakeStream.opened.append({**kwargs, "env_node": os.environ.get("PIPEWIRE_NODE")})
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def fake_sounddevice(monkeypatch):
+    import sys
+    import types
+
+    _FakeStream.opened = []
+    monkeypatch.setitem(sys.modules, "sounddevice", types.SimpleNamespace(InputStream=_FakeStream))
+    monkeypatch.delenv("PIPEWIRE_NODE", raising=False)
+    return _FakeStream
+
+
+def test_microphone_defaults_to_the_system_input(fake_sounddevice):
+    import os
+
+    from jarvis.audio.capture import Microphone
+
+    Microphone().start().stop()
+    (opened,) = fake_sounddevice.opened
+    assert opened["device"] is None
+    assert opened["env_node"] is None
+    assert "PIPEWIRE_NODE" not in os.environ
+
+
+def test_microphone_passes_a_portaudio_device_through(fake_sounddevice):
+    from jarvis.audio.capture import Microphone
+
+    Microphone(device=26).start().stop()
+    assert fake_sounddevice.opened[0]["device"] == 26
+
+
+def test_microphone_targets_a_pipewire_node_only_while_opening(fake_sounddevice):
+    """The node is routed via the PipeWire ALSA plugin's PIPEWIRE_NODE env var,
+    which must not leak — TTS opens its output stream in the same process."""
+    import os
+
+    from jarvis.audio.capture import Microphone
+
+    Microphone(pipewire_node="alsa_input.internal_mic").start().stop()
+    (opened,) = fake_sounddevice.opened
+    assert opened["device"] == "pipewire"
+    assert opened["env_node"] == "alsa_input.internal_mic"
+    assert "PIPEWIRE_NODE" not in os.environ
+
+
+def test_capture_device_settings_load_from_config_toml(tmp_path):
+    from jarvis.config import load_config
+
+    toml = tmp_path / "config.toml"
+    toml.write_text('[capture]\ndevice = "hw:0,6"\npipewire_node = "alsa_input.mic"\n')
+    cfg = load_config(toml)
+    assert cfg.capture.device == "hw:0,6"
+    assert cfg.capture.pipewire_node == "alsa_input.mic"
+
+    toml.write_text("[capture]\ndevice = 7\n")
+    assert load_config(toml).capture.device == 7
+
+    toml.write_text("[capture]\n")
+    cfg = load_config(toml)
+    assert cfg.capture.device is None
+    assert cfg.capture.pipewire_node == ""
+
+
+def test_speaker_targets_a_pipewire_node_only_while_opening(monkeypatch):
+    import os
+    import sys
+    import types
+
+    from jarvis.audio.tts import Speaker
+
+    opened: list[dict] = []
+
+    class FakeOut:
+        def __init__(self, **kwargs):
+            opened.append({**kwargs, "env_node": os.environ.get("PIPEWIRE_NODE")})
+            self.samplerate = kwargs["samplerate"]
+
+        def start(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "sounddevice", types.SimpleNamespace(OutputStream=FakeOut))
+    monkeypatch.delenv("PIPEWIRE_NODE", raising=False)
+
+    Speaker(pipewire_node="alsa_output.laptop_speaker")._output(22050)
+    Speaker()._output(22050)
+    assert opened[0]["device"] == "pipewire"
+    assert opened[0]["env_node"] == "alsa_output.laptop_speaker"
+    assert opened[1]["device"] is None
+    assert opened[1]["env_node"] is None
+    assert "PIPEWIRE_NODE" not in os.environ
+
+
+def test_tts_output_node_loads_from_config_toml(tmp_path):
+    from jarvis.config import load_config
+
+    toml = tmp_path / "config.toml"
+    toml.write_text('[tts]\npipewire_node = "alsa_output.speaker"\n')
+    assert load_config(toml).tts.pipewire_node == "alsa_output.speaker"
+    toml.write_text("[tts]\n")
+    assert load_config(toml).tts.pipewire_node == ""

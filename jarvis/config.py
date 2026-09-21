@@ -70,6 +70,12 @@ class CaptureConfig:
     #: the end — auto-calibration can mistake your own loud opening words for
     #: the noise floor if you start talking immediately after the wake word.
     vad_threshold: float = 0.0
+    #: PortAudio input device (index or name, see `python -m sounddevice`);
+    #: None = the system default input
+    device: int | str | None = None
+    #: PipeWire source node to record from (`pactl list short sources`);
+    #: "" = none. Takes precedence over `device`.
+    pipewire_node: str = ""
 
     @property
     def frame_samples(self) -> int:
@@ -88,6 +94,8 @@ class STTConfig:
 @dataclass(frozen=True)
 class TTSConfig:
     voice: str = "en_GB-alan-medium"
+    #: PipeWire sink node to play through (`pactl list short sinks`); "" = default
+    pipewire_node: str = ""
 
 
 @dataclass(frozen=True)
@@ -249,6 +257,8 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             barge_in_threshold=float(capture.get("barge_in_threshold", 0.0)),
             allow_interrupt=bool(capture.get("allow_interrupt", True)),
             vad_threshold=float(capture.get("vad_threshold", 0.0)),
+            device=capture.get("device") if capture.get("device") != "" else None,
+            pipewire_node=str(capture.get("pipewire_node", "")),
         ),
         stt=STTConfig(
             model=stt.get("model", "medium.en"),
@@ -256,7 +266,10 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             device=stt.get("device", "cpu"),
             language=stt.get("language", language),
         ),
-        tts=TTSConfig(voice=tts.get("voice", "en_GB-alan-medium")),
+        tts=TTSConfig(
+            voice=tts.get("voice", "en_GB-alan-medium"),
+            pipewire_node=str(tts.get("pipewire_node", "")),
+        ),
         nlu=NLUConfig(
             embedding_model=nlu.get(
                 "embedding_model", "sentence-transformers/all-MiniLM-L6-v2"

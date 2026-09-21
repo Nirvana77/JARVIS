@@ -14,6 +14,8 @@ import queue
 
 import numpy as np
 
+from jarvis.audio.pipewire import pipewire_target
+
 log = logging.getLogger(__name__)
 
 
@@ -30,6 +32,7 @@ class Microphone:
         frame_samples: int = 1280,
         device: int | str | None = None,
         vad_threshold: float = 0.0,
+        pipewire_node: str = "",
     ) -> None:
         self.sample_rate = sample_rate
         self.frame_samples = frame_samples
@@ -39,6 +42,9 @@ class Microphone:
         #: in config.toml — set this from `python -m jarvis mic` if
         #: auto-calibration is cutting off the ends of your sentences.
         self.vad_threshold = vad_threshold
+        #: PipeWire source node to record from (``pactl list short sources``);
+        #: "" = don't care. See `capture.pipewire_node` in config.toml.
+        self.pipewire_node = pipewire_node
         self._q: "queue.Queue[np.ndarray]" = queue.Queue()
         self._stream = None
 
@@ -52,14 +58,15 @@ class Microphone:
                 log.debug("sounddevice status: %s", status)
             self._q.put(indata[:, 0].copy())
 
-        self._stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="int16",
-            blocksize=self.frame_samples,
-            device=self.device,
-            callback=_callback,
-        )
+        with pipewire_target(self.pipewire_node, self.device) as device:
+            self._stream = sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=1,
+                dtype="int16",
+                blocksize=self.frame_samples,
+                device=device,
+                callback=_callback,
+            )
         self._stream.start()
         return self
 

@@ -16,6 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
+from jarvis.audio.pipewire import pipewire_target
+
 log = logging.getLogger(__name__)
 
 
@@ -25,10 +27,13 @@ class Speaker:
         voice: str = "en_GB-alan-medium",
         model_dir: str | Path = "data/models/piper",
         enabled: bool = True,
+        pipewire_node: str = "",
     ) -> None:
         self.voice = voice
         self.model_dir = Path(model_dir)
         self.enabled = enabled
+        #: PipeWire sink node to play through; "" = the system default output
+        self.pipewire_node = pipewire_node
         self._voice = None
         self._sample_rate = 22050
         self._load_failed = False
@@ -91,7 +96,10 @@ class Speaker:
             self._out.close()
             self._out = None
         if self._out is None:
-            self._out = sd.OutputStream(samplerate=sample_rate, channels=1, dtype="int16")
+            with pipewire_target(self.pipewire_node) as device:
+                self._out = sd.OutputStream(
+                    samplerate=sample_rate, channels=1, dtype="int16", device=device
+                )
             self._out.start()
         return self._out
 
