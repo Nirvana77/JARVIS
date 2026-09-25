@@ -95,7 +95,7 @@ pip install -r requirements.txt
 sudo dnf install portaudio-devel      # Fedora — sounddevice needs PortAudio
 # sudo apt install portaudio19-dev    # Debian/Ubuntu
 
-cp config.example.toml config.toml    # then edit
+cp config.example.toml config.toml    # then edit — config.toml is per-machine
 python -m jarvis models pull          # fetch Whisper + the Piper voice
 python check_setup.py                 # ✓/✗ report
 ```
