@@ -146,6 +146,40 @@ def test_the_services_require_only_their_own_model():
         assert "import jarvis" not in service.read_text(encoding="utf-8")
 
 
+def _check_setup_required() -> set[str]:
+    """The module names in check_setup.py's REQUIRED list, read without running
+    the script (importing it would hit the network)."""
+    tree = ast.parse((ROOT / "check_setup.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "REQUIRED" for t in node.targets
+        ):
+            return {
+                element.elts[0].value
+                for element in node.value.elts
+                if isinstance(element, ast.Tuple)
+            }
+    raise AssertionError("check_setup.py has no REQUIRED list any more")
+
+
+def test_check_setup_requires_exactly_what_is_installable():
+    """check_setup.py exits non-zero on a ✗, so its required list has to be
+    things `pip install -r requirements.txt` actually provides. It once
+    required the legacy stack, and a clean rebuild install reported failure."""
+    required = _requirements(MAIN)
+    for module in sorted(_check_setup_required()):
+        assert _distribution(module) in required, (
+            f"check_setup.py requires {module!r}, which requirements.txt does not install"
+        )
+
+
+def test_check_setup_does_not_fail_on_the_legacy_stack():
+    """Those packages are not installed by requirements.txt on purpose."""
+    legacy = {"speech_recognition", "wikipedia", "pyttsx3", "nltk", "openpyxl",
+              "pyaudio", "tensorflow"}
+    assert not (legacy & _check_setup_required())
+
+
 @pytest.mark.parametrize("module", sorted(_DISTRIBUTION))
 def test_the_name_map_is_not_stale(module):
     """Every rename in the map should still be a module something imports —
