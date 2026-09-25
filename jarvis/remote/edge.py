@@ -166,6 +166,8 @@ class Edge:
         self._muted_until = 0.0         # echo: ignore the mic until this time
         self._playing_id: str | None = None
         self._button = None
+        self._failures = 0
+        self._reported_offline_at = 0.0
 
     # -- the sound card ------------------------------------------------
 
@@ -325,6 +327,30 @@ class Edge:
             else:
                 await asyncio.sleep(_PART_GAP_S)
 
+    def _report_offline(self, exc: Exception) -> None:
+        """Say why we are not connected — once when it starts, then rarely.
+
+        The edge retries for ever on purpose (the brain may simply be off), but
+        a silent retry loop is indistinguishable from a hang, and the reason is
+        the whole diagnosis: a refused connection means nothing is listening, a
+        401 means Cloudflare Access is in front, a name error means DNS.
+        """
+        reason = f"{type(exc).__name__}: {exc}".rstrip(": ")
+        log.info("not connected (%s)", reason)
+        now = time.monotonic()
+        first = self._failures == 0
+        self._failures += 1
+        if first or now - self._reported_offline_at > 30:
+            self._reported_offline_at = now
+            print(f"! cannot reach {self.edge.server_url} — {reason}", flush=True)
+            if first:
+                print("  retrying… (-v for every attempt, Ctrl-C to stop)", flush=True)
+
+    def _report_online(self) -> None:
+        if self._failures:
+            print(f"  …connected after {self._failures} attempt(s).", flush=True)
+        self._failures = 0
+
     async def _offline_earcon(self) -> None:
         await asyncio.to_thread(self.player.play, _earcon(), self.options.sample_rate)
 
@@ -424,12 +450,13 @@ class Edge:
                     async with self._open() as ws:
                         log.info("connected to %s", self.edge.server_url)
                         print(f"edge '{self.edge.device_id}' connected.", flush=True)
+                        self._report_online()
                         backoff = 1.0
                         await self._session(ws)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 — every failure reconnects
-                    log.info("not connected (%s: %s)", type(exc).__name__, exc)
+                    self._report_offline(exc)
                 if not self.running:
                     break
                 await asyncio.sleep(backoff)

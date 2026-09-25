@@ -108,7 +108,7 @@ allow_insecure = false   # LAN/dev only — plain ws:// on a routable address
 #   Caddy/nginx/Traefik: "X-Forwarded-For"
 trusted_proxy_header = ""
 # ...and, when the proxy is NOT on this machine's loopback — cloudflared in
-# Docker (it arrives via the bridge gateway, e.g. 172.17.0.1), or a proxy on
+# Docker (it arrives from the container's own address, e.g. 172.17.0.2), or a proxy on
 # another host — the addresses whose header is believed. Anything in here can
 # claim to be any client, so keep it as narrow as you can. A mistyped entry
 # stops the brain at startup rather than silently trusting nothing.

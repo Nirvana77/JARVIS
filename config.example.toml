@@ -125,7 +125,7 @@ trusted_proxy_header = ""
 # in this list can claim to be any client, so keep it as narrow as you can; a
 # mistyped entry stops the brain at startup rather than trusting nothing.
 trusted_proxy_peers = []
-# e.g. trusted_proxy_peers = ["172.17.0.1"]
+# e.g. trusted_proxy_peers = ["172.17.0.0/16"]   # a cloudflared container
 
 [whisper]                # the brain's client for the warm jarvis-whisper service
 url = "http://127.0.0.1:3461"   # "off" -> no transcription ("Cannot hear you: …")

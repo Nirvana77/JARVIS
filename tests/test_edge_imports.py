@@ -83,6 +83,46 @@ def test_the_pieces_the_edge_shares_with_the_brain_stay_light():
         assert _imported_by(f"import {module}") == set(), module
 
 
+def test_an_edge_that_cannot_connect_says_so():
+    """It retries for ever by design — but silence is indistinguishable from a
+    hang, and the reason (a refused connection, a 401 from Access, a bad
+    hostname) is the whole diagnosis."""
+    import asyncio
+    import contextlib
+    import io
+
+    from jarvis.config import load_config
+    from jarvis.remote.edge import Edge
+
+    config = load_config()
+
+    class Boom:
+        async def __aenter__(self):
+            raise ConnectionRefusedError("[Errno 111] Connect call failed")
+
+        async def __aexit__(self, *a):
+            return False
+
+    edge = Edge(config, connect=Boom)
+    out = io.StringIO()
+
+    async def scenario():
+        task = asyncio.ensure_future(edge.run())
+        await asyncio.sleep(0.2)
+        edge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+    with contextlib.redirect_stdout(out):
+        asyncio.run(scenario())
+
+    printed = out.getvalue()
+    assert "cannot reach" in printed, printed
+    assert config.edge.server_url in printed
+    assert "Connect call failed" in printed, "the reason, not just the fact"
+
+
 def test_the_brain_by_contrast_does_load_them():
     """The other half of the check: if `jarvis.app` stopped importing the
     models, this test passing would mean nothing."""

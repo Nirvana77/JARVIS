@@ -292,8 +292,17 @@ header is (correctly) ignored and you are back to one bucket for every client:
 host = "0.0.0.0"
 allow_insecure = true                      # the LAN hop is now in the clear
 trusted_proxy_header = "CF-Connecting-IP"
-trusted_proxy_peers = ["172.17.0.1"]       # the bridge gateway; keep it narrow
+trusted_proxy_peers = ["172.17.0.0/16"]    # the container's subnet — see below
 ```
+
+Which address to trust is easy to get backwards, and getting it wrong fails
+*silently* — the header is ignored and the backoff quietly lumps every client
+together again. The container **dials** the bridge gateway (`172.17.0.1`, or
+`host.docker.internal` with `extra_hosts: ["host.docker.internal:host-gateway"]`),
+but the address the brain **sees** is the container's own (`172.17.0.2`, and it
+changes when the container is recreated). So `trusted_proxy_peers` names the
+container's subnet, not the gateway. The brain logs `refused <device> from
+<address>` — that address is the one to put in the list.
 
 `network_mode: host` on the container avoids all of that. Anything listed in
 `trusted_proxy_peers` can claim to be any client, so name the proxy's own
