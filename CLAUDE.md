@@ -226,9 +226,31 @@ and must be able to reach the brain — over the LAN, in the clear, with the
 brain's port open to it. And it cannot help anyway: the brain runs on exactly
 one machine, so a second replica adds a path to a service that is down whenever
 that machine is. **Serve the JARVIS hostname from a tunnel replica on the brain
-machine only**, and let other hostnames use the other replicas. If both replicas
-must carry it, point the remote one at the brain over a private link
-(WireGuard/Tailscale) rather than the bare LAN.
+machine only**, and let other hostnames use the other replicas.
+
+If replicas on more than one machine must carry it, the ingress rule is stored
+centrally and every replica gets it, so it has to name an address they can
+*all* reach — the brain's LAN address, not `localhost`. The brain then binds
+the LAN, and the hop from any replica that is not on the brain machine crosses
+it unencrypted:
+
+```toml
+[server]
+host = "0.0.0.0"
+allow_insecure = true                       # the LAN hop is in the clear
+trusted_proxy_header = "CF-Connecting-IP"
+trusted_proxy_peers = [
+    "192.168.0.20",      # a NAS replica, by its LAN address
+    "172.17.0.0/16",     # the brain box's own cloudflared container
+]
+```
+
+with `service: http://<brain-lan-ip>:8765`, and the port firewalled to just
+those sources (`ufw allow from … to any port 8765 proto tcp`, then `ufw deny
+8765`). To encrypt that hop as well, give the brain a self-signed certificate
+and use `https://` with `originRequest: {noTLSVerify: true}`, or carry it over
+WireGuard/Tailscale. The edge is unaffected either way — it only ever talks to
+Cloudflare.
 
 Worth adding on top: a Cloudflare Access policy or WAF rate-limit on the
 hostname. The device tokens are the real authentication, but there is no reason

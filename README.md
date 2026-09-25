@@ -317,6 +317,39 @@ so a second replica only adds a path to a service that is already down. Serve
 the JARVIS hostname from a replica on the brain machine, and let other
 hostnames use the others.
 
+**If you keep replicas on more than one machine** — a NAS and the brain box,
+say — the ingress rule is stored centrally and every replica gets it, so it has
+to name an address they can *all* reach: the brain's LAN address, not
+`localhost`. That means the brain binds the LAN and the hop from any replica
+that is not on the brain machine crosses it unencrypted:
+
+```toml
+[server]
+host = "0.0.0.0"
+allow_insecure = true                       # the LAN hop is in the clear
+trusted_proxy_header = "CF-Connecting-IP"
+trusted_proxy_peers = [
+    "192.168.0.20",      # the NAS replica, by its LAN address
+    "172.17.0.0/16",     # the brain box's own cloudflared container
+]
+```
+
+with `service: http://<brain-lan-ip>:8765`. Firewall the port to just those
+sources — the token is the authentication, but there is no reason to offer the
+handshake to the whole LAN:
+
+```bash
+sudo ufw allow from 192.168.0.20 to any port 8765 proto tcp
+sudo ufw allow from 172.17.0.0/16 to any port 8765 proto tcp
+sudo ufw deny 8765
+```
+
+To encrypt that LAN hop too, give the brain a self-signed certificate
+(`tls_cert`/`tls_key`), use `service: https://<brain-lan-ip>:8765` and
+`originRequest: {noTLSVerify: true}` — the edge is unaffected either way, since
+it only ever talks to Cloudflare.
+
+
 Without a tunnel, `[server]` refuses to listen on a routable address unless you
 set `tls_cert`/`tls_key` or explicitly set `allow_insecure = true`.
 
