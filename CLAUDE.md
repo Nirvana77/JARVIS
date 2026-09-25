@@ -120,8 +120,8 @@ keeps working regardless.
 On the Pi, the whole install is:
 
 ```bash
-pip install numpy sounddevice websockets   # + gpiozero for a push-to-talk button
-sudo apt install libportaudio2
+pip install -r requirements-edge.txt   # numpy, sounddevice, websockets
+sudo apt install libportaudio2         # + gpiozero for a push-to-talk button
 ```
 
 `tests/test_edge_imports.py` enforces that: the edge's import graph must not

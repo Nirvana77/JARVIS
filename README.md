@@ -85,6 +85,33 @@ NLU, Piper for speech out, and a Claude-backed skill factory that writes new
 skills on request. `PRD/jarvis-2026-rebuild.md` is the specification;
 `config.example.toml` is a commented copy of every setting.
 
+## Install
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+sudo dnf install portaudio-devel      # Fedora — sounddevice needs PortAudio
+# sudo apt install portaudio19-dev    # Debian/Ubuntu
+
+cp config.example.toml config.toml    # then edit
+python -m jarvis models pull          # fetch Whisper + the Piper voice
+python check_setup.py                 # ✓/✗ report
+```
+
+There are four requirement sets, one per virtualenv, because the pieces are
+meant to fail independently:
+
+| file | for |
+|---|---|
+| `requirements.txt` | the all-in-one box, and the brain |
+| `requirements-edge.txt` | the audio satellite — three packages, no models |
+| `services/whisper/requirements.txt` | the warm transcription service |
+| `services/voder/requirements.txt` | the warm speech service |
+
+Python 3.14 is fine for all of it (unlike the TensorFlow-era code above).
+
 ```bash
 python -m jarvis                 # the voice loop — say "hey jarvis"
 python -m jarvis text            # the same brain, typed in and printed out
@@ -110,7 +137,7 @@ belongs. So JARVIS can be split in two:
   wake word, no models. Its entire install is:
 
   ```bash
-  pip install numpy sounddevice websockets   # + gpiozero for a push-to-talk button
+  pip install -r requirements-edge.txt   # numpy, sounddevice, websockets
   sudo apt install libportaudio2
   ```
 
@@ -124,9 +151,20 @@ virtualenv and deliberately does not import `jarvis`, so a hung model is one
 process to restart and a brain restart doesn't reload a GPU model:
 
 ```bash
-python services/whisper/serve.py --model small.en --device cuda --port 3461
-python services/voder/serve.py   --voice-dir data/models/piper --port 3462
+python3 -m venv ~/.local/share/jarvis/whisper-venv
+~/.local/share/jarvis/whisper-venv/bin/pip install -r services/whisper/requirements.txt
+~/.local/share/jarvis/whisper-venv/bin/python services/whisper/serve.py \
+    --model small.en --device cuda --port 3461
+
+python3 -m venv ~/.local/share/jarvis/voder-venv
+~/.local/share/jarvis/voder-venv/bin/pip install -r services/voder/requirements.txt
+~/.local/share/jarvis/voder-venv/bin/python services/voder/serve.py \
+    --voice-dir data/models/piper --port 3462
 ```
+
+On an NVIDIA box also `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12` into
+the whisper venv — CTranslate2 loads them by bare name and does not depend on
+them itself.
 
 Both ship a systemd unit next to them. On a CPU-only brain use
 `--model base.en` — measured here at 415 ms against `small.en`'s 1050 ms on the

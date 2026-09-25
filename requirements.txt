@@ -1,0 +1,49 @@
+# JARVIS (the 2026 rebuild, `python -m jarvis`) — the all-in-one box, and the
+# brain of a brain/edge split.
+#
+#   python -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# Needs PortAudio for sounddevice:
+#   sudo dnf install portaudio-devel     # Fedora
+#   sudo apt install portaudio19-dev     # Debian/Ubuntu
+#
+# Three other requirement sets exist, on purpose — each runs in its own venv so
+# a wedged model is one process to restart:
+#   requirements-edge.txt            the audio satellite (no models at all)
+#   services/whisper/requirements.txt the warm transcription service
+#   services/voder/requirements.txt   the warm speech service
+#
+# The legacy `main.py` / `libs/` path has its own (TensorFlow-era) dependencies
+# — see README.md. Nothing here is needed for it, or it for this.
+#
+# Lower bounds, not pins: these are the versions this was built and tested
+# against (2026-09-25, Python 3.14).
+
+# -- audio in and out -------------------------------------------------------
+sounddevice>=0.5.6          # PortAudio bindings: capture and playback
+numpy>=2.5.3
+openwakeword>=0.4.0         # "hey jarvis", local and offline
+faster-whisper>=1.2.1       # speech to text (CTranslate2; CUDA-only on GPU)
+piper-tts>=1.8.0            # speech out
+
+# -- understanding ----------------------------------------------------------
+fastembed>=0.8.0            # sentence embeddings for the NLU
+scikit-learn>=1.9.1         # the classifier head on top of them
+joblib>=1.6.0               # persists that head between runs
+
+# -- skills, reasoning, the factory ----------------------------------------
+anthropic>=1.7.0            # the Claude-backed skill factory (M2)
+requests>=2.34.2            # the Ollama reasoner, and the search skill
+httpx>=0.28.1               # the whisper/voder service clients (M3)
+
+# -- the remote edge link (M3) ---------------------------------------------
+websockets>=17.1
+
+# -- configuration and models ----------------------------------------------
+python-dotenv>=1.2.3        # reads .env (secrets only)
+huggingface-hub>=0.35.0     # `python -m jarvis models pull`
+
+# -- tests ------------------------------------------------------------------
+pytest>=9.1.1
