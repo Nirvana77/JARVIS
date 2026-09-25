@@ -1,6 +1,6 @@
 # Milestone 3 — remote edge (brain server + audio satellite): plan
 
-**Status:** Planned
+**Status:** ✅ Done (2026-09-25) — see `PRD/milestone-3-remote-edge-outcome.md`
 **Date:** 2026-09-21
 **Owner:** Kevin Lundell
 **Branch:** `milestone-3-remote-edge` off `develop`, to be merged back —

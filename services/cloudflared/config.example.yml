@@ -1,0 +1,36 @@
+# cloudflared ingress for the JARVIS brain — copy to ~/.cloudflared/config.yml.
+#
+#   cloudflared tunnel login
+#   cloudflared tunnel create jarvis
+#   cloudflared tunnel route dns jarvis jarvis.example.com
+#   cloudflared tunnel run jarvis          # or: sudo cloudflared service install
+#
+# No open port and no certificate on your side: cloudflared dials out, and
+# Cloudflare terminates TLS at its edge with a real certificate for the
+# hostname. The edge device then uses  server_url = "wss://jarvis.example.com"
+# — port 443, and [edge] tls_ca stays empty.
+#
+# Run this on the SAME machine as the brain. A replica of the same tunnel
+# elsewhere does not give JARVIS failover: Cloudflare load-balances across
+# replicas rather than ordering them, and the brain runs on exactly one machine
+# anyway, so a second replica only adds a path to a service that is already
+# down. Serve this hostname from the brain's replica and let other hostnames
+# use the others.
+
+tunnel: <tunnel-id>
+credentials-file: /home/<user>/.cloudflared/<tunnel-id>.json
+
+ingress:
+  - hostname: jarvis.example.com
+    # http:// is correct — cloudflared proxies the WebSocket upgrade through it.
+    # 127.0.0.1 when cloudflared runs natively; the brain's LAN or container
+    # address if it does not (and then see [server] trusted_proxy_peers).
+    service: http://127.0.0.1:8765
+    originRequest:
+      # The brain pings every 20 s ([server] ping_interval_s), so an idle
+      # conversation stays up; this is the ceiling for one connection.
+      connectTimeout: 30s
+      noTLSVerify: false
+
+  # Required last rule.
+  - service: http_status:404

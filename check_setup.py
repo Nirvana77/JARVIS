@@ -220,6 +220,80 @@ except Exception as e:
 
 
 # --------------------------------------------------------------------------
+# M3 — the remote edge (PRD/milestone-3-remote-edge.md). Opt-in: an all-in-one
+# install needs none of it, so nothing here is required. The two services are
+# probed over their health endpoints, which is also how you tell "not running"
+# from "running but cold".
+section("Remote edge (M3, optional)")
+try:
+    import websockets as _websockets
+
+    line(OK, "websockets (brain + edge link)", getattr(_websockets, "__version__", ""))
+except Exception:
+    line(SKIP, "websockets (brain + edge link)", "not installed — `pip install websockets`")
+
+try:
+    from jarvis.config import load_config as _load_config
+
+    _config = _load_config()
+except Exception as e:  # pragma: no cover
+    _config = None
+    line(SKIP, "config.toml", repr(e))
+
+if _config is not None:
+    for _label, _url, _describe in (
+        (
+            "jarvis-whisper",
+            _config.whisper.url,
+            lambda h: f"{h.get('model')} on {h.get('device')}"
+            + ("" if h.get("warm") else " (cold)"),
+        ),
+        (
+            "jarvis-voder",
+            _config.voder.url,
+            lambda h: f"{h.get('voice')} at {h.get('sample_rate')} Hz",
+        ),
+    ):
+        if not _url or _url.strip().lower() == "off":
+            line(SKIP, _label, "off in config.toml")
+            continue
+        try:
+            import httpx as _httpx
+
+            _health = _httpx.get(f"{_url.rstrip('/')}/healthz", timeout=2).json()
+            line(OK if _health.get("ok") else BAD, _label, _describe(_health))
+        except Exception:
+            line(SKIP, _label, f"not running at {_url}")
+
+    # The tokens are secrets: their presence is reported, never their value.
+    _edge_token = _config.edge_token
+    line(
+        OK if _edge_token else SKIP,
+        "JARVIS_EDGE_TOKEN (this edge)",
+        f"set ({len(_edge_token)} chars)" if _edge_token else "unset — only the edge needs it",
+    )
+    _tokens = _config.edge_tokens
+    line(
+        OK if _tokens else SKIP,
+        "JARVIS_EDGE_TOKENS (the brain's devices)",
+        f"{len(_tokens)} device(s): {', '.join(sorted(_tokens))}"
+        if _tokens
+        else "unset — only the brain needs it",
+    )
+    # Only worth saying when the remote path is actually set up: an all-in-one
+    # install has a [server] section it never uses.
+    if _tokens and _config.server.host not in ("127.0.0.1", "::1", "localhost", ""):
+        _tls = _config.server.tls_enabled or _config.server.allow_insecure
+        line(
+            OK if _config.server.tls_enabled else (BAD if not _tls else SKIP),
+            "brain TLS",
+            "cert + key set"
+            if _config.server.tls_enabled
+            else ("allow_insecure = true (LAN/dev only!)" if _tls else "MISSING — `serve` will refuse to start"),
+        )
+
+
+# --------------------------------------------------------------------------
 print()
 if failures:
     print(f"{BAD}  {failures} required check(s) failed.")

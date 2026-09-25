@@ -192,6 +192,121 @@ def build_text_orchestrator(config: Config, lines: list[str] | None = None) -> O
     return orchestrator
 
 
+# -- M3: the brain, with the audio layer out on an edge device -------------
+
+def build_server_orchestrator(config: Config, link) -> Orchestrator:
+    """Same wiring as `build_orchestrator`, with `link` (a `RemoteLink`) in
+    place of wake/mic/STT/TTS — the segments are transcribed by
+    `jarvis-whisper` and spoken by `jarvis-voder`, both out of process, so
+    nothing heavy loads here. Real persona/NLU/skills/factory, exactly as the
+    all-in-one path has them."""
+    print(f"· persona '{config.persona.active}' (remote edge)", flush=True)
+    reasoner = Reasoner.from_config(config)
+    persona = Persona.load(config.persona.active, config, reasoner)
+    # The voder speaks in the persona's own voice, out on the service.
+    if getattr(link.voder, "voice", None) is None and persona.voice:
+        link.voder.voice = persona.voice
+
+    registry = Registry.discover(config, reasoner, say=link.say)
+    print("· NLU model", flush=True)
+    ensure_nlu(config, registry)
+    nlu = load_classifier(config)
+
+    claude_client = ClaudeClient.from_config(config)
+    sandbox = SubprocessSandbox(
+        timeout_s=config.factory.sandbox_timeout_s,
+        mem_mb=config.factory.sandbox_mem_mb,
+        cpu_s=config.factory.sandbox_cpu_s,
+    )
+    print(
+        f"  NLU v{nlu.version} · {len(registry.names())} skills · "
+        f"factory: {'claude:' + claude_client.model if claude_client.available else 'unavailable'}",
+        flush=True,
+    )
+
+    orchestrator = Orchestrator(
+        config=config,
+        wake=link,
+        mic=link,
+        stt=link,
+        tts=link,
+        nlu=nlu,
+        persona=persona,
+        registry=registry,
+        intent_meta=intent_meta(),
+        claude_client=claude_client,
+        sandbox=sandbox,
+    )
+    link.attach(orchestrator)
+    return orchestrator
+
+
+def run_server_mode(config: Config) -> int:
+    """`python -m jarvis serve` — the brain, waiting for an edge."""
+    from jarvis.remote.server import RemoteLink, RemoteServer
+
+    link = RemoteLink(config)
+    try:
+        server = RemoteServer(config, link)
+    except ValueError as exc:  # a mistyped [server] trusted_proxy_peers entry
+        print(f"error: {exc}", flush=True)
+        return 2
+    _report_service(
+        "speech recogniser", config.whisper.url,
+        lambda: server.transcriber.health(),
+        lambda h: f"{h.get('model')} on {h.get('device')}{'' if h.get('warm') else ' (cold)'}",
+    )
+    _report_service(
+        "voder", config.voder.url,
+        lambda: link.voder.health(),
+        lambda h: f"{h.get('voice')} at {h.get('sample_rate')} Hz",
+    )
+    orchestrator = build_server_orchestrator(config, link)
+
+    async def main() -> None:
+        link.bind_loop()
+        ws = await server.serve()
+        scheme = "wss" if config.server.tls_enabled else "ws"
+        print(
+            f"JARVIS brain ready — {scheme}://{config.server.host}:{config.server.port}, "
+            f"{len(server.tokens)} device token(s), default mode "
+            f"'{config.addressing.default_mode}'. Ctrl-C to quit.",
+            flush=True,
+        )
+        try:
+            await orchestrator.run()
+        finally:
+            ws.close()
+            await ws.wait_closed()
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nShutting down.", flush=True)
+    except RuntimeError as exc:  # a refused insecure bind says why, once
+        print(f"error: {exc}", flush=True)
+        return 2
+    return 0
+
+
+def _report_service(label: str, url: str, health, describe) -> None:
+    if not url or url.strip().lower() == "off":
+        print(f"· {label}: off", flush=True)
+        return
+    try:
+        print(f"· {label}: {describe(health())} ({url})", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! {label} at {url} is not answering ({exc}) — starting anyway", flush=True)
+
+
+def run_edge_mode(config: Config) -> int:
+    """`python -m jarvis edge` — the audio satellite. Imported lazily so the
+    edge's process never loads a model."""
+    from jarvis.remote.edge import run_edge
+
+    return run_edge(config)
+
+
 def _read_script_lines(path: str) -> list[str]:
     raw = Path(path).read_text(encoding="utf-8").splitlines()
     return [ln.strip() for ln in raw if ln.strip() and not ln.strip().startswith("#")]

@@ -1,0 +1,32 @@
+# jarvis-whisper — the brain's warm transcription service (M3 decision 8).
+#
+#   sudo cp services/whisper/jarvis-whisper.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now jarvis-whisper
+#
+# Edit User/WorkingDirectory/ExecStart for your box. The venv is the service's
+# own (faster-whisper + the nvidia wheels), not the brain's — see serve.py.
+
+[Unit]
+Description=JARVIS transcription service (faster-whisper)
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/robin/kevin/JARVIS
+Environment=JARVIS_WHISPER_MODEL=small.en
+Environment=JARVIS_WHISPER_DEVICE=cuda
+Environment=JARVIS_WHISPER_COMPUTE=float16
+Environment=JARVIS_WHISPER_DIR=/home/robin/kevin/JARVIS/data/models/whisper
+ExecStart=/home/robin/.local/share/jarvis/whisper-venv/bin/python services/whisper/serve.py --port 3461
+Restart=on-failure
+RestartSec=2
+# It listens on loopback only and holds no secrets; give it as little as that needs.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/robin/kevin/JARVIS/data/models/whisper
+
+[Install]
+WantedBy=multi-user.target

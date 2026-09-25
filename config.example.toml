@@ -1,0 +1,176 @@
+# JARVIS configuration — copy to config.toml and edit.
+#
+# This file holds every non-secret setting. Secrets (ANTHROPIC_API_KEY,
+# HF_TOKEN, JARVIS_EDGE_TOKEN(S)) live in .env and never here.
+#
+# Three ways to run, and they share this file:
+#   all-in-one   `python -m jarvis`        — mic, wake word and speaker, one box
+#   brain        `python -m jarvis serve`  — [server] [whisper] [voder] [addressing]
+#   edge         `python -m jarvis edge`   — [edge], and nothing heavy
+# See README.md and PRD/jarvis-2026-rebuild.md.
+
+[general]
+language = "en"           # also overridable with the `language` env var
+
+[persona]
+active = "jarvis"         # a directory under personas/; JARVIS_PERSONA overrides
+
+# ---------------------------------------------------------------- all-in-one
+# Ignored by `serve` and `edge`: on that path the edge owns the microphone and
+# the addressing modes replace the wake word.
+
+[wake]
+model = "hey_jarvis"      # openwakeword pretrained model name (bundled, offline)
+threshold = 0.5           # score above which the wake word is considered heard
+
+[capture]
+sample_rate = 16000
+frame_ms = 80             # length of one audio frame fed to the wake detector
+window_timeout_s = 8.0    # max length of the listening window opened by the wake word
+silence_s = 1.0           # trailing silence that ends an utterance
+follow_up_s = 10.0        # after a command, keep listening this long for a follow-up
+                          # (no wake word needed) before announcing standby.
+                          # On the remote path this is also how long an
+                          # un-named sentence still reaches JARVIS — shorten it
+                          # if the room is busy.
+
+allow_interrupt = true    # press Enter in the terminal to cancel the current
+                          # listen / transcription (TTY only)
+
+# --- EXTRA: voice barge-in (off by default, needs per-mic tuning) ---
+barge_in = false
+barge_in_min_speech_s = 0.6  # sustained speech needed to fire (noise filter)
+barge_in_threshold = 0.0     # absolute RMS threshold; 0 = auto-calibrate
+
+# If commands get cut short or transcribed as nonsense near the end, run
+# `python -m jarvis mic`, watch whether your speech stays above the │ marker to
+# the end of a sentence, and pin a threshold here instead of auto-calibrating.
+vad_threshold = 0.0       # absolute RMS threshold; 0 = auto-calibrate
+
+# Which microphone to record from. Empty = the system default input.
+# pipewire_node: a source name from `pactl list short sources` (wins over
+# device). device: a PortAudio index or name from `python -m sounddevice`.
+pipewire_node = ""
+device = ""
+
+[stt]
+model = "small.en"       # faster-whisper: tiny(.en)/base(.en)/small(.en)/medium(.en).
+                         # ".en" models are more accurate for English at the same
+                         # size. On a CPU box base.en is ~2.5x faster than
+                         # small.en for the same transcripts; on a GPU, go bigger.
+compute_type = "int8"    # "float16" on a GPU; "int8_float32" is more accurate on CPU
+device = "cpu"           # "cuda" if you have an NVIDIA GPU (CTranslate2 is CUDA-only)
+language = "en"
+
+[tts]
+voice = "en_GB-alan-medium"   # Piper voice; files resolved under <data>/models/piper/
+# Speaker to play through: a sink name from `pactl list short sinks`;
+# empty = the system default output.
+pipewire_node = ""
+
+[nlu]
+embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+threshold = 0.35            # max class probability below this -> "unknown"
+similarity_floor = 0.30     # min cosine similarity to any training phrase, else "unknown"
+meta_action_threshold = 0.6 # teach/edit_skill/revert_skill need this confidence before
+                            # JARVIS commits to a whole multi-turn dialog
+
+[reasoner]
+enabled = true           # still capability-probed; false disables Ollama entirely
+base_url = "http://localhost:11434"
+model = "qwen2.5:3b"
+
+[factory]
+model = "claude-opus-5"     # overridden by the ANTHROPIC_MODEL env var
+sandbox_timeout_s = 10.0    # wall-clock limit for a sandboxed test/dry-run
+sandbox_mem_mb = 512        # RLIMIT_AS for a sandboxed subprocess — pytest's own
+                            # startup needs several hundred MB in a large venv
+sandbox_cpu_s = 5           # RLIMIT_CPU for a sandboxed subprocess
+
+[paths]
+data_dir = "data"        # models, nlu artifacts, per-skill scratch (git-ignored)
+
+# ================================================================= the brain
+# `python -m jarvis serve`. Ignored by the all-in-one path.
+
+[server]
+# TLS is required on a routable address. Three legitimate shapes:
+#
+#   1. behind a tunnel or reverse proxy ON THIS MACHINE  (recommended)
+#        host = "127.0.0.1"    — and set trusted_proxy_header below
+#   2. its own certificate
+#        host = "0.0.0.0"  tls_cert = "/etc/ssl/jarvis.pem"  tls_key = "…key"
+#   3. LAN or development, in the clear
+#        host = "0.0.0.0"  allow_insecure = true
+#
+# Anything else is refused at startup rather than quietly shipping speech in
+# the clear across a network.
+host = "127.0.0.1"
+port = 8765
+tls_cert = ""
+tls_key  = ""
+allow_insecure = false
+
+# With a Cloudflare Tunnel or a reverse proxy in front, every connection
+# reaches the brain from 127.0.0.1 — and the login backoff keyed on that cannot
+# tell your edge from someone hammering your public hostname, so a stranger's
+# failed guesses would lock out your own device. Naming the proxy's header
+# fixes it.
+#   Cloudflare Tunnel  : "CF-Connecting-IP"
+#   Caddy/nginx/Traefik: "X-Forwarded-For"
+trusted_proxy_header = ""
+# The header is believed when the connection came from loopback. When the proxy
+# is NOT on loopback — cloudflared in Docker arrives via the bridge gateway, a
+# proxy on another host arrives over the LAN — list its address here. Anything
+# in this list can claim to be any client, so keep it as narrow as you can; a
+# mistyped entry stops the brain at startup rather than trusting nothing.
+trusted_proxy_peers = []
+# e.g. trusted_proxy_peers = ["172.17.0.1"]
+
+[whisper]                # the brain's client for the warm jarvis-whisper service
+url = "http://127.0.0.1:3461"   # "off" -> no transcription ("Cannot hear you: …")
+timeout_s = 20
+
+[voder]                  # the brain's client for jarvis-voder (Piper, CPU)
+url = "http://127.0.0.1:3462"   # "off" -> the answer is sent as text only
+sample_rate = 16000
+
+[addressing]             # there is no wake word on the remote path
+default_mode = "byname"  # byname | always | pushtotalk | ignore
+names = ["jarvis", "hey jarvis"]
+# The segmenter closes a segment after 700 ms of silence, which is right for
+# "have they stopped talking" and wrong for "have they finished the thought":
+# fragments are held this long and merged into one command. 0 disables it.
+#
+# Paid on EVERY turn, so it is the biggest single thing between finishing a
+# sentence and hearing an answer. It can be this short because the edge reports
+# when it hears speech, which pauses the countdown: the window only has to
+# notice a continuation starting, not swallow one whole. The pause it tolerates
+# end to end is hangover + transcription + hold.
+hold_ms = 1000
+
+# ================================================================== the edge
+# `python -m jarvis edge`. Needs only numpy, sounddevice and websockets — no
+# models, no ONNX. Everything above this line is ignored on an edge box.
+
+[edge]
+server_url = "wss://jarvis.example.com"   # port 443 through a tunnel; ws://host:8765 on a LAN
+device_id = "livingroom"        # must match a name in JARVIS_EDGE_TOKENS on the brain;
+                                # also the name of its state file under data/remote/
+tls_ca = ""                     # a CA bundle, only for a self-signed brain certificate
+reconnect_max_s = 30            # exponential backoff ceiling
+ptt_gpio = 0                    # push-to-talk button GPIO pin; 0 = no button
+
+# Mic and speaker, same knobs as [capture] / [tts] above.
+input_pipewire_node = ""
+output_pipewire_node = ""
+input_device = ""
+output_device = ""
+
+# [edge.segment] overrides the segmenter's measured defaults (see
+# jarvis/audio/segment.py). Every value there has a comment saying what it cost
+# to learn, so only touch these with a recording to test against.
+# [edge.segment]
+# hangover_ms = 700        # silence that ends a segment
+# margin_db = 9            # how far above the noise floor counts as speech
+# max_segment_ms = 15000   # cut at the most recent pause, not mid-word

@@ -234,13 +234,84 @@ def test_speaker_targets_a_pipewire_node_only_while_opening(monkeypatch):
     monkeypatch.setitem(sys.modules, "sounddevice", types.SimpleNamespace(OutputStream=FakeOut))
     monkeypatch.delenv("PIPEWIRE_NODE", raising=False)
 
-    Speaker(pipewire_node="alsa_output.laptop_speaker")._output(22050)
-    Speaker()._output(22050)
+    # M3 moved the stream itself into `jarvis/audio/player.py` (the edge plays
+    # PCM with no Piper in the process), so `Speaker` opens it through its
+    # `Player`. Same assertions, one indirection further down.
+    Speaker(pipewire_node="alsa_output.laptop_speaker").player._output(22050)
+    Speaker().player._output(22050)
     assert opened[0]["device"] == "pipewire"
     assert opened[0]["env_node"] == "alsa_output.laptop_speaker"
     assert opened[1]["device"] is None
     assert opened[1]["env_node"] is None
     assert "PIPEWIRE_NODE" not in os.environ
+
+
+def test_the_player_writes_in_slices_so_it_can_be_stopped(monkeypatch):
+    """M3: a button press during an answer has to stop playback *now*, without
+    waiting for the brain — so the write loop checks between slices."""
+    import sys
+    import types
+
+    from jarvis.audio.player import Player
+
+    written: list[int] = []
+
+    class FakeOut:
+        def __init__(self, **kwargs):
+            self.samplerate = kwargs["samplerate"]
+
+        def start(self):
+            pass
+
+        def write(self, data):
+            written.append(len(data))
+
+        def abort(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "sounddevice", types.SimpleNamespace(OutputStream=FakeOut))
+    player = Player(lead_pad_s=0.0)
+    pcm = np.zeros(16000, dtype=np.int16)  # one second
+
+    assert player.play(pcm, 16000) is True
+    assert sum(written) == 16000
+    assert len(written) > 1, "written in slices, not one blocking call"
+
+    # A press mid-answer: `stop()` lands while the write loop is running, and
+    # the loop notices within one slice. (A stop *between* utterances is not
+    # remembered — each `play` starts fresh, which is what lets the next answer
+    # be spoken at all.)
+    written.clear()
+    stop_after = 2
+
+    def interrupting_write(self, data):
+        written.append(len(data))
+        if len(written) == stop_after:
+            player.stop()
+
+    monkeypatch.setattr(FakeOut, "write", interrupting_write)
+    assert player.play(pcm, 16000) is False
+    assert 0 < sum(written) < 16000, "playback stopped part-way through"
+    player.close()
+
+
+def test_the_player_survives_a_box_with_no_output_device(monkeypatch):
+    import sys
+    import types
+
+    from jarvis.audio.player import Player
+
+    def boom(**kwargs):
+        raise OSError("no such device")
+
+    monkeypatch.setitem(sys.modules, "sounddevice", types.SimpleNamespace(OutputStream=boom))
+    assert Player().play(np.zeros(160, dtype=np.int16), 16000) is False
 
 
 def test_tts_output_node_loads_from_config_toml(tmp_path):

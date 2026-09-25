@@ -4,7 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **The rebuild is underway.** `PRD/jarvis-2026-rebuild.md` is the canonical
 spec; `PRD/milestone-N-*.md` are per-milestone plans and
-`PRD/milestone-N-*-outcome.md` their outcomes once shipped. The rebuilt
+`PRD/milestone-N-*-outcome.md` their outcomes once shipped.
+`PRD/known-issues.md` lists what is known-broken and not yet fixed — **read it
+before debugging something that looks new**, and add to it rather than fixing
+in passing when a bug is out of the current milestone's scope. The rebuilt
 package lives in `jarvis/` (`python -m jarvis ...`) alongside the untouched
 legacy `main.py`/`libs/`/`actions/` this file otherwise describes — see the
 PRD for the target architecture and the migration mapping between the two.
@@ -36,7 +39,9 @@ Follow this order for any PRD/milestone item — don't skip or reorder steps:
    dry-run (step 4). JARVIS starts threads in several places:
    `jarvis/factory/jobs.py` (background learning), `jarvis/core/interrupt.py`,
    `jarvis/core/orchestrator.py`, `jarvis/audio/stt.py`, plus sounddevice's
-   audio callback threads. A leaked or runaway thread doesn't fail a test on
+   audio callback threads — and, on the M3 remote path, every
+   `asyncio.to_thread` the orchestrator makes through `RemoteLink`
+   (`jarvis/remote/server.py`) plus the services' `ThreadingHTTPServer`. A leaked or runaway thread doesn't fail a test on
    its own, so check for one explicitly:
    - **Tests**: compare `threading.enumerate()` before and after the code
      under test. A test that starts a thread must leave none behind once it
@@ -79,6 +84,148 @@ python main.py           # Run JARVIS
 python libs/training.py  # Train the NLP model manually
 python libs/brain.py     # Type sentences to see raw intent classification
 ```
+
+### The rebuilt package (`jarvis/`)
+
+```bash
+python -m jarvis                 # all-in-one voice loop (wake word + mic + speaker)
+python -m jarvis text            # the same brain, typed in and printed out
+python -m jarvis --selftest      # load NLU + persona, list skills, exit 0
+python -m jarvis serve           # M3: the brain, waiting for an audio edge
+python -m jarvis edge            # M3: the audio satellite (a mic, a speaker, a socket)
+```
+
+**All-in-one is still the default.** `serve` / `edge` are the opt-in split
+from Milestone 3 (`PRD/milestone-3-remote-edge.md`): the brain runs where the
+GPU is, the edge runs in the room.
+
+#### The remote edge (M3)
+
+The brain needs two warm services next to it on loopback, each in its own venv
+(they deliberately do **not** import `jarvis`):
+
+```bash
+python services/whisper/serve.py --model small.en --device cuda --port 3461
+# on a CPU brain use --model base.en: measured 415 ms vs small.en's 1050 ms on
+# the same clips, with identical transcripts (the cost is fixed overhead, not
+# decoding, so the bigger model is pure latency there)
+python services/voder/serve.py   --voice-dir data/models/piper --port 3462
+```
+
+Both ship a systemd unit beside them. `check_setup.py` prints a ✓/✗ row per
+service from its `/healthz`. The brain starts without them and says so
+("Cannot hear you: the transcription service is not running"); `text` mode
+keeps working regardless.
+
+On the Pi, the whole install is:
+
+```bash
+pip install numpy sounddevice websockets   # + gpiozero for a push-to-talk button
+sudo apt install libportaudio2
+```
+
+`tests/test_edge_imports.py` enforces that: the edge's import graph must not
+reach fastembed, faster-whisper, Piper, sklearn, anthropic or openwakeword. If
+you add an import to `jarvis/remote/edge.py`, `jarvis/audio/segment.py`,
+`jarvis/audio/player.py`, `jarvis/remote/protocol.py` or `jarvis/config.py`,
+that test is the one that will tell you it can no longer run on a Pi.
+
+Secrets live in `.env`: the edge reads `JARVIS_EDGE_TOKEN`, the brain reads
+`JARVIS_EDGE_TOKENS="livingroom:s3cret,kitchen:other"`. `[server]` refuses to
+listen on a routable address without TLS unless `allow_insecure = true`.
+
+##### Over the internet, via Cloudflare Tunnel
+
+The recommended shape, because it needs no certificate, no open port and no
+port-forwarding — `cloudflared` runs **on the brain machine** and dials out:
+
+```toml
+[server]
+host = "127.0.0.1"                        # the tunnel is the only way in
+port = 8765
+trusted_proxy_header = "CF-Connecting-IP" # see below
+```
+
+```yaml
+# ~/.cloudflared/config.yml
+tunnel: <tunnel-id>
+credentials-file: /home/<user>/.cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: jarvis.example.com
+    service: http://127.0.0.1:8765        # cloudflared proxies the WS upgrade
+  - service: http_status:404
+```
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create jarvis
+cloudflared tunnel route dns jarvis jarvis.example.com
+cloudflared tunnel run jarvis            # or: cloudflared service install
+```
+
+The edge then uses `server_url = "wss://jarvis.example.com"` — port 443, no
+`:8765`, and `tls_ca` stays empty because Cloudflare's certificate is publicly
+trusted. Cloudflare's WebSocket support is on by default; `[server]
+ping_interval_s = 20` is what keeps an idle conversation from being dropped as
+idle by the edge network.
+
+**`trusted_proxy_header` is not optional here.** Through a tunnel every
+connection reaches the brain from 127.0.0.1, so the per-address auth backoff
+cannot tell your edge from anyone hammering your public hostname — without it,
+a stranger's failed guesses lock out your own Pi. The header is believed only
+when the connection came from loopback, i.e. from `cloudflared` on the same
+machine; a header from any other address is ignored, because there it is the
+client's claim about itself.
+
+Binding `0.0.0.0` as well is a separate decision and a worse one: the tunnel
+does not need it, and it puts unencrypted audio on your LAN. If you want it
+anyway (a second edge on the LAN that skips the tunnel), that is what
+`allow_insecure = true` is for, and the warning it logs is accurate.
+
+###### `cloudflared` in Docker, and tunnel replicas
+
+From a container, `cloudflared` reaches the brain over the Docker bridge, not
+loopback. Two consequences:
+
+- the brain must bind something the container can reach — `network_mode: host`
+  (then everything above applies unchanged, loopback and all), or `0.0.0.0`
+  with `allow_insecure = true` and a firewall;
+- the header has to be trusted by address instead:
+
+```toml
+[server]
+host = "0.0.0.0"
+allow_insecure = true                       # the LAN hop is now in the clear
+trusted_proxy_header = "CF-Connecting-IP"
+trusted_proxy_peers = ["172.17.0.1"]        # the bridge gateway, as narrow as you can make it
+```
+
+Anything inside `trusted_proxy_peers` can claim to be any client, so name the
+proxy's own address rather than its subnet where you can. A mistyped entry stops
+the brain at startup rather than quietly disabling the distinction.
+
+**Running the same tunnel on two machines does not give JARVIS failover.**
+Cloudflare load-balances across replicas of a tunnel rather than ordering them
+primary/secondary, so a replica elsewhere (a NAS, say) will receive connections
+and must be able to reach the brain — over the LAN, in the clear, with the
+brain's port open to it. And it cannot help anyway: the brain runs on exactly
+one machine, so a second replica adds a path to a service that is down whenever
+that machine is. **Serve the JARVIS hostname from a tunnel replica on the brain
+machine only**, and let other hostnames use the other replicas. If both replicas
+must carry it, point the remote one at the brain over a private link
+(WireGuard/Tailscale) rather than the bare LAN.
+
+Worth adding on top: a Cloudflare Access policy or WAF rate-limit on the
+hostname. The device tokens are the real authentication, but there is no reason
+to let the whole internet reach the handshake.
+
+**Privacy, stated plainly.** The edge has no wake word — the addressing modes
+are the wake word — so *every* segment of speech it hears is transcribed on
+your own brain machine. ByName decides what reaches a skill, not what is
+transcribed. The ways to actually stop that are **PushToTalk** (the mic is
+genuinely off until the button is held) and "turn off the mic"; Ignore still
+listens and discards. Nothing is sent to a third party, and audio and tokens
+are never logged.
 
 Always run from the repo root. All file paths are resolved relative to the current working directory: `intents.json`, `JARVIS_model.keras`, `words.pkl`, `classes.pkl`.
 

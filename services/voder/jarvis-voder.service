@@ -1,0 +1,27 @@
+# jarvis-voder — the brain's warm speech synthesis service (M3 decision 8).
+#
+#   sudo cp services/voder/jarvis-voder.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now jarvis-voder
+#
+# CPU only, deliberately: it stays off Whisper's GPU.
+
+[Unit]
+Description=JARVIS speech synthesis service (Piper)
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/robin/kevin/JARVIS
+Environment=JARVIS_VODER_VOICE=en_GB-alan-medium
+Environment=JARVIS_PIPER_DIR=/home/robin/kevin/JARVIS/data/models/piper
+ExecStart=/home/robin/.local/share/jarvis/voder-venv/bin/python services/voder/serve.py --port 3462
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

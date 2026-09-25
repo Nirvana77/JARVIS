@@ -39,7 +39,15 @@ language="en"
 ANTHROPIC_API_KEY="sk-ant-..."
 # ANTHROPIC_WORKSPACE_ID="wrkspc_..."   # required only for identity-linked API keys
 # ANTHROPIC_MODEL="claude-sonnet-5"     # optional; default is claude-opus-5
+
+# Optional, for the rebuilt assistant (see below):
+# HF_TOKEN="hf_..."                     # authenticated model downloads
+# JARVIS_EDGE_TOKENS="livingroom:s3cret"  # on the brain: one per edge device
+# JARVIS_EDGE_TOKEN="s3cret"              # on an edge: its own
 ```
+
+Secrets live only here. Everything else is in `config.toml` — start from
+`config.example.toml`, which documents every setting.
 
 If your key is **identity-linked** (calls fail with
 `anthropic-workspace-id is required`), either add `ANTHROPIC_WORKSPACE_ID`
@@ -65,3 +73,184 @@ python libs/brain.py     # Type sentences to see raw intent classification
 
 Always run from the repo root — `intents.json`, `JARVIS_model.keras`,
 `words.pkl`, and `classes.pkl` are resolved relative to the working directory.
+
+---
+
+# The 2026 rebuild (`jarvis/`)
+
+Everything above is the original code, kept working and untouched. The rebuilt
+assistant lives in `jarvis/` and runs as `python -m jarvis`: a local voice loop
+with an openwakeword wake word, faster-whisper for speech, an embedding-based
+NLU, Piper for speech out, and a Claude-backed skill factory that writes new
+skills on request. `PRD/jarvis-2026-rebuild.md` is the specification;
+`config.example.toml` is a commented copy of every setting.
+
+```bash
+python -m jarvis                 # the voice loop — say "hey jarvis"
+python -m jarvis text            # the same brain, typed in and printed out
+python -m jarvis --selftest      # load NLU + persona, list skills, exit 0
+python -m jarvis mic             # live microphone meter, for tuning the VAD
+python -m jarvis serve           # the brain, waiting for an audio edge
+python -m jarvis edge            # the audio satellite
+```
+
+`./jarvis-run <args>` does the same thing using the repo's own virtualenv, from
+any directory.
+
+## Remote edge: brain here, ears there
+
+The best speech models want a GPU, but the place an assistant needs to *hear
+and speak* is a room — and a room is where a small, silent, cheap device
+belongs. So JARVIS can be split in two:
+
+- **the brain** (`python -m jarvis serve`) runs where the GPU is. It does
+  speech-to-text, NLU, skills, persona and speech synthesis.
+- **the edge** (`python -m jarvis edge`) runs on a Raspberry Pi-class box in
+  the room. It owns the microphone and the speaker and **nothing else** — no
+  wake word, no models. Its entire install is:
+
+  ```bash
+  pip install numpy sounddevice websockets   # + gpiozero for a push-to-talk button
+  sudo apt install libportaudio2
+  ```
+
+The two talk over a versioned WebSocket protocol, and the link may cross the
+internet. All-in-one `python -m jarvis` is still the default; this is opt-in.
+
+### The brain's two services
+
+The brain expects two warm services beside it on loopback. Each runs in its own
+virtualenv and deliberately does not import `jarvis`, so a hung model is one
+process to restart and a brain restart doesn't reload a GPU model:
+
+```bash
+python services/whisper/serve.py --model small.en --device cuda --port 3461
+python services/voder/serve.py   --voice-dir data/models/piper --port 3462
+```
+
+Both ship a systemd unit next to them. On a CPU-only brain use
+`--model base.en` — measured here at 415 ms against `small.en`'s 1050 ms on the
+same clips, with identical transcripts. The brain starts without either service
+and says so out loud ("Cannot hear you: the transcription service is not
+running"); text mode keeps working regardless.
+
+`python check_setup.py` prints a ✓/✗ row per service from its `/healthz`.
+
+### Talking to it
+
+There is no wake word on this path — **the addressing modes are the wake
+word**. The brain transcribes every segment, tells the edge what it `heard`
+*before* deciding anything, and then gates on the transcript:
+
+| mode | what reaches JARVIS | the mic |
+|---|---|---|
+| **ByName** (default) | "Jarvis, …", plus anything inside a conversation window | open |
+| **Always** | everything said | open |
+| **PushToTalk** | only what is said while the button is held | **off** otherwise |
+| **Ignore** | nothing — input paused | open, discarded |
+
+The mode commands work **in every mode, including Ignore**, so there is no
+state you can reach that you cannot speak your way out of: *"Jarvis, pause
+input"*, *"continue input"*, *"change input to always / by name / push to
+talk"*, *"turn off the mic"*.
+
+A sentence with a pause in it is one command, not two: fragments are merged for
+`[addressing] hold_ms` after you stop talking, and the countdown pauses while
+the edge can still hear you.
+
+### Privacy, stated plainly
+
+With no wake word, **every segment of speech the edge hears is transcribed on
+your own brain machine.** ByName decides what reaches a skill, not what is
+transcribed. The ways to actually stop that are **PushToTalk** (the microphone
+is genuinely off until the button is held) and *"turn off the mic"*; Ignore
+still listens and discards. Nothing is sent to a third party, and audio and
+tokens are never logged.
+
+### Tokens
+
+Each device has its own pre-shared token, compared in constant time. They live
+in `.env`, never in `config.toml`:
+
+```
+JARVIS_EDGE_TOKENS="livingroom:s3cret,kitchen:other"   # the brain's devices
+JARVIS_EDGE_TOKEN="s3cret"                             # this edge's own
+```
+
+### Over the internet, with a Cloudflare Tunnel
+
+The recommended shape: no certificate, no open port, no port-forwarding.
+`cloudflared` runs **on the brain machine** and dials out; Cloudflare terminates
+TLS at the edge with a real certificate for your hostname.
+
+```toml
+# config.toml, on the brain
+[server]
+host = "127.0.0.1"                        # the tunnel is the only way in
+port = 8765
+trusted_proxy_header = "CF-Connecting-IP"
+```
+
+```yaml
+# ~/.cloudflared/config.yml  — see services/cloudflared/config.example.yml
+tunnel: <tunnel-id>
+credentials-file: /home/<user>/.cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: jarvis.example.com
+    service: http://127.0.0.1:8765        # cloudflared proxies the WS upgrade
+  - service: http_status:404
+```
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create jarvis
+cloudflared tunnel route dns jarvis jarvis.example.com
+cloudflared tunnel run jarvis             # or: cloudflared service install
+```
+
+The edge then uses `server_url = "wss://jarvis.example.com"` — port 443, no
+`:8765`, and `tls_ca` stays empty because Cloudflare's certificate is publicly
+trusted.
+
+**`trusted_proxy_header` is not optional here.** Through a tunnel every
+connection reaches the brain from `127.0.0.1`, so the per-address login backoff
+cannot tell your edge from anyone hammering your public hostname — without it, a
+stranger's failed guesses lock out your own device. The header is believed only
+when the connection came from loopback, i.e. from `cloudflared` on the same
+machine.
+
+**Running `cloudflared` in Docker?** Then it reaches the brain over the Docker
+bridge rather than loopback, so name that address explicitly — otherwise the
+header is (correctly) ignored and you are back to one bucket for every client:
+
+```toml
+[server]
+host = "0.0.0.0"
+allow_insecure = true                      # the LAN hop is now in the clear
+trusted_proxy_header = "CF-Connecting-IP"
+trusted_proxy_peers = ["172.17.0.1"]       # the bridge gateway; keep it narrow
+```
+
+`network_mode: host` on the container avoids all of that. Anything listed in
+`trusted_proxy_peers` can claim to be any client, so name the proxy's own
+address rather than its subnet; a mistyped entry stops the brain at startup
+rather than quietly trusting nothing.
+
+**Two tunnel replicas will not give JARVIS failover.** Cloudflare load-balances
+across replicas rather than ordering them primary/secondary, so a replica on
+another machine *will* receive connections and must be able to reach the brain
+across your LAN. It cannot help anyway — the brain runs on exactly one machine,
+so a second replica only adds a path to a service that is already down. Serve
+the JARVIS hostname from a replica on the brain machine, and let other
+hostnames use the others.
+
+Without a tunnel, `[server]` refuses to listen on a routable address unless you
+set `tls_cert`/`tls_key` or explicitly set `allow_insecure = true`.
+
+## Tests
+
+```bash
+python -m pytest
+```
+
+Covers `jarvis/` only; the legacy code above has no test suite.

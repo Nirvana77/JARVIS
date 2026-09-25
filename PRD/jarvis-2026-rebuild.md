@@ -455,9 +455,10 @@ dispatches. Questions are asked only at safe points. Permissions are granted
 before the sandbox. Serialized jobs keep both skills. Shutdown cancels
 cleanly. Text-mode dry run with a delayed fake Claude.
 
-### Milestone 3 — remote edge (brain server + audio satellite)
+### Milestone 3 — remote edge (brain server + audio satellite) — ✅ DONE (2026-09-25)
 
-Full plan and design decisions: `PRD/milestone-3-remote-edge.md`. The voice
+Full plan and design decisions: `PRD/milestone-3-remote-edge.md`; outcome:
+`PRD/milestone-3-remote-edge-outcome.md`. The voice
 pipeline is **ported from [SBRA-Dynamics/Mike](https://github.com/SBRA-Dynamics/Mike)**
 (its PRD 5a voice, PRD 6 hold window and PRD 8.3 voder), not reinvented.
 
