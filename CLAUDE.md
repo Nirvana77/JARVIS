@@ -2,6 +2,30 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repository and authorship
+
+Owner: **Kevin Lundell** <nocktok123@gmail.com> — GitHub `Nirvana77`, repo
+`Nirvana77/JARVIS`. Earlier commits also appear as `Navanda` (same address),
+which is the alias in the LICENSE.
+
+**Commit as that identity.** It is set repo-locally:
+
+```bash
+git config user.name "Kevin Lundell"
+git config user.email "nocktok123@gmail.com"
+```
+
+so a machine whose *global* git identity belongs to somebody else still records
+the right author here. Before committing, check `git log -1 --format='%an <%ae>'`
+— if it is anyone else, fix the repo-local config rather than the commit. This
+is written down because it has already gone wrong once: fifteen commits on
+`develop` are authored by the machine's global identity instead of the owner's.
+
+Pushing needs the `Nirvana77` credential (`gh auth switch -u Nirvana77`, or pin
+it with `git remote set-url origin https://Nirvana77@github.com/Nirvana77/JARVIS.git`);
+another account gets a 403 even with the right author set, since authorship and
+push permission are unrelated.
+
 **The rebuild is underway.** `PRD/jarvis-2026-rebuild.md` is the canonical
 spec; `PRD/milestone-N-*.md` are per-milestone plans and
 `PRD/milestone-N-*-outcome.md` their outcomes once shipped.
