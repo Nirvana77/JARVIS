@@ -151,20 +151,26 @@ class Transcriber:
         self.load_ms = int((time.time() - started) * 1000)
 
     def warmup(self):
-        """One inference at startup, on half a second of quiet noise.
+        """One real inference at startup, and it has to be a real one.
 
         The first call after a load pays for CUDA kernel compilation and the
         tokeniser, and it is five to ten times the cost of the second. The
         latency budget allows 800 ms for transcription; paying that debt here
         means the user never does.
+
+        It also has to *reach the encoder*, which is the part that touches CUDA
+        — otherwise a GPU install that cannot load libcublas reports itself warm
+        and healthy and then fails on the user's first sentence, which is
+        exactly what happened. Quiet noise does not reach it: Silero drops it as
+        non-speech and the model is never run. So: a tone the detector keeps,
+        and `vad=False` so nothing can drop it on the way.
         """
-        noise = (np.random.default_rng(0).standard_normal(SAMPLE_RATE // 2) * 0.001).astype(
-            np.float32
-        )
-        self.run(noise)
+        t = np.arange(SAMPLE_RATE // 2, dtype=np.float32) / SAMPLE_RATE
+        tone = (0.1 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+        self.run(tone, vad=False)
         self.warm = True
 
-    def run(self, audio):
+    def run(self, audio, vad=True):
         """float32 mono at 16 kHz in, one dict out."""
         started = time.time()
         with self.lock:
@@ -180,7 +186,7 @@ class Transcriber:
                 # does not re-segment what the edge already segmented: the
                 # pieces are joined below, and Silero only removes non-speech,
                 # so a sentence spoken with ordinary pauses comes back whole.
-                vad_filter=True,
+                vad_filter=vad,
                 initial_prompt=self.hint,
                 condition_on_previous_text=False,
             )
@@ -209,6 +215,39 @@ class Transcriber:
             "ms": int((time.time() - started) * 1000),
             "dropped": dropped,
         }
+
+
+#: The failure this service exists to make survivable, and the one it used to
+#: hide: CTranslate2 dlopen()s CUDA's libraries by bare name, so a GPU box
+#: without them loads the model happily and dies at the first inference.
+_CUDA_LIBRARY_ERRORS = ("libcublas", "libcudnn", "libnvrtc", "cublasLt")
+
+
+def cuda_hint(exc: Exception) -> str | None:
+    """The fix for a missing-CUDA-library error, or None if that is not what
+    this is."""
+    message = str(exc)
+    if not any(name in message for name in _CUDA_LIBRARY_ERRORS):
+        return None
+    return (
+        "CTranslate2 needs CUDA's own libraries and does not depend on them "
+        "itself. Install them into the venv that runs THIS service:\n"
+        "    pip install nvidia-cublas-cu12 nvidia-cudnn-cu12\n"
+        "(or run with --device cpu --compute-type int8)"
+    )
+
+
+def _explain(exc: Exception, device: str) -> None:
+    """Say what to do about a startup failure, on stderr, without a traceback."""
+    hint = cuda_hint(exc)
+    if hint:
+        sys.stderr.write(f"[whisper] {hint}\n")
+    elif device == "cuda":
+        sys.stderr.write(
+            "[whisper] --device cuda was asked for. If this machine has no working "
+            "CUDA, run with --device cpu --compute-type int8 (and set [stt] device "
+            "in the brain's config.toml to match).\n"
+        )
 
 
 def make_handler(t, quiet=False):
@@ -310,12 +349,26 @@ def main(argv=None):
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
 
-    t = Transcriber(args.model, args.device, args.compute_type, args.download_root, args.hint)
+    try:
+        t = Transcriber(args.model, args.device, args.compute_type, args.download_root, args.hint)
+    except Exception as exc:  # noqa: BLE001 — a setup problem, not a crash
+        sys.stderr.write(f"[whisper] could not load {args.model} on {args.device}: {exc}\n")
+        _explain(exc, args.device)
+        return 1
     sys.stderr.write(
         f"[whisper] loaded {args.model} on {args.device} ({args.compute_type}) in {t.load_ms} ms\n"
     )
     warm_started = time.time()
-    t.warmup()
+    try:
+        t.warmup()
+    except Exception as exc:  # noqa: BLE001 — refuse to serve rather than lie
+        sys.stderr.write(f"[whisper] FAILED the warmup inference: {exc}\n")
+        _explain(exc, args.device)
+        sys.stderr.write(
+            "[whisper] not starting: a service that cannot transcribe is worse "
+            "than one that is down, because the brain would report itself ready.\n"
+        )
+        return 1
     sys.stderr.write(f"[whisper] warm in {int((time.time() - warm_started) * 1000)} ms\n")
     if args.warm_only:
         return 0

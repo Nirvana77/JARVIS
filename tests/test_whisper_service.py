@@ -181,6 +181,84 @@ def test_a_model_that_blows_up_is_a_500_and_the_service_keeps_serving(whisper):
     assert httpx.get(f"{service.url}/healthz", timeout=5).json()["ok"] is True
 
 
+class RecordingModel:
+    """Records how `transcribe` was called, and can be told to fail like a
+    CUDA install that is missing its libraries."""
+
+    def __init__(self, fail: Exception | None = None):
+        self.calls: list[dict] = []
+        self.fail = fail
+
+    def transcribe(self, audio, **kwargs):
+        self.calls.append({"samples": len(audio), **kwargs})
+        if self.fail:
+            raise self.fail
+        info = type("Info", (), {"language": "en", "language_probability": 0.9})()
+        return iter(()), info
+
+
+def _transcriber(whisper_service, model):
+    """A `Transcriber` around a stub model, without loading anything."""
+    t = whisper_service.Transcriber.__new__(whisper_service.Transcriber)
+    t.model = model
+    t.model_name = "stub"
+    t.device = "cuda"
+    t.hint = None
+    t.count = 0
+    t.warm = False
+    t.load_ms = 0
+    import threading as _threading
+
+    t.lock = _threading.Lock()
+    return t
+
+
+def test_the_warmup_actually_runs_the_encoder(whisper_service):
+    """The bug this replaces: warmup fed quiet noise through the VAD filter,
+    Silero dropped it as non-speech, the encoder never ran, and the service
+    reported "warm" having touched no CUDA kernel at all. It then failed on
+    the user's first real sentence."""
+    model = RecordingModel()
+    t = _transcriber(whisper_service, model)
+    t.warmup()
+
+    assert model.calls, "warmup must reach the model"
+    call = model.calls[0]
+    assert call["vad_filter"] is False, "the VAD would drop the warmup audio"
+    assert call["samples"] > 0
+    assert t.warm is True
+
+
+def test_a_broken_cuda_install_fails_at_startup_not_mid_sentence(whisper_service):
+    model = RecordingModel(
+        fail=RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+    )
+    t = _transcriber(whisper_service, model)
+    with pytest.raises(RuntimeError):
+        t.warmup()
+    assert t.warm is False
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("Library libcublas.so.12 is not found or cannot be loaded", True),
+        ("Library libcudnn_ops.so.9 is not found", True),
+        ("cannot open shared object file: libcudnn.so", True),
+        ("CUDA driver version is insufficient", False),
+        ("some unrelated failure", False),
+    ],
+)
+def test_the_cuda_hint_names_the_missing_wheels(whisper_service, message, expected):
+    hint = whisper_service.cuda_hint(RuntimeError(message))
+    if not expected:
+        assert hint is None
+        return
+    assert hint is not None
+    assert "nvidia-cublas-cu12" in hint and "nvidia-cudnn-cu12" in hint
+    assert "pip install" in hint
+
+
 def test_the_vocabulary_hint_names_jarvis_and_the_mode_commands(whisper_service):
     """Whisper is worst at two-word fragments with no sentence around them, and
     a mode command that is not transcribed exactly cannot be matched however
