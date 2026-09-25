@@ -153,11 +153,37 @@ protocol. Nothing was faked but the microphone and the speaker.
 | 8. The same recording gives the same segments | ✅ `tests/test_segment.py`, including chunk sizes that straddle frames |
 | 9. With whisper stopped the brain still starts and says so | ✅ unit-tested; `serve` also prints "not answering — starting anyway" |
 
-**Not verified on hardware** (no Pi, no GPU box, no second network here):
-criterion 5 (the PTT button's GPIO), 10 (a button press stopping real
-playback), 11 (pulling the network mid-reply), and the TLS path against a real
-certificate over the internet. The logic behind each is unit-tested; the
-hardware behaviour is a first-install check.
+### Then, on two real machines over the internet
+
+The above was one laptop talking to itself. The milestone's actual shape — a
+GPU brain on one machine, an edge on another, the link crossing the internet —
+was brought up by the user on 2026-09-25: brain on an AI PC behind a Cloudflare
+Tunnel (`cloudflared` in Docker), edge on a laptop in another building,
+connecting to `wss://<host>` on port 443. It works: a spoken command reaches
+the brain and is answered.
+
+Four things that setup proved, none of which a loopback test could:
+
+* **TLS and the tunnel.** The edge verifies Cloudflare's certificate; the brain
+  never holds one. `curl` returning 426 (not 502) is the test that the tunnel
+  reaches the brain, and is now in the README.
+* **`trusted_proxy_header` does what it claims.** The brain logged
+  `edge livingroom connected from 5.150.225.228` — the edge's real public
+  address, not the container's. Without it every connection would have read
+  127.0.0.1 and the login backoff could not have told the edge from an
+  attacker.
+* **The segmenter on a real microphone, in a real room**, cutting real speech
+  into segments the brain accepted and bounded correctly.
+* **The failure paths are the ones people actually meet**, and three of them
+  were not good enough. Each was fixed as it appeared: an edge that retried in
+  silence (it now says why), docs that named the wrong address to trust for a
+  containerised proxy, and a whisper service that reported itself warm and
+  healthy while being unable to run a single inference.
+
+**Still not verified on hardware:** criterion 5 (the PTT button's GPIO), 10 (a
+button press stopping real playback) and 11 (pulling the network mid-reply) —
+there is no Pi and no button here yet. The logic behind each is unit-tested;
+the hardware behaviour is a first-install check.
 
 ### Latency: where the turn's time went, and what was done about it
 
