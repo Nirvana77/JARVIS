@@ -117,10 +117,22 @@ trusted_proxy_peers = []
 [whisper]                # the brain's client for the warm jarvis-whisper service
 url = "http://127.0.0.1:3461"   # "off" -> no transcription ("Cannot hear you: ...")
 timeout_s = 20
+# The brain starts this service itself unless something already answers on
+# `url` — `python -m jarvis serve` is one command, not three terminals. It
+# still runs as its own process (a wedged model is one process to kill), one
+# already running under systemd is adopted rather than started twice, and one
+# that dies is restarted while the brain runs.
+autostart = true
+# Which interpreter to start it with. "" = the brain's own, which already has
+# faster-whisper; point it at a separate venv when that venv carries something
+# the brain should not, such as the CUDA wheels.
+python = ""
 
 [voder]                  # the brain's client for jarvis-voder (Piper, CPU)
 url = "http://127.0.0.1:3462"   # "off" -> the answer is sent as text only
 sample_rate = 16000
+autostart = true         # as [whisper] above
+python = ""              # "" = the brain's own interpreter
 
 [addressing]             # there is no wake word on the remote path
 default_mode = "byname"  # byname | always | pushtotalk | ignore

@@ -101,8 +101,14 @@ GPU is, the edge runs in the room.
 
 #### The remote edge (M3)
 
-The brain needs two warm services next to it on loopback, each in its own venv
-(they deliberately do **not** import `jarvis`):
+`python -m jarvis serve` **starts the two services itself** — separate
+processes, adopted if already running, restarted if they die, stopped with the
+brain (unless adopted). `[whisper] autostart` / `[voder] autostart` turn that
+off; `[whisper] python` / `[voder] python` point at a separate venv, which is
+what you want on a GPU box so only that venv carries the CUDA wheels.
+
+To run them by hand instead, each in its own venv (they deliberately do **not**
+import `jarvis`):
 
 ```bash
 python services/whisper/serve.py --model small.en --device cuda --port 3461

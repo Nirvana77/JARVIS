@@ -146,9 +146,35 @@ internet. All-in-one `python -m jarvis` is still the default; this is opt-in.
 
 ### The brain's two services
 
-The brain expects two warm services beside it on loopback. Each runs in its own
-virtualenv and deliberately does not import `jarvis`, so a hung model is one
-process to restart and a brain restart doesn't reload a GPU model:
+**`python -m jarvis serve` starts them for you.** They are separate processes,
+not threads — a wedged model has to be killable on its own — but you do not
+have to launch them: the brain spawns both, waits for them, restarts one that
+dies, and shuts them down when it exits. A service already answering (under
+systemd, or left by a brain that was killed) is *adopted* instead of started
+twice, and an adopted one is left running when the brain stops.
+
+So on a fresh box the whole thing is:
+
+```bash
+./jarvis-run -v serve
+```
+
+```
+· services
+  · jarvis-whisper: started
+  · jarvis-voder: adopted
+· speech recogniser: small.en on cuda (http://127.0.0.1:3461)
+JARVIS brain ready — ws://0.0.0.0:8765, 1 device token(s), default mode 'byname'.
+```
+
+They run on the brain's own interpreter by default, which `requirements.txt`
+has already equipped. Set `[whisper] python` / `[voder] python` to a separate
+venv when you want one — which is the point on an NVIDIA box, where only the
+transcription service should carry the CUDA wheels. `autostart = false` in
+either section leaves that service alone entirely.
+
+To run them yourself instead — under systemd, or on another schedule — each
+runs in its own virtualenv and deliberately does not import `jarvis`:
 
 ```bash
 python3 -m venv ~/.local/share/jarvis/whisper-venv

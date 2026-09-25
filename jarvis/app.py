@@ -244,6 +244,11 @@ def build_server_orchestrator(config: Config, link) -> Orchestrator:
 def run_server_mode(config: Config) -> int:
     """`python -m jarvis serve` — the brain, waiting for an edge."""
     from jarvis.remote.server import RemoteLink, RemoteServer
+    from jarvis.remote.supervisor import (
+        ServiceSupervisor,
+        voder_service,
+        whisper_service,
+    )
 
     link = RemoteLink(config)
     try:
@@ -251,6 +256,20 @@ def run_server_mode(config: Config) -> int:
     except ValueError as exc:  # a mistyped [server] trusted_proxy_peers entry
         print(f"error: {exc}", flush=True)
         return 2
+    persona_voice = Persona.load(config.persona.active, config, None).voice
+
+    # The brain owns its services: one command, not three terminals. They stay
+    # separate processes — a wedged model is one process to kill — and one that
+    # is already answering (systemd, or a previous brain) is adopted rather
+    # than started twice.
+    supervisor = ServiceSupervisor(
+        [whisper_service(config), voder_service(config, persona_voice)]
+    )
+    print("· services", flush=True)
+    for name, status in supervisor.start_all().items():
+        mark = "·" if status in ("started", "adopted") else "!"
+        print(f"  {mark} {name}: {status}", flush=True)
+
     _report_service(
         "speech recogniser", config.whisper.url,
         lambda: server.transcriber.health(),
@@ -266,6 +285,9 @@ def run_server_mode(config: Config) -> int:
     async def main() -> None:
         link.bind_loop()
         ws = await server.serve()
+        # Keeps them up while the brain runs: a model that falls over
+        # mid-conversation comes back by itself.
+        watchdog = asyncio.ensure_future(supervisor.watch())
         scheme = "wss" if config.server.tls_enabled else "ws"
         print(
             f"JARVIS brain ready — {scheme}://{config.server.host}:{config.server.port}, "
@@ -276,6 +298,11 @@ def run_server_mode(config: Config) -> int:
         try:
             await orchestrator.run()
         finally:
+            watchdog.cancel()
+            try:
+                await watchdog
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
             ws.close()
             await ws.wait_closed()
 
@@ -286,6 +313,9 @@ def run_server_mode(config: Config) -> int:
     except RuntimeError as exc:  # a refused insecure bind says why, once
         print(f"error: {exc}", flush=True)
         return 2
+    finally:
+        # only the ones we started; an adopted service is left running
+        supervisor.stop_all()
     return 0
 
 

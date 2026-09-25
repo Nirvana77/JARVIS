@@ -203,6 +203,14 @@ class WhisperConfig:
 
     url: str = "http://127.0.0.1:3461"
     timeout_s: float = 20.0
+    #: `serve` starts the service itself unless something already answers on
+    #: `url` — one command instead of three terminals. It still runs as its own
+    #: process, and one already running (systemd, or a previous brain) is
+    #: adopted rather than started twice.
+    autostart: bool = True
+    #: the interpreter to start it with; "" = the brain's own, which already
+    #: has faster-whisper. A separate venv is for CUDA wheels.
+    python: str = ""
 
 
 @dataclass(frozen=True)
@@ -213,6 +221,9 @@ class VoderConfig:
     url: str = "http://127.0.0.1:3462"
     timeout_s: float = 20.0
     sample_rate: int = 16000
+    #: as `[whisper] autostart` / `python`
+    autostart: bool = True
+    python: str = ""
 
 
 @dataclass(frozen=True)
@@ -492,11 +503,15 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         whisper=WhisperConfig(
             url=str(whisper.get("url", "http://127.0.0.1:3461")),
             timeout_s=float(whisper.get("timeout_s", 20.0)),
+            autostart=bool(whisper.get("autostart", True)),
+            python=str(whisper.get("python", "")),
         ),
         voder=VoderConfig(
             url=str(voder.get("url", "http://127.0.0.1:3462")),
             timeout_s=float(voder.get("timeout_s", 20.0)),
             sample_rate=int(voder.get("sample_rate", 16000)),
+            autostart=bool(voder.get("autostart", True)),
+            python=str(voder.get("python", "")),
         ),
         addressing=AddressingConfig(
             default_mode=_mode_or_default(addressing.get("default_mode")),
