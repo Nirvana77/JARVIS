@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 try:
@@ -132,6 +132,157 @@ class FactoryConfig:
 
 
 @dataclass(frozen=True)
+class ServerConfig:
+    """M3: ``python -m jarvis serve`` — the brain's WebSocket listener.
+
+    The link is assumed to be on the public internet, so TLS is required: either
+    ``tls_cert``/``tls_key`` are set, or the brain listens on loopback behind a
+    TLS-terminating reverse proxy. A non-loopback bind without TLS is refused
+    unless ``allow_insecure`` (LAN/dev only, and it logs a loud warning).
+    """
+
+    host: str = "0.0.0.0"
+    port: int = 8765
+    tls_cert: str = ""
+    tls_key: str = ""
+    allow_insecure: bool = False
+    #: WebSocket frame ceiling. Above `protocol.MAX_AUDIO_BASE64`, so the two
+    #: limits cannot disagree about which one refused a segment.
+    max_size: int = 4 * 1024 * 1024
+    #: keepalive; a peer that stops answering is dropped (mobile/Wi-Fi failure)
+    ping_interval_s: float = 20.0
+    #: a connection that has not said `hello` by then is closed with 4002
+    hello_timeout_s: float = 10.0
+    #: Header naming the real client when something terminates TLS in front of
+    #: the brain — ``"CF-Connecting-IP"`` for a Cloudflare Tunnel,
+    #: ``"X-Forwarded-For"`` for most reverse proxies. Empty = trust nothing.
+    #:
+    #: It exists because every connection through a tunnel arrives from
+    #: 127.0.0.1, and the auth backoff keyed on that cannot tell the Pi in the
+    #: hall from somebody hammering the public hostname — so a stranger's failed
+    #: guesses would lock out the real edge. The header is believed **only when
+    #: the connection itself came from loopback**, i.e. from a proxy on this
+    #: machine; from anywhere else it is just somebody's claim about themselves.
+    trusted_proxy_header: str = ""
+    #: Addresses or CIDRs whose ``trusted_proxy_header`` is also believed, on
+    #: top of loopback — for a proxy that is *not* on this machine's loopback:
+    #: ``cloudflared`` in Docker (it reaches the brain over the bridge, e.g.
+    #: ``172.16.0.0/12``), or a proxy on another host on the LAN.
+    #:
+    #: Everything inside these ranges can claim to be any client, so keep them
+    #: as narrow as the deployment allows — the proxy's own address, not its
+    #: whole subnet, wherever that is knowable.
+    trusted_proxy_peers: tuple[str, ...] = ()
+
+    def trusted_networks(self) -> list:
+        """``trusted_proxy_peers`` parsed. Raises ``ValueError`` naming the bad
+        entry: a typo here means the backoff quietly stops telling clients
+        apart, which is precisely the failure nobody notices."""
+        import ipaddress
+
+        out = []
+        for entry in self.trusted_proxy_peers:
+            try:
+                out.append(ipaddress.ip_network(str(entry), strict=False))
+            except ValueError as exc:
+                raise ValueError(
+                    f"config.toml [server] trusted_proxy_peers: {entry!r} is not "
+                    f"an IP address or CIDR ({exc})"
+                ) from exc
+        return out
+
+    @property
+    def tls_enabled(self) -> bool:
+        return bool(self.tls_cert and self.tls_key)
+
+
+@dataclass(frozen=True)
+class WhisperConfig:
+    """M3: the brain's client for the warm ``jarvis-whisper`` service.
+    ``url = "off"`` gives a ``NullTranscriber`` — one code path, always."""
+
+    url: str = "http://127.0.0.1:3461"
+    timeout_s: float = 20.0
+    #: `serve` starts the service itself unless something already answers on
+    #: `url` — one command instead of three terminals. It still runs as its own
+    #: process, and one already running (systemd, or a previous brain) is
+    #: adopted rather than started twice.
+    autostart: bool = True
+    #: the interpreter to start it with; "" = the brain's own, which already
+    #: has faster-whisper. A separate venv is for CUDA wheels.
+    python: str = ""
+
+
+@dataclass(frozen=True)
+class VoderConfig:
+    """M3: the brain's client for ``jarvis-voder``. ``url = "off"`` degrades to
+    sending ``text`` only."""
+
+    url: str = "http://127.0.0.1:3462"
+    timeout_s: float = 20.0
+    sample_rate: int = 16000
+    #: as `[whisper] autostart` / `python`
+    autostart: bool = True
+    python: str = ""
+
+
+@dataclass(frozen=True)
+class AddressingConfig:
+    """M3 decisions 5-6: what reaches JARVIS on the remote path, and how long a
+    thought is allowed to take. There is no wake word there — the addressing
+    modes are the wake word."""
+
+    default_mode: str = "byname"
+    names: tuple[str, ...] = ("jarvis", "hey jarvis")
+    #: Merge the fragments of one thought; 0 disables the hold window.
+    #:
+    #: This is paid on *every* turn, so it is the single biggest thing between
+    #: the user finishing a sentence and hearing an answer. Mike's value is
+    #: 2000; JARVIS uses half that, because the hold does not have to do as
+    #: much work here: the edge's ``speaking{on}`` pauses the countdown, so the
+    #: window only has to be long enough to *notice a continuation starting*,
+    #: not to swallow one whole. What it buys, end to end, is a tolerated pause
+    #: of ``hangover + transcription + hold`` — about 2 s on a GPU brain and
+    #: 2.7 s on a slow CPU one. Raise it if you think out loud mid-command.
+    hold_ms: int = 1000
+
+
+@dataclass(frozen=True)
+class EdgeConfig:
+    """M3: ``python -m jarvis edge`` — the audio satellite. It owns a mic, a
+    speaker and (optionally) a button, and nothing else: no models, no ONNX."""
+
+    server_url: str = "ws://127.0.0.1:8765"
+    device_id: str = "edge"
+    tls_ca: str = ""
+    reconnect_max_s: int = 30
+    #: GPIO pin for the push-to-talk button; 0 = no button
+    ptt_gpio: int = 0
+    #: PortAudio input/output devices, as in [capture]/[tts]
+    input_device: int | str | None = None
+    output_device: int | str | None = None
+    input_pipewire_node: str = ""
+    output_pipewire_node: str = ""
+    #: raw `[edge.segment]` overrides of Mike's measured defaults
+    segment: dict = field(default_factory=dict)
+
+    def segmenter_options(self):
+        """Build the :class:`~jarvis.audio.segment.SegmenterOptions` for this
+        room. An unknown knob is an error, not a silent no-op — a typo in a
+        tuning value that quietly does nothing is worse than a refused start."""
+        from jarvis.audio.segment import DEFAULTS, SegmenterOptions
+
+        known = {f.name for f in fields(SegmenterOptions)}
+        unknown = sorted(set(self.segment) - known)
+        if unknown:
+            raise ValueError(
+                f"config.toml [edge.segment]: unknown setting(s) {', '.join(unknown)}; "
+                f"known: {', '.join(sorted(known))}"
+            )
+        return replace(DEFAULTS, **self.segment)
+
+
+@dataclass(frozen=True)
 class Config:
     general: GeneralConfig = field(default_factory=GeneralConfig)
     persona: PersonaConfig = field(default_factory=PersonaConfig)
@@ -142,10 +293,20 @@ class Config:
     nlu: NLUConfig = field(default_factory=NLUConfig)
     reasoner: ReasonerConfig = field(default_factory=ReasonerConfig)
     factory: FactoryConfig = field(default_factory=FactoryConfig)
+    # M3: the remote-edge split. Unused by the all-in-one path.
+    server: ServerConfig = field(default_factory=ServerConfig)
+    whisper: WhisperConfig = field(default_factory=WhisperConfig)
+    voder: VoderConfig = field(default_factory=VoderConfig)
+    addressing: AddressingConfig = field(default_factory=AddressingConfig)
+    edge: EdgeConfig = field(default_factory=EdgeConfig)
     #: repo-root-relative directory for models / NLU artifacts / skill scratch
     data_dir: Path = field(default_factory=lambda: _REPO_ROOT / "data")
     #: Hugging Face token (from .env / env) for authenticated model downloads
     hf_token: str | None = None
+    #: M3 (.env only): the edge's own token, and the brain's `device_id:token`
+    #: table. Never in config.toml, never logged.
+    edge_token: str | None = None
+    edge_tokens: dict[str, str] = field(default_factory=dict)
     #: Anthropic credentials (.env only; never in config.toml) — used solely
     #: by the M2 skill factory, never on the hot path
     anthropic_api_key: str | None = None
@@ -176,6 +337,11 @@ class Config:
         return self.data_dir / "skills" / "_versions" / name
 
     @property
+    def remote_dir(self) -> Path:
+        """M3: per-edge-device state (the addressing mode), one small file each."""
+        return self.data_dir / "remote"
+
+    @property
     def skill_quarantine_dir(self) -> Path:
         """M2: self-check failures and skills displaced by `revert_skill` — kept
         for inspection, never imported."""
@@ -192,6 +358,32 @@ def _find_config(path: str | os.PathLike[str] | None) -> Path | None:
     if root_candidate.is_file():
         return root_candidate
     return None
+
+
+def _mode_or_default(value) -> str:
+    """An addressing mode from the file, or the default. A typo must not leave
+    the brain in a mode nothing matches."""
+    from jarvis.remote.addressing import DEFAULT_MODE, is_mode  # stdlib-only
+
+    return value if is_mode(value) else DEFAULT_MODE
+
+
+def _parse_edge_tokens(raw: str | None) -> dict[str, str]:
+    """``JARVIS_EDGE_TOKENS="livingroom:s3cret,kitchen:other"`` -> a dict.
+
+    A malformed entry is skipped rather than fatal: one typo in .env should cost
+    that one device its connection, not every device theirs.
+    """
+    out: dict[str, str] = {}
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry or ":" not in entry:
+            continue
+        device_id, _, token = entry.partition(":")
+        device_id, token = device_id.strip(), token.strip()
+        if device_id and token:
+            out[device_id] = token
+    return out
 
 
 def _section(raw: dict, key: str) -> dict:
@@ -221,6 +413,12 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     reasoner = _section(raw, "reasoner")
     factory = _section(raw, "factory")
     paths = _section(raw, "paths")
+    # M3
+    server = _section(raw, "server")
+    whisper = _section(raw, "whisper")
+    voder = _section(raw, "voder")
+    addressing = _section(raw, "addressing")
+    edge = _section(raw, "edge")
 
     # Environment overrides (kept from the legacy code).
     language = os.getenv("language") or general.get("language", "en")
@@ -230,6 +428,8 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     # env var; `api_key` is what older .env files used.
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("api_key")
     anthropic_workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID")
+    edge_token = os.getenv("JARVIS_EDGE_TOKEN")
+    edge_tokens = _parse_edge_tokens(os.getenv("JARVIS_EDGE_TOKENS"))
 
     data_dir_raw = paths.get("data_dir", "data")
     data_dir = Path(data_dir_raw)
@@ -286,8 +486,54 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             sandbox_mem_mb=int(factory.get("sandbox_mem_mb", 512)),
             sandbox_cpu_s=int(factory.get("sandbox_cpu_s", 5)),
         ),
+        server=ServerConfig(
+            host=str(server.get("host", "0.0.0.0")),
+            port=int(server.get("port", 8765)),
+            tls_cert=str(server.get("tls_cert", "")),
+            tls_key=str(server.get("tls_key", "")),
+            allow_insecure=bool(server.get("allow_insecure", False)),
+            max_size=int(server.get("max_size", 4 * 1024 * 1024)),
+            ping_interval_s=float(server.get("ping_interval_s", 20.0)),
+            hello_timeout_s=float(server.get("hello_timeout_s", 10.0)),
+            trusted_proxy_header=str(server.get("trusted_proxy_header", "")),
+            trusted_proxy_peers=tuple(
+                str(p) for p in server.get("trusted_proxy_peers", [])
+            ),
+        ),
+        whisper=WhisperConfig(
+            url=str(whisper.get("url", "http://127.0.0.1:3461")),
+            timeout_s=float(whisper.get("timeout_s", 20.0)),
+            autostart=bool(whisper.get("autostart", True)),
+            python=str(whisper.get("python", "")),
+        ),
+        voder=VoderConfig(
+            url=str(voder.get("url", "http://127.0.0.1:3462")),
+            timeout_s=float(voder.get("timeout_s", 20.0)),
+            sample_rate=int(voder.get("sample_rate", 16000)),
+            autostart=bool(voder.get("autostart", True)),
+            python=str(voder.get("python", "")),
+        ),
+        addressing=AddressingConfig(
+            default_mode=_mode_or_default(addressing.get("default_mode")),
+            names=tuple(str(n) for n in addressing.get("names", ["jarvis", "hey jarvis"])),
+            hold_ms=int(addressing.get("hold_ms", 1000)),
+        ),
+        edge=EdgeConfig(
+            server_url=str(edge.get("server_url", "ws://127.0.0.1:8765")),
+            device_id=str(edge.get("device_id", "edge")),
+            tls_ca=str(edge.get("tls_ca", "")),
+            reconnect_max_s=int(edge.get("reconnect_max_s", 30)),
+            ptt_gpio=int(edge.get("ptt_gpio", 0)),
+            input_device=edge.get("input_device") if edge.get("input_device") != "" else None,
+            output_device=edge.get("output_device") if edge.get("output_device") != "" else None,
+            input_pipewire_node=str(edge.get("input_pipewire_node", "")),
+            output_pipewire_node=str(edge.get("output_pipewire_node", "")),
+            segment=dict(_section(edge, "segment")),
+        ),
         data_dir=data_dir,
         hf_token=hf_token,
         anthropic_api_key=anthropic_api_key,
         anthropic_workspace_id=anthropic_workspace_id,
+        edge_token=edge_token,
+        edge_tokens=edge_tokens,
     )

@@ -1,0 +1,13 @@
+# jarvis-voder — the brain's warm speech synthesis service.
+#
+# Its own venv, and CPU only on purpose: it stays off Whisper's GPU.
+#
+#   python3 -m venv ~/.local/share/jarvis/voder-venv
+#   ~/.local/share/jarvis/voder-venv/bin/pip install -r services/voder/requirements.txt
+#   ~/.local/share/jarvis/voder-venv/bin/python services/voder/serve.py --voice-dir data/models/piper
+#
+# serve.py imports nothing from `jarvis`. The voice files themselves come from
+# `python -m jarvis models pull` on the brain, or are copied in.
+
+piper-tts>=1.8.0
+numpy>=2.5.3

@@ -98,6 +98,20 @@ class Interrupter:
         if self._interrupt is not None:
             self._interrupt.set()
 
+    def trigger_cancel(self, reason: str = "") -> None:
+        """Cancel the current listen / transcription from somewhere other than
+        the keyboard — M3's ``interrupt`` from the edge (its button, or a spoken
+        "stop"). Exactly the path Enter takes, so there is one way to abandon a
+        command, not two.
+
+        Called from the event loop thread (the WebSocket handler's), which is
+        where ``asyncio.Event.set`` has to happen.
+        """
+        print(f"  (cancelling{f' — {reason}' if reason else ''}…)", flush=True)
+        self.cancel_flag.set()
+        if self._interrupt is not None:
+            self._interrupt.set()
+
     def clear(self) -> None:
         self.cancel_flag.clear()
         if self._interrupt is not None:

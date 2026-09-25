@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from jarvis.audio.pipewire import pipewire_target
+from jarvis.audio.player import Player
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ class Speaker:
         self._voice = None
         self._sample_rate = 22050
         self._load_failed = False
-        self._out = None  # persistent sounddevice OutputStream (kept warm)
+        self._player = None  # jarvis.audio.player.Player, opened on first use
         #: leading silence prepended to every utterance so the output device
         #: doesn't swallow the first phoneme while it spins up
         self.lead_pad_s = 0.25
@@ -87,29 +87,24 @@ class Speaker:
             wf.writeframes(pcm.tobytes())
         return buf.getvalue()
 
-    def _output(self, sample_rate: int):
-        """A persistent OutputStream. Reopening the device per utterance is what
-        clips the first word, so keep one stream open and reuse it."""
-        import sounddevice as sd
-
-        if self._out is not None and int(self._out.samplerate) != sample_rate:
-            self._out.close()
-            self._out = None
-        if self._out is None:
-            with pipewire_target(self.pipewire_node) as device:
-                self._out = sd.OutputStream(
-                    samplerate=sample_rate, channels=1, dtype="int16", device=device
-                )
-            self._out.start()
-        return self._out
+    @property
+    def player(self) -> Player:
+        """M3: playback lives in ``jarvis/audio/player.py``, so the edge — which
+        has no Piper and no persona — can reuse exactly this."""
+        if self._player is None:
+            self._player = Player(
+                pipewire_node=self.pipewire_node, lead_pad_s=self.lead_pad_s
+            )
+        return self._player
 
     def close(self) -> None:
-        if self._out is not None:
-            try:
-                self._out.stop()
-                self._out.close()
-            finally:
-                self._out = None
+        if self._player is not None:
+            self._player.close()
+
+    def stop(self) -> None:
+        """Cut the current utterance short."""
+        if self._player is not None:
+            self._player.stop()
 
     def say(self, text: str) -> None:
         text = (text or "").strip()
@@ -121,9 +116,4 @@ class Speaker:
         pcm, sr = self.synthesize(text)
         if len(pcm) == 0:
             return  # already printed; nothing to play
-        pad = np.zeros(int(sr * self.lead_pad_s), dtype=pcm.dtype)
-        try:
-            self._output(sr).write(np.concatenate([pad, pcm]))
-        except Exception as exc:  # noqa: BLE001 - headless / no output device
-            log.warning("audio playback failed: %s", exc)
-            self.close()
+        self.player.play(pcm, sr)

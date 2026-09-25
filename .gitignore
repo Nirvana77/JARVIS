@@ -169,3 +169,10 @@ data/
 jarvis/skills/staging/
 jarvis/skills/learned/*
 !jarvis/skills/learned/__init__.py
+
+# Per-machine configuration. Tracked until M3, when the brain/edge split made
+# one file serve two machines that need different values — which mic, which
+# GPU, which address to bind. `config.example.toml` is the tracked, documented
+# template; copy it and edit:
+#     cp config.example.toml config.toml
+config.toml

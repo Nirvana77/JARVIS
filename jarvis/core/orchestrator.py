@@ -143,6 +143,12 @@ class Orchestrator:
     def busy(self) -> bool:
         return self.state != "idle"
 
+    @property
+    def interrupter(self) -> Interrupter:
+        """M3: the remote link cancels the current listen through this, so the
+        edge's ``interrupt`` takes exactly the path Enter takes."""
+        return self._interrupter
+
     # -- speaking ---------------------------------------------------------
 
     async def _speak(self, text: str) -> None:

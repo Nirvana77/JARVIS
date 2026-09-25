@@ -1,0 +1,20 @@
+# jarvis-whisper — the brain's warm transcription service.
+#
+# Its own venv, deliberately: it is the only thing here that wants CUDA, and a
+# GPU model that takes seconds to load should survive a brain restart.
+#
+#   python3 -m venv ~/.local/share/jarvis/whisper-venv
+#   ~/.local/share/jarvis/whisper-venv/bin/pip install -r services/whisper/requirements.txt
+#   ~/.local/share/jarvis/whisper-venv/bin/python services/whisper/serve.py --warm-only
+#
+# serve.py imports nothing from `jarvis`, so this venv needs nothing else.
+
+faster-whisper>=1.2.1
+numpy>=2.5.3
+
+# On an NVIDIA box. CTranslate2 dlopen()s these by bare name and does not
+# depend on them itself; without them the model loads and then fails at the
+# first inference with "Library libcublas.so.12 is not found".
+# (serve.py's _preload_cuda_libraries() finds them inside this venv.)
+# nvidia-cublas-cu12
+# nvidia-cudnn-cu12

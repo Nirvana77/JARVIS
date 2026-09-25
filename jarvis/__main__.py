@@ -9,6 +9,11 @@
     python -m jarvis text            real pipeline, no mic/wake-word/STT/speaker —
                                       type lines or pipe them in; --script FILE
                                       reads a scripted conversation from a file
+    python -m jarvis serve           M3: the brain — NLU/skills/persona plus the
+                                      jarvis-whisper and jarvis-voder services,
+                                      waiting for an edge over WebSocket
+    python -m jarvis edge            M3: the audio satellite — a mic, a speaker
+                                      and a socket. No models, nothing heavy.
 """
 
 from __future__ import annotations
@@ -22,14 +27,20 @@ import warnings
 
 from jarvis.config import load_config
 
-try:
-    from jarvis import app
-except ModuleNotFoundError as exc:  # wrong interpreter / deps not installed
-    sys.exit(
-        f"error: {exc.name} is missing — you're not on the project venv.\n"
-        f"  run './jarvis-run {' '.join(sys.argv[1:])}'  (uses ./.venv automatically)\n"
-        f"  or:  source .venv/bin/activate  &&  python -m jarvis ..."
-    )
+
+def _app():
+    """``jarvis.app`` imports the whole brain (fastembed, faster-whisper,
+    Piper). Imported *here*, not at module scope, so ``python -m jarvis edge``
+    starts on a Pi that has none of it — M3 decision 1."""
+    try:
+        from jarvis import app
+    except ModuleNotFoundError as exc:  # wrong interpreter / deps not installed
+        sys.exit(
+            f"error: {exc.name} is missing — you're not on the project venv.\n"
+            f"  run './jarvis-run {' '.join(sys.argv[1:])}'  (uses ./.venv automatically)\n"
+            f"  or:  source .venv/bin/activate  &&  python -m jarvis ..."
+        )
+    return app
 
 # Expected, noisy third-party chatter on a CPU-only / no-token box.
 warnings.filterwarnings("ignore", message=r".*CUDAExecutionProvider.*")
@@ -55,6 +66,10 @@ def _build_parser() -> argparse.ArgumentParser:
     text.add_argument(
         "--script", help="read a scripted conversation from this file instead of stdin"
     )
+    sub.add_parser("serve", help="M3: run the brain, waiting for an audio edge")
+    edge = sub.add_parser("edge", help="M3: run the audio satellite (mic + speaker only)")
+    edge.add_argument("--server", help="override [edge] server_url")
+    edge.add_argument("--device-id", help="override [edge] device_id")
     return parser
 
 
@@ -71,6 +86,24 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.setdefault("HF_TOKEN", config.hf_token)
         os.environ.setdefault("HUGGING_FACE_HUB_TOKEN", config.hf_token)
 
+    if args.command == "edge":
+        # Before `_app()`: the edge's whole point is that it never imports the
+        # brain. `jarvis.remote.edge` pulls in numpy, sounddevice and
+        # websockets, and nothing else.
+        from dataclasses import replace
+
+        from jarvis.remote.edge import run_edge
+
+        overrides = {}
+        if args.server:
+            overrides["server_url"] = args.server
+        if args.device_id:
+            overrides["device_id"] = args.device_id
+        if overrides:
+            config = replace(config, edge=replace(config.edge, **overrides))
+        return run_edge(config)
+
+    app = _app()
     if args.selftest:
         return app.selftest(config)
     if args.command == "models":
@@ -81,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
         return app.mic_meter(config)
     if args.command == "text":
         return app.run_text_mode(config, script_path=args.script)
+    if args.command == "serve":
+        return app.run_server_mode(config)
 
     try:
         orchestrator = app.build_orchestrator(config)

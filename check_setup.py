@@ -1,12 +1,12 @@
 """Sanity check for a JARVIS environment.
 
-Run after installing dependencies to confirm the pieces are in place:
-
     python check_setup.py
 
-Checks imports, NLTK data, the Anthropic API key (masked) and that the
-configured Claude model resolves, plus the TTS engine. Exits non-zero if any
-*required* check fails.
+**Required** means the 2026 rebuild (`python -m jarvis`, `requirements.txt`):
+if a row there is ✗, the assistant will not run. Everything else — the legacy
+`main.py` / `libs/` stack, the pieces later milestones will need, and the
+optional remote-edge services — is reported as ✓/– and never fails the run,
+because a rebuild-only install is the normal case and should exit 0.
 """
 
 import importlib
@@ -54,39 +54,82 @@ except Exception as e:  # pragma: no cover
 
 
 # --------------------------------------------------------------------------
-section("Dependencies")
+section("Dependencies — the 2026 rebuild (requirements.txt)")
+# Everything `jarvis/` actually imports. A ✗ here is a real failure.
 REQUIRED = [
-    ("anthropic", "anthropic"),
-    ("dotenv", "python-dotenv"),
-    ("speech_recognition", "SpeechRecognition"),
-    ("wikipedia", "wikipedia"),
-    ("pyttsx3", "pyttsx3"),
-    ("nltk", "nltk"),
     ("numpy", "numpy"),
-    ("openpyxl", "openpyxl"),
+    ("sounddevice", "sounddevice (audio in and out)"),
+    ("openwakeword", "openwakeword (wake word)"),
+    ("faster_whisper", "faster-whisper (speech to text)"),
+    ("piper", "piper-tts (speech out)"),
+    ("fastembed", "fastembed (NLU embeddings)"),
+    ("sklearn", "scikit-learn (NLU classifier head)"),
+    ("joblib", "joblib (persists that head)"),
+    ("anthropic", "anthropic (the skill factory)"),
+    ("requests", "requests (reasoner + search skill)"),
+    ("httpx", "httpx (the whisper/voder service clients)"),
+    ("websockets", "websockets (the remote-edge link)"),
+    ("dotenv", "python-dotenv (reads .env)"),
+    ("huggingface_hub", "huggingface-hub (models pull)"),
 ]
-OPTIONAL = [
-    ("pyaudio", "PyAudio (mic capture)"),
-    ("tensorflow", "TensorFlow (intent model — no Python 3.14 wheels yet)"),
-]
-
 for mod, name in REQUIRED:
     try:
         m = importlib.import_module(mod)
         require(True, name, ok_detail=getattr(m, "__version__", ""))
     except Exception as e:
-        require(False, name, bad_detail=repr(e))
+        require(False, name, bad_detail=f"{e!r} — pip install -r requirements.txt")
 
-for mod, name in OPTIONAL:
+
+# Pulled in by the packages above rather than required directly, but their
+# versions are worth seeing: ctranslate2 decides which GPUs faster-whisper can
+# use at all, and onnxruntime which execution providers exist.
+for mod, name in [
+    ("ctranslate2", "ctranslate2 (faster-whisper backend)"),
+    ("onnxruntime", "onnxruntime (fastembed / openwakeword / piper backend)"),
+]:
+    try:
+        m = importlib.import_module(mod)
+        line(OK, name, getattr(m, "__version__", ""))
+    except Exception as e:
+        line(SKIP, name, f"{e!r} — installed with the packages above")
+
+
+# --------------------------------------------------------------------------
+# Approved in the Phase 0 spike and not imported yet: M5 is the knowledge base.
+section("Later milestones (not needed yet)")
+for mod, name in [
+    ("sqlite_vec", "sqlite-vec (M5 knowledge vector index)"),
+    ("pypdf", "pypdf (M5 .pdf loader)"),
+]:
     try:
         m = importlib.import_module(mod)
         line(OK, name, getattr(m, "__version__", ""))
     except Exception:
-        line(SKIP, name, "not installed")
+        line(SKIP, name, "not installed — M5 will need it")
 
 
 # --------------------------------------------------------------------------
-section("NLTK data")
+# The original main.py / libs/ path. Kept working, but nothing the rebuild
+# needs, and `requirements.txt` deliberately does not install it.
+section("Legacy stack (main.py / libs/ — optional)")
+for mod, name in [
+    ("speech_recognition", "SpeechRecognition"),
+    ("wikipedia", "wikipedia"),
+    ("pyttsx3", "pyttsx3"),
+    ("nltk", "nltk"),
+    ("openpyxl", "openpyxl"),
+    ("pyaudio", "PyAudio (legacy mic capture)"),
+    ("tensorflow", "TensorFlow (legacy intent model; no 3.14 wheels)"),
+]:
+    try:
+        m = importlib.import_module(mod)
+        line(OK, name, getattr(m, "__version__", ""))
+    except Exception:
+        line(SKIP, name, "not installed (legacy path only)")
+
+
+# --------------------------------------------------------------------------
+section("NLTK data (legacy path only)")
 DOWNLOAD_HINT = (
     "run: python -c \"import nltk; "
     "[nltk.download(p) for p in ('punkt','punkt_tab','wordnet','omw-1.4')]\""
@@ -100,8 +143,10 @@ try:
     line(OK, "tokenizer (punkt)")
     WordNetLemmatizer().lemmatize("running", "v")
     line(OK, "lemmatizer (wordnet)")
-except LookupError as e:
-    require(False, "nltk data", bad_detail=str(e).strip().splitlines()[0] + " — " + DOWNLOAD_HINT)
+except LookupError:
+    # NLTK's own message opens with a 70-character banner of asterisks, which
+    # is not what anyone needs to read here.
+    line(SKIP, "nltk data", "corpora not downloaded — " + DOWNLOAD_HINT)
 except Exception as e:
     line(SKIP, "nltk data", repr(e))
 
@@ -144,54 +189,20 @@ if placeholder:
 
 
 # --------------------------------------------------------------------------
-section("Text-to-speech")
-try:
-    import pyttsx3
-
-    engine = pyttsx3.init()
-    voices = engine.getProperty("voices") or []
-    line(OK, "pyttsx3 engine", f"{len(voices)} voice(s) available")
-except Exception as e:
-    line(SKIP, "pyttsx3 engine", f"{e!r} (needs an audio backend; fine on a headless box)")
-
-
-# --------------------------------------------------------------------------
-section("Intent model (brain.py / training.py)")
+section("Intent model (legacy brain.py / training.py)")
 line(
     SKIP,
     "Keras model",
-    "deferred — needs TensorFlow, which has no Python 3.14 wheels; "
-    "JARVIS_model.keras also predates Keras 3 and must be retrained",
+    "deferred — needs TensorFlow (no Python 3.14 wheels), and the checked-in "
+    "JARVIS_model.keras predates Keras 3 and must be retrained anyway",
 )
 
 
 # --------------------------------------------------------------------------
-# PRD Phase 0 — dependency spike for the 2026 rebuild (see
-# PRD/jarvis-2026-rebuild.md and PRD/phase-0-dependency-spike.md).
-# The rebuild drops TensorFlow; this is the replacement local stack. Every
-# row below has a CPU wheel for Python 3.14 as of the spike, so a missing
-# import here is a real setup failure, not a "no wheel yet" skip.
-section("2026 rebuild stack (PRD Phase 0)")
-REBUILD_STACK = [
-    ("faster_whisper", "faster-whisper (STT)"),
-    ("ctranslate2", "ctranslate2 (faster-whisper backend)"),
-    ("openwakeword", "openwakeword (wake word)"),
-    ("piper", "piper-tts (TTS)"),
-    ("onnxruntime", "onnxruntime (fastembed / openwakeword / piper backend)"),
-    ("fastembed", "fastembed (NLU + knowledge embeddings)"),
-    ("sklearn", "scikit-learn (NLU classifier head)"),
-    ("sqlite_vec", "sqlite-vec (knowledge vector index)"),
-    ("sounddevice", "sounddevice (audio capture)"),
-    ("pypdf", "pypdf (knowledge .pdf loader)"),
-]
-for mod, name in REBUILD_STACK:
-    try:
-        m = importlib.import_module(mod)
-        require(True, name, ok_detail=getattr(m, "__version__", ""))
-    except Exception as e:
-        require(False, name, bad_detail=repr(e))
-
-# Functional probes for the two rows with a system-level dependency.
+# The two rows above that depend on something outside pip: a system library,
+# and an extension that has to load into sqlite. Neither is fatal — a brain
+# behind a remote edge needs no sound card of its own.
+section("Functional probes")
 try:
     import sounddevice as _sd
 
@@ -214,9 +225,83 @@ try:
     _sqlite_vec.load(_db)
     (_vec_version,) = _db.execute("select vec_version()").fetchone()
     _db.close()
-    require(True, "sqlite-vec extension loads", ok_detail=_vec_version)
+    line(OK, "sqlite-vec extension loads", _vec_version)
 except Exception as e:
-    require(False, "sqlite-vec extension loads", bad_detail=repr(e))
+    line(SKIP, "sqlite-vec extension loads", f"{e!r} — M5 will need it")
+
+
+# --------------------------------------------------------------------------
+# M3 — the remote edge (PRD/milestone-3-remote-edge.md). Opt-in: an all-in-one
+# install needs none of it, so nothing here is required. The two services are
+# probed over their health endpoints, which is also how you tell "not running"
+# from "running but cold".
+section("Remote edge (M3, optional)")
+try:
+    import websockets as _websockets
+
+    line(OK, "websockets (brain + edge link)", getattr(_websockets, "__version__", ""))
+except Exception:
+    line(SKIP, "websockets (brain + edge link)", "not installed — `pip install websockets`")
+
+try:
+    from jarvis.config import load_config as _load_config
+
+    _config = _load_config()
+except Exception as e:  # pragma: no cover
+    _config = None
+    line(SKIP, "config.toml", repr(e))
+
+if _config is not None:
+    for _label, _url, _describe in (
+        (
+            "jarvis-whisper",
+            _config.whisper.url,
+            lambda h: f"{h.get('model')} on {h.get('device')}"
+            + ("" if h.get("warm") else " (cold)"),
+        ),
+        (
+            "jarvis-voder",
+            _config.voder.url,
+            lambda h: f"{h.get('voice')} at {h.get('sample_rate')} Hz",
+        ),
+    ):
+        if not _url or _url.strip().lower() == "off":
+            line(SKIP, _label, "off in config.toml")
+            continue
+        try:
+            import httpx as _httpx
+
+            _health = _httpx.get(f"{_url.rstrip('/')}/healthz", timeout=2).json()
+            line(OK if _health.get("ok") else BAD, _label, _describe(_health))
+        except Exception:
+            line(SKIP, _label, f"not running at {_url}")
+
+    # The tokens are secrets: their presence is reported, never their value.
+    _edge_token = _config.edge_token
+    line(
+        OK if _edge_token else SKIP,
+        "JARVIS_EDGE_TOKEN (this edge)",
+        f"set ({len(_edge_token)} chars)" if _edge_token else "unset — only the edge needs it",
+    )
+    _tokens = _config.edge_tokens
+    line(
+        OK if _tokens else SKIP,
+        "JARVIS_EDGE_TOKENS (the brain's devices)",
+        f"{len(_tokens)} device(s): {', '.join(sorted(_tokens))}"
+        if _tokens
+        else "unset — only the brain needs it",
+    )
+    # Only worth saying when the remote path is actually set up: an all-in-one
+    # install has a [server] section it never uses.
+    if _tokens and _config.server.host not in ("127.0.0.1", "::1", "localhost", ""):
+        _tls = _config.server.tls_enabled or _config.server.allow_insecure
+        line(
+            OK if _config.server.tls_enabled else (BAD if not _tls else SKIP),
+            "brain TLS",
+            "cert + key set"
+            if _config.server.tls_enabled
+            else ("allow_insecure = true (LAN/dev only!)" if _tls else "MISSING — `serve` will refuse to start"),
+        )
 
 
 # --------------------------------------------------------------------------
