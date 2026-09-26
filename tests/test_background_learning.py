@@ -136,7 +136,7 @@ class FakeClaude:
         self.raises = raises
         self.calls = []
 
-    def generate_skill(self, spec, existing_source):
+    def generate_skill(self, spec, existing_source, feedback=None):
         self.calls.append(spec.name)
         self.gate.wait(10)
         if self.raises:
@@ -542,16 +542,20 @@ def test_teaching_a_name_already_in_flight_is_refused(rig):
 # -- 9. a failure is a notice at a safe point, never mid-turn ---------------
 
 def test_build_failure_is_announced_at_the_next_safe_point(rig):
+    # A build error is retried too (some are transient), so a Claude call that
+    # always raises exhausts every attempt and reports the retry loop's
+    # give-up line, not an immediate single-attempt failure.
     rig.claude = rig.o.claude_client = FakeClaude(raises=RuntimeError("API down"))
 
     async def scenario():
         await teach(rig)
         await until(lambda: not rig.o.learning_names())
-        assert "couldn't" not in spoken(rig)
+        assert "couldn't get it working" not in spoken(rig)
         await rig.o.handle("search", "search black holes", 0.9)
-        assert "couldn't" not in spoken(rig)
+        assert "couldn't get it working" not in spoken(rig)
         await rig.o._safe_point()
-        assert "couldn't put 'coin_flip' together" in spoken(rig)
+        assert "coin_flip" in spoken(rig)
+        assert "couldn't get it working" in spoken(rig)
 
     asyncio.run(scenario())
 
@@ -622,3 +626,43 @@ def test_revert_runs_in_the_background_without_a_keep_question(rig):
     assert "reverted 'coin_flip'" in spoken(rig)
     assert (rig.learned / "coin_flip.py").read_text(encoding="utf-8") == v1
     assert list(rig.config.skill_quarantine_dir.glob("coin_flip.*.py"))
+
+
+# -- 12. remove runs in the background, quarantines, and retrains without it -
+
+def test_remove_runs_in_the_background_and_quarantines_the_module(rig):
+    v1 = module("coin_flip", reply="Heads.")
+    (rig.learned / "coin_flip.py").write_text(v1, encoding="utf-8")
+    vdir = rig.config.skill_versions_dir("coin_flip")
+    vdir.mkdir(parents=True)
+    (vdir / "v1.py").write_text(v1, encoding="utf-8")
+    rig.o.registry = rig.o.registry.rebuilt()
+
+    async def scenario():
+        rig.voice.feed("coin flip", "yes")
+        await rig.o.handle("remove_skill", "remove the coin flip skill", 0.95)
+        await until(lambda: not rig.o.learning_names())
+        await rig.o._safe_point()
+
+    asyncio.run(scenario())
+    assert keep_questions(rig) == []  # no "shall I keep it" — remove is decided up front
+    assert "removed 'coin_flip'" in spoken(rig)
+    assert not (rig.learned / "coin_flip.py").exists()
+    assert list(rig.config.skill_quarantine_dir.glob("coin_flip.*.py"))  # kept, not deleted
+    assert not vdir.exists()  # rollback history is meaningless once the skill is gone
+    assert "coin_flip" not in rig.o.registry
+    assert "coin_flip" not in rig.trainer.label_sets[-1]  # not fed back into its own retrain
+
+
+def test_remove_declined_leaves_the_skill_in_place(rig):
+    (rig.learned / "coin_flip.py").write_text(module("coin_flip"), encoding="utf-8")
+    rig.o.registry = rig.o.registry.rebuilt()
+
+    async def scenario():
+        rig.voice.feed("coin flip", "no")
+        await rig.o.handle("remove_skill", "remove the coin flip skill", 0.95)
+
+    asyncio.run(scenario())
+    assert rig.o.learning_names() == set()  # declining never even starts a job
+    assert "coin_flip" in rig.o.registry
+    assert "i'll keep it" in spoken(rig).lower()

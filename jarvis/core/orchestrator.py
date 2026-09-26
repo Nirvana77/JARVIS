@@ -22,6 +22,7 @@ import logging
 import queue
 import random
 import shutil
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,7 @@ from jarvis.factory.flows import (
     EditSkillFlow,
     FlowOutcome,
     LearningRequest,
+    RemoveSkillFlow,
     RevertSkillFlow,
     TeachFlow,
     ask_yes_no,
@@ -44,6 +46,7 @@ from jarvis.nlu import slots as _slots
 from jarvis.nlu.classifier import UNKNOWN, Classifier
 from jarvis.nlu.corpus import build_corpus
 from jarvis.nlu.retrain_worker import RetrainWorker
+from jarvis.skills.registry import LEARNED_PACKAGE
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +61,7 @@ _META_ACTIONS = {
     "teach": "teach",
     "edit_skill": "edit_skill",
     "revert_skill": "revert_skill",
+    "remove_skill": "remove_skill",
 }
 
 # NLU self-check probes run against a freshly-trained model before it's ever
@@ -358,11 +362,14 @@ class Orchestrator:
             await self._speak(self.persona.phrase(reply) if reply else "")
             return
 
-        if action in ("teach", "edit_skill", "revert_skill") and confidence < self.config.nlu.meta_action_threshold:
+        if (
+            action in ("teach", "edit_skill", "revert_skill", "remove_skill")
+            and confidence < self.config.nlu.meta_action_threshold
+        ):
             # A wrong guess here launches a whole multi-turn dialog (or, for
-            # revert_skill, rewrites a skill's live code) — costlier than a
-            # wrong guess on an ordinary skill, so a merely-above-"unknown"
-            # confidence isn't enough to commit to it.
+            # revert_skill/remove_skill, rewrites or tears down a skill's live
+            # code) — costlier than a wrong guess on an ordinary skill, so a
+            # merely-above-"unknown" confidence isn't enough to commit to it.
             log.info(
                 "treating low-confidence %s (%.2f < %.2f) as unknown",
                 label, confidence, self.config.nlu.meta_action_threshold,
@@ -396,6 +403,18 @@ class Orchestrator:
             )
             return
 
+        if action == "remove_skill":
+            # Also Claude-free — it only quarantines an already-approved skill
+            # and retrains without it.
+            self.state = "acting"
+            await self._run_flow(
+                RemoveSkillFlow(
+                    ask=self._ask, say=self._speak, registry=self._latest_registry(),
+                    busy_names=frozenset(self._jobs),
+                )
+            )
+            return
+
         # a skill
         self.state = "acting"
         params = self._slot_extract(label, text)
@@ -415,10 +434,10 @@ class Orchestrator:
         meta = self.intent_meta.get(label)
         return meta.action if meta is not None else label
 
-    def _generate(self, spec, existing_source):
+    def _generate(self, spec, existing_source, feedback=None):
         """Bound to `self.claude_client` so `build()`/the flows never import
         `anthropic` — passed as the flows' `generate` callable."""
-        return self.claude_client.generate_skill(spec, existing_source)
+        return self.claude_client.generate_skill(spec, existing_source, feedback)
 
     # -- M2/M2.5: skill factory, run as background learning jobs -------------
 
@@ -470,6 +489,7 @@ class Orchestrator:
                 registry=self._latest_registry(),
                 generate=self._generate,
                 sandbox=self.sandbox,
+                max_attempts=self.config.factory.max_generate_attempts,
             )
             outcome = await job.run()
             if outcome.accepted:
@@ -494,26 +514,42 @@ class Orchestrator:
         gate — see PRD/milestone-2-skill-factory.md decisions 2–3 and
         PRD/milestone-2.5-background-learning.md decisions 5–7."""
         name = outcome.name
+        removing = versioning == "remove"
         registry = self._latest_registry()
         other_manifests = [m for m in registry.manifests() if m.name != name]
-        examples = build_corpus(manifests=other_manifests + [outcome.manifest])
+        if removing:
+            # "relearn the module" without the removed skill: retrain on every
+            # *remaining* skill's examples, nothing added.
+            examples = build_corpus(manifests=other_manifests)
+        else:
+            examples = build_corpus(manifests=other_manifests + [outcome.manifest])
 
         kind, payload = await self._train_and_load(examples)
         if kind != "ok":
             log.error("retrain failed for %s: %s", name, payload)
             self._unstage(name)
-            self._queue_notice(f"'{name}' didn't train cleanly, sir. I've set it aside.")
+            msg = (
+                f"I couldn't retrain without '{name}', sir — I've left it in place."
+                if removing
+                else f"'{name}' didn't train cleanly, sir. I've set it aside."
+            )
+            self._queue_notice(msg)
             return
 
         train_result, classifier = payload
         try:
-            if not self._self_check(classifier, outcome.manifest):
+            if not self._self_check(classifier, outcome.manifest, present=not removing):
                 self._discard_unused_version(train_result)
                 self._unstage(name)
-                self._queue_notice(f"I set '{name}' aside, sir; it didn't check out in practice.")
+                msg = (
+                    f"Something looked off after removing '{name}', sir; I've left it as it was."
+                    if removing
+                    else f"I set '{name}' aside, sir; it didn't check out in practice."
+                )
+                self._queue_notice(msg)
                 return
 
-            if versioning != "revert":
+            if versioning not in ("revert", "remove"):
                 description = outcome.manifest.description.rstrip(".")
                 description = description[:1].lower() + description[1:]
                 keep = await self._decide(
@@ -538,7 +574,7 @@ class Orchestrator:
             if callable(close):
                 close()
         self._staged = (classifier, new_registry)
-        verb = {"new": "learned", "edit": "updated", "revert": "reverted"}[versioning]
+        verb = {"new": "learned", "edit": "updated", "revert": "reverted", "remove": "removed"}[versioning]
         self._queue_announcement(f"I've {verb} '{name}', sir. My capabilities are updated.")
 
     async def _default_train_and_load(self, examples):
@@ -668,11 +704,16 @@ class Orchestrator:
         self._decisions.clear()
         self._last_job = None
 
-    def _self_check(self, classifier: Classifier, manifest) -> bool:
-        """A freshly-trained model must still classify the seed intents *and*
-        the new/changed skill's own examples correctly before it's ever
-        staged — PRD: "new model must load and still classify the seed
-        examples sanely.\""""
+    def _self_check(self, classifier: Classifier, manifest, *, present: bool = True) -> bool:
+        """A freshly-trained model must still classify the seed intents sanely
+        before it's ever staged — PRD: "new model must load and still classify
+        the seed examples sanely."
+
+        For `present=True` (teach/edit/revert) the new/changed skill's own
+        examples must also resolve to it. For `present=False` (remove) it's
+        the mirror image — those same examples must *not* resolve to the
+        just-removed skill any more (proving the retrain actually dropped
+        it)."""
         for text, expected in _SELF_CHECK_SEED_PROBES:
             label, _ = classifier.predict(text)
             if label != expected:
@@ -680,9 +721,14 @@ class Orchestrator:
                 return False
         for text in manifest.examples:
             label, _ = classifier.predict(text)
-            if label != manifest.name:
+            if present and label != manifest.name:
                 log.warning(
                     "self-check: %r -> %s (expected %s)", text, label, manifest.name
+                )
+                return False
+            if not present and label == manifest.name:
+                log.warning(
+                    "self-check: %r still -> %s after removal", text, manifest.name
                 )
                 return False
         return True
@@ -693,14 +739,33 @@ class Orchestrator:
         live (unchanged) `self.nlu`."""
         shutil.rmtree(train_result.path, ignore_errors=True)
 
-    def _promote_files(self, name: str, module_source: str, versioning: str, outcome: FlowOutcome):
+    def _promote_files(
+        self, name: str, module_source: str | None, versioning: str, outcome: FlowOutcome
+    ):
         """Write the confirmed module to `skills/learned/`, with version /
         quarantine bookkeeping per PRD directory-layout decision 4, and
         return a freshly rebuilt registry. The actual `self.registry` swap
-        happens later, through `self._staged` + the merge gate."""
+        happens later, through `self._staged` + the merge gate.
+
+        `versioning="remove"` has no module to write — it just quarantines the
+        existing file and returns the rebuilt (now smaller) registry."""
         registry = self._latest_registry()
         learned_path = _flows.learned_source_path(name)
         learned_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if versioning == "remove":
+            # No module to write — quarantine the live file (kept for
+            # inspection, never re-imported), drop its now-meaningless rollback
+            # history, and evict the stale import so a later re-teach of the
+            # same name starts clean.
+            quarantine_dir = self.config.skill_quarantine_dir
+            quarantine_dir.mkdir(parents=True, exist_ok=True)
+            if learned_path.is_file():
+                stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                shutil.move(str(learned_path), str(quarantine_dir / f"{name}.{stamp}.py"))
+            shutil.rmtree(self.config.skill_versions_dir(name), ignore_errors=True)
+            sys.modules.pop(f"{LEARNED_PACKAGE}.{name}", None)
+            return registry.rebuilt()
 
         if versioning == "edit":
             old_manifest = registry.manifest(name)

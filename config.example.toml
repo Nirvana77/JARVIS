@@ -86,6 +86,8 @@ sandbox_timeout_s = 10.0    # wall-clock limit for a sandboxed test/dry-run
 sandbox_mem_mb = 512        # RLIMIT_AS for a sandboxed subprocess — pytest's own
                             # startup needs several hundred MB in a large venv
 sandbox_cpu_s = 5           # RLIMIT_CPU for a sandboxed subprocess
+max_generate_attempts = 5  # generate -> validate -> sandbox retries, feeding
+                            # back the previous attempt's error, before giving up
 
 [paths]
 data_dir = "data"        # models, nlu artifacts, per-skill scratch (git-ignored)

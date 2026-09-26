@@ -156,12 +156,15 @@ class ClaudeClient:
         )
 
     def generate_skill(
-        self, spec: SkillSpec, existing_source: str | None = None
+        self,
+        spec: SkillSpec,
+        existing_source: str | None = None,
+        feedback: str | None = None,
     ) -> "GeneratedSkill":
         if not self.available:
             raise ClaudeClientError("no Anthropic API key configured")
 
-        prompt = self._build_prompt(spec, existing_source)
+        prompt = self._build_prompt(spec, existing_source, feedback)
         try:
             response = self._client.messages.create(
                 model=self.model,
@@ -184,7 +187,9 @@ class ClaudeClient:
         )
 
     @staticmethod
-    def _build_prompt(spec: SkillSpec, existing_source: str | None) -> str:
+    def _build_prompt(
+        spec: SkillSpec, existing_source: str | None, feedback: str | None = None
+    ) -> str:
         lines = [
             f"Skill name: {spec.name}",
             f"Description: {spec.description}",
@@ -201,12 +206,23 @@ class ClaudeClient:
             )
         else:
             lines.append("\nThis is a brand new skill — write it from scratch.")
+        if feedback:
+            lines.append(
+                "\nA previous attempt at this exact request was rejected. "
+                "Read the feedback below carefully and fix the underlying "
+                "problem — don't just repeat the same code:\n"
+                f"{feedback}"
+            )
         return "\n".join(lines)
 
 
 def default_generate(
-    spec: SkillSpec, existing_source: str | None, *, client: ClaudeClient
+    spec: SkillSpec,
+    existing_source: str | None,
+    feedback: str | None = None,
+    *,
+    client: ClaudeClient,
 ) -> GeneratedSkill:
     """The default `generate` callable `build.build()` takes — a thin bind of
     a constructed `ClaudeClient` so `build()` itself never imports `anthropic`."""
-    return client.generate_skill(spec, existing_source)
+    return client.generate_skill(spec, existing_source, feedback)

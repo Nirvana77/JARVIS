@@ -28,6 +28,11 @@ def test_build_corpus_from_seed_has_expected_labels():
     assert sum(1 for e in corpus if e.label == "search") >= 8
 
 
+def test_meta_skill_intents_are_in_the_seed_corpus():
+    labels = {e.label for e in build_corpus()}
+    assert {"teach", "edit_skill", "revert_skill", "remove_skill"} <= labels
+
+
 def test_corpus_sqlite_roundtrip(tmp_path):
     corpus = build_corpus()
     db = tmp_path / "corpus.sqlite"

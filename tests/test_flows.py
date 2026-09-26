@@ -14,6 +14,7 @@ import pytest
 from jarvis.factory.flows import (
     EditSkillFlow,
     LearningRequest,
+    RemoveSkillFlow,
     RevertSkillFlow,
     TeachFlow,
     ask_yes_no_or_none,
@@ -229,6 +230,54 @@ def test_revert_skill_flow_picks_the_highest_version(tmp_path):
     assert request.reverted_from_version == 2
     assert request.module_source == GOOD_MODULE
     assert request.manifest.name == "coin_flip"
+
+
+# -- RemoveSkillFlow ----------------------------------------------------------
+
+def test_remove_skill_flow_with_no_learned_skills_returns_none():
+    script = Script([])
+    recorder = Recorder()
+    flow = RemoveSkillFlow(ask=script.ask, say=recorder.say, registry=FakeRegistry())
+    assert asyncio.run(flow.run()) is None
+    assert any("skills" in s.lower() for s in recorder.said)
+
+
+def test_remove_skill_flow_confirmed_returns_a_remove_request():
+    from jarvis.skills.contract import SkillManifest
+
+    existing = SkillManifest(name="coin_flip", description="x", examples=["x"], origin="learned")
+    script = Script(["coin flip", "yes"])
+    flow = RemoveSkillFlow(ask=script.ask, say=Recorder().say, registry=FakeRegistry([existing]))
+    request = asyncio.run(flow.run())
+    assert isinstance(request, LearningRequest)
+    assert request.versioning == "remove"
+    assert request.name == "coin_flip"
+    assert request.manifest is existing
+
+
+def test_remove_skill_flow_declined_returns_none_and_keeps_the_skill():
+    from jarvis.skills.contract import SkillManifest
+
+    existing = SkillManifest(name="coin_flip", description="x", examples=["x"], origin="learned")
+    script = Script(["coin flip", "no"])
+    recorder = Recorder()
+    flow = RemoveSkillFlow(ask=script.ask, say=recorder.say, registry=FakeRegistry([existing]))
+    assert asyncio.run(flow.run()) is None
+    assert any("keep it" in s.lower() for s in recorder.said)
+
+
+def test_remove_skill_flow_refuses_a_skill_already_being_learned():
+    from jarvis.skills.contract import SkillManifest
+
+    existing = SkillManifest(name="coin_flip", description="x", examples=["x"], origin="learned")
+    script = Script(["coin flip"])
+    recorder = Recorder()
+    flow = RemoveSkillFlow(
+        ask=script.ask, say=recorder.say, registry=FakeRegistry([existing]),
+        busy_names=frozenset({"coin_flip"}),
+    )
+    assert asyncio.run(flow.run()) is None
+    assert any("already working on 'coin_flip'" in s for s in recorder.said)
 
 
 # -- ask_yes_no_or_none (M2.5: background questions) -------------------------

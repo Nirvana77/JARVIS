@@ -42,9 +42,25 @@ def module(name="coin_flip", perms='{"pure"}'):
 
 
 def generator(source):
-    def generate(spec, existing_source):
+    def generate(spec, existing_source, feedback=None):
         return GeneratedSkill(name=spec.name, module_source=source, test_source=GOOD_TEST)
 
+    return generate
+
+
+def sequence(*sources):
+    """A `generate` that returns each `sources[i]` in turn, one per call — for
+    exercising the retry loop's "attempt N recovers" path. Recording the
+    `feedback` it was called with lets a test assert it actually saw the
+    previous attempt's error."""
+    calls = []
+
+    def generate(spec, existing_source, feedback=None):
+        calls.append(feedback)
+        source = sources[min(len(calls) - 1, len(sources) - 1)]
+        return GeneratedSkill(name=spec.name, module_source=source, test_source=GOOD_TEST)
+
+    generate.calls = calls
     return generate
 
 
@@ -74,6 +90,25 @@ class FakeSandbox:
         return SandboxResult(ok=self.dry_run_ok, stdout="", stderr="boom", returncode=0 if self.dry_run_ok else 1)
 
 
+class FlakySandbox:
+    """`run_tests` fails the first `fail_times` calls, then succeeds — for
+    exercising the retry loop's "a later attempt recovers" path."""
+
+    def __init__(self, fail_times=1):
+        self.fail_times = fail_times
+        self.calls = []
+
+    def run_tests(self, module_path, test_path, permissions):
+        self.calls.append(("run_tests", module_path.name, permissions))
+        tries = sum(1 for c in self.calls if c[0] == "run_tests")
+        ok = tries > self.fail_times
+        return SandboxResult(ok=ok, stdout="", stderr="boom", returncode=0 if ok else 1)
+
+    def dry_run(self, module_path, params, permissions):
+        self.calls.append(("dry_run", module_path.name, permissions))
+        return SandboxResult(ok=True, stdout="", stderr="", returncode=0)
+
+
 class Channel:
     """Records `notify` lines and answers `decide` from a canned list."""
 
@@ -98,7 +133,8 @@ def teach_request(name="coin_flip"):
     )
 
 
-def make_job(request, *, channel, generate, sandbox, registry=None):
+def make_job(request, *, channel, generate, sandbox, registry=None, max_attempts=None):
+    kwargs = {} if max_attempts is None else {"max_attempts": max_attempts}
     return LearningJob(
         request,
         notify=channel.notify,
@@ -106,6 +142,7 @@ def make_job(request, *, channel, generate, sandbox, registry=None):
         registry=registry or FakeRegistry(),
         generate=generate,
         sandbox=sandbox,
+        **kwargs,
     )
 
 
@@ -132,7 +169,7 @@ def test_happy_path_is_accepted_and_staged():
 
 
 def test_build_error_is_notified_not_raised():
-    def broken(spec, existing_source):
+    def broken(spec, existing_source, feedback=None):
         raise BuildError("no code block")
 
     channel = Channel()
@@ -210,7 +247,7 @@ def test_name_collision_is_checked_against_the_registry_the_job_was_given():
 def test_edit_passes_existing_source_and_allows_its_own_name():
     seen = {}
 
-    def generate(spec, existing_source):
+    def generate(spec, existing_source, feedback=None):
         seen["existing"] = existing_source
         return GeneratedSkill(name=spec.name, module_source=module(), test_source=GOOD_TEST)
 
@@ -239,7 +276,7 @@ def test_revert_passes_through_without_building_or_sandboxing():
         reverted_from_version=2,
     )
 
-    def must_not_generate(spec, existing_source):
+    def must_not_generate(spec, existing_source, feedback=None):
         raise AssertionError("revert must not call Claude")
 
     sandbox = FakeSandbox()
@@ -247,4 +284,122 @@ def test_revert_passes_through_without_building_or_sandboxing():
     assert outcome.accepted
     assert outcome.module_source == source
     assert outcome.reverted_from_version == 2
+    assert sandbox.calls == []
+
+
+# -- remove: no Claude, no sandbox, same shortcut as revert ------------------
+
+def test_remove_passes_through_without_building_or_sandboxing():
+    from jarvis.skills.contract import SkillManifest
+
+    manifest = SkillManifest(name="coin_flip", description="x", examples=["flip a coin"], origin="learned")
+    request = LearningRequest(versioning="remove", name="coin_flip", manifest=manifest)
+
+    def must_not_generate(spec, existing_source, feedback=None):
+        raise AssertionError("remove must not call Claude")
+
+    sandbox = FakeSandbox()
+    outcome = asyncio.run(make_job(request, channel=Channel(), generate=must_not_generate, sandbox=sandbox).run())
+    assert outcome.accepted
+    assert outcome.name == "coin_flip"
+    assert outcome.manifest is manifest
+    assert outcome.module_source is None
+    assert sandbox.calls == []
+
+
+# -- retry with feedback ------------------------------------------------------
+
+def test_default_max_attempts_is_five():
+    from jarvis.factory.jobs import DEFAULT_MAX_ATTEMPTS
+
+    assert DEFAULT_MAX_ATTEMPTS == 5
+
+    calls = []
+
+    def always_fails(spec, existing_source, feedback=None):
+        calls.append(feedback)
+        return GeneratedSkill(name=spec.name, module_source="def nope(:\n", test_source=GOOD_TEST)
+
+    channel = Channel()
+    outcome = asyncio.run(
+        make_job(teach_request(), channel=channel, generate=always_fails, sandbox=FakeSandbox()).run()
+    )
+    assert not outcome.accepted
+    assert len(calls) == DEFAULT_MAX_ATTEMPTS
+    # only the final give-up is spoken, not one notice per failed attempt
+    assert len(channel.notices) == 1
+
+
+def test_max_attempts_is_configurable():
+    calls = []
+
+    def always_fails(spec, existing_source, feedback=None):
+        calls.append(feedback)
+        return GeneratedSkill(name=spec.name, module_source="def nope(:\n", test_source=GOOD_TEST)
+
+    channel = Channel()
+    outcome = asyncio.run(
+        make_job(
+            teach_request(), channel=channel, generate=always_fails, sandbox=FakeSandbox(), max_attempts=2,
+        ).run()
+    )
+    assert not outcome.accepted
+    assert len(calls) == 2
+
+
+def test_validation_failure_is_retried_with_feedback_and_recovers():
+    channel = Channel()
+    generate = sequence("def nope(:\n", module())
+    job = make_job(teach_request(), channel=channel, generate=generate, sandbox=FakeSandbox())
+    outcome = asyncio.run(job.run())
+    assert outcome.accepted
+    assert len(generate.calls) == 2
+    assert generate.calls[0] is None  # first attempt: no prior failure yet
+    assert generate.calls[1]  # second attempt got fed the first attempt's error
+    assert channel.notices == []  # silent recovery — no "didn't check out" line
+
+
+def test_sandbox_test_failure_is_retried_with_feedback_and_recovers():
+    channel = Channel()
+    sandbox = FlakySandbox(fail_times=1)
+    job = make_job(teach_request(), channel=channel, generate=generator(module()), sandbox=sandbox)
+    outcome = asyncio.run(job.run())
+    assert outcome.accepted
+    assert len([c for c in sandbox.calls if c[0] == "run_tests"]) == 2
+    assert channel.notices == []
+
+
+def test_exhausted_retries_reports_the_original_reason_once():
+    channel = Channel()
+    job = make_job(
+        teach_request(), channel=channel, generate=generator(module()),
+        sandbox=FakeSandbox(tests_ok=False), max_attempts=3,
+    )
+    outcome = asyncio.run(job.run())
+    assert not outcome.accepted
+    assert outcome.reason == "sandbox tests failed"
+    assert len(channel.notices) == 1
+    assert "coin_flip" in channel.notices[0]
+
+
+def test_permission_is_only_asked_once_across_a_retry():
+    channel = Channel(answers=[True])
+    sandbox = FlakySandbox(fail_times=1)
+    job = make_job(teach_request(), channel=channel, generate=generator(module(perms='{"net"}')), sandbox=sandbox)
+    outcome = asyncio.run(job.run())
+    assert outcome.accepted
+    # not re-asked on the retry that needs the same permission again
+    assert len(channel.questions) == 1
+
+
+def test_declined_permission_still_ends_the_flow_immediately():
+    """A permission decline is the user's call, not something a retry can fix
+    — it must end the job outright, same as with no retry loop at all."""
+    channel = Channel(answers=[False])
+    sandbox = FlakySandbox(fail_times=1)
+    job = make_job(teach_request(), channel=channel, generate=generator(module(perms='{"net"}')), sandbox=sandbox)
+    outcome = asyncio.run(job.run())
+    assert not outcome.accepted
+    assert outcome.reason == "permission declined"
+    assert len(channel.questions) == 1
     assert sandbox.calls == []

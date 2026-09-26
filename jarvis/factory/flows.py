@@ -1,4 +1,4 @@
-"""The voice dialogs — `teach`, `edit_skill`, `revert_skill`.
+"""The voice dialogs — `teach`, `edit_skill`, `revert_skill`, `remove_skill`.
 
 M2.5: a flow is **only the dialog** — the questions only the user can
 answer. It returns a :class:`LearningRequest` and is done; building,
@@ -31,7 +31,7 @@ _YES = {"yes", "yeah", "yep", "sure", "confirm", "affirmative", "correct", "plea
 _NO = {"no", "nope", "don't", "do not", "negative", "cancel", "never mind", "stop"}
 
 
-Versioning = Literal["new", "edit", "revert"]
+Versioning = Literal["new", "edit", "revert", "remove"]
 
 
 @dataclass
@@ -39,7 +39,10 @@ class LearningRequest:
     """What a finished dialog hands to the background job.
 
     ``new``/``edit`` carry a ``spec`` for Claude; ``revert`` carries the
-    already-approved archived source to restore (no Claude, no sandbox)."""
+    already-approved archived source to restore (no Claude, no sandbox);
+    ``remove`` carries only the skill's current ``manifest`` — there is no
+    source to write, just an existing file to quarantine (no Claude, no
+    sandbox, no retrain corpus entry for it)."""
 
     versioning: Versioning
     name: str
@@ -278,3 +281,40 @@ class RevertSkillFlow:
             manifest=manifest,
             reverted_from_version=target,
         )
+
+
+class RemoveSkillFlow:
+    """Forget a learned skill for good: quarantine its module and retrain the
+    NLU without it. Like `RevertSkillFlow` it never calls Claude — it only
+    tears down already-approved code — so the background job needs no
+    generate/sandbox step either. It confirms up front because the teardown
+    isn't undoable by voice (the module is kept in `_quarantine/`, but
+    re-teaching is the only way back). Only `origin="learned"` skills are
+    offered; builtins can't be removed."""
+
+    def __init__(
+        self, *, ask: Ask, say: Say, registry, busy_names: frozenset[str] = frozenset()
+    ) -> None:
+        self.ask = ask
+        self.say = say
+        self.registry = registry
+        self.busy_names = busy_names
+
+    async def run(self) -> LearningRequest | None:
+        name = await _match_skill_name(
+            self.ask, self.say, self.registry,
+            "Which skill would you like me to remove, sir?", origin="learned",
+            busy_names=self.busy_names,
+        )
+        if name is None:
+            return None
+
+        confirmed = await ask_yes_no(
+            self.ask,
+            f"Remove the '{name}' skill for good, sir? I'll keep a copy I can't run.",
+        )
+        if not confirmed:
+            await self.say("Very well, I'll keep it.")
+            return None
+
+        return LearningRequest(versioning="remove", name=name, manifest=self.registry.manifest(name))

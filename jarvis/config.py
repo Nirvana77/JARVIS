@@ -129,6 +129,11 @@ class FactoryConfig:
     sandbox_timeout_s: float = 10.0
     sandbox_mem_mb: int = 512
     sandbox_cpu_s: int = 5
+    #: generate → validate → sandbox is retried this many times, feeding the
+    #: previous attempt's error (validation message or sandbox stderr) back
+    #: to Claude as feedback, before the job gives up and tells the user it's
+    #: setting the skill aside.
+    max_generate_attempts: int = 5
 
 
 @dataclass(frozen=True)
@@ -485,6 +490,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             sandbox_timeout_s=float(factory.get("sandbox_timeout_s", 10.0)),
             sandbox_mem_mb=int(factory.get("sandbox_mem_mb", 512)),
             sandbox_cpu_s=int(factory.get("sandbox_cpu_s", 5)),
+            max_generate_attempts=int(factory.get("max_generate_attempts", 5)),
         ),
         server=ServerConfig(
             host=str(server.get("host", "0.0.0.0")),

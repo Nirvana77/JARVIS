@@ -428,3 +428,54 @@ def test_revert_skill_does_not_require_a_factory(orch):
     # no factory needed — it just can't find a matching learned skill on the
     # bare FakeRegistry, so it should ask, get no reply, and give up quietly
     assert orch.registry.calls == []
+
+
+# -- remove_skill: dialog dispatch only (the build/retrain pipeline is tested
+# end-to-end in test_background_learning.py, like revert_skill's) -----------
+
+
+def test_remove_skill_does_not_require_a_factory(orch):
+    orch.standby = False
+    orch.claude_client = None
+    asyncio.run(orch.handle("remove_skill", "remove the timer skill"))
+    # like revert_skill it only tears down already-approved code, so a missing
+    # Claude client must not stop it — the bare FakeRegistry has no learned
+    # skills, so it says so and gives up.
+    assert orch.registry.calls == []
+    assert any("skills" in s.lower() for s in orch._persona.spoken)
+
+
+def test_low_confidence_remove_skill_falls_back_to_unknown(orch):
+    orch.standby = False
+    asyncio.run(orch.handle("remove_skill", "remove the corn skill", confidence=0.43))
+    assert orch.registry.calls == []
+    assert orch._persona.spoken == ["<unknown>"]
+
+
+def test_high_confidence_remove_skill_proceeds(orch):
+    orch.standby = False
+    asyncio.run(orch.handle("remove_skill", "remove the timer skill", confidence=0.9))
+    assert "<unknown>" not in orch._persona.spoken
+    assert any("skills" in s.lower() for s in orch._persona.spoken)
+
+
+def test_self_check_present_false_rejects_a_removal_that_did_not_take(orch):
+    from jarvis.skills.contract import SkillManifest
+
+    manifest = SkillManifest(name="coin_flip", description="x", examples=["flip a coin"], origin="learned")
+    base = {
+        "search black holes": ("search", 0.9),
+        "open github": ("open_app", 0.9),
+        "go to sleep": ("goodbye", 0.9),
+    }
+
+    class Still:
+        def predict(self, t):
+            return {**base, "flip a coin": ("coin_flip", 0.9)}.get(t, ("unknown", 0.1))
+
+    class Gone:
+        def predict(self, t):
+            return base.get(t, ("unknown", 0.1))
+
+    assert orch._self_check(Still(), manifest, present=False) is False
+    assert orch._self_check(Gone(), manifest, present=False) is True

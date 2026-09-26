@@ -12,7 +12,7 @@ SPEC = SkillSpec(name="coin_flip", description="Flip a coin.", examples=["flip a
 
 
 def test_build_returns_the_generated_skill():
-    def fake_generate(spec, existing_source):
+    def fake_generate(spec, existing_source, feedback=None):
         assert spec is SPEC
         assert existing_source is None
         return GeneratedSkill(name=spec.name, module_source="MODULE", test_source="TEST")
@@ -25,7 +25,7 @@ def test_build_returns_the_generated_skill():
 def test_build_passes_existing_source_through_for_edits():
     seen = {}
 
-    def fake_generate(spec, existing_source):
+    def fake_generate(spec, existing_source, feedback=None):
         seen["existing"] = existing_source
         return GeneratedSkill(name=spec.name, module_source="M", test_source="T")
 
@@ -33,8 +33,30 @@ def test_build_passes_existing_source_through_for_edits():
     assert seen["existing"] == "old code"
 
 
+def test_build_defaults_feedback_to_none():
+    seen = {}
+
+    def fake_generate(spec, existing_source, feedback=None):
+        seen["feedback"] = feedback
+        return GeneratedSkill(name=spec.name, module_source="M", test_source="T")
+
+    build(SPEC, generate=fake_generate)
+    assert seen["feedback"] is None
+
+
+def test_build_passes_feedback_through_for_a_retry():
+    seen = {}
+
+    def fake_generate(spec, existing_source, feedback=None):
+        seen["feedback"] = feedback
+        return GeneratedSkill(name=spec.name, module_source="M", test_source="T")
+
+    build(SPEC, generate=fake_generate, feedback="the last attempt's tests failed: boom")
+    assert seen["feedback"] == "the last attempt's tests failed: boom"
+
+
 def test_build_wraps_generate_exceptions():
-    def boom(spec, existing_source):
+    def boom(spec, existing_source, feedback=None):
         raise RuntimeError("network down")
 
     with pytest.raises(BuildError, match="network down"):
@@ -42,7 +64,7 @@ def test_build_wraps_generate_exceptions():
 
 
 def test_build_rejects_empty_module_source():
-    def fake_generate(spec, existing_source):
+    def fake_generate(spec, existing_source, feedback=None):
         return GeneratedSkill(name=spec.name, module_source="   ", test_source="T")
 
     with pytest.raises(BuildError, match="empty"):
@@ -50,7 +72,7 @@ def test_build_rejects_empty_module_source():
 
 
 def test_build_rejects_empty_test_source():
-    def fake_generate(spec, existing_source):
+    def fake_generate(spec, existing_source, feedback=None):
         return GeneratedSkill(name=spec.name, module_source="M", test_source="")
 
     with pytest.raises(BuildError, match="empty"):

@@ -19,7 +19,7 @@ class GeneratedSkillLike(Protocol):
     test_source: str
 
 
-Generate = Callable[[SkillSpec, "str | None"], GeneratedSkillLike]
+Generate = Callable[[SkillSpec, "str | None", "str | None"], GeneratedSkillLike]
 
 
 class BuildError(RuntimeError):
@@ -31,9 +31,14 @@ def build(
     *,
     generate: Generate,
     existing_source: str | None = None,
+    feedback: str | None = None,
 ) -> GeneratedSkillLike:
+    """`feedback`, when given, describes why a *previous* attempt at this same
+    spec didn't check out (a validation error or sandbox failure) — passed
+    straight through to `generate` so a retry can ask Claude to fix that
+    specific problem instead of generating blind again."""
     try:
-        generated = generate(spec, existing_source)
+        generated = generate(spec, existing_source, feedback)
     except Exception as exc:  # noqa: BLE001 — degrade to a spoken failure, not a crash
         raise BuildError(f"couldn't generate '{spec.name}': {exc}") from exc
 
