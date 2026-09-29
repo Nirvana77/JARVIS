@@ -279,9 +279,16 @@ class RemoteLink:
         except RuntimeError:  # the loop is closing
             pass
 
+    def entering_standby(self) -> None:
+        """The orchestrator is dropping to standby: say so as a `state`, before
+        the standby line goes out as speech. A battery edge powers down on it
+        (and may skip that line — it still reports `playbackDone`)."""
+        self.set_state("standby")
+
     def set_state(self, value: str) -> None:
-        """`idle` / `listening` / `thinking` / `acting` / `speaking`, plus the
-        mode, which a client watching only `state` would otherwise never see."""
+        """`idle` / `listening` / `thinking` / `acting` / `speaking` /
+        `standby`, plus the mode, which a client watching only `state` would
+        otherwise never see."""
         self.state = value
         connection = self._connection
         if connection is None:

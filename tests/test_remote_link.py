@@ -628,3 +628,34 @@ def test_a_segment_that_is_too_short_is_ignored_without_a_word(tmp_path):
             await brain.stop()
 
     run(scenario())
+
+
+def test_the_edge_is_told_about_standby_before_the_standby_line(tmp_path):
+    """A battery edge powers down on standby. It is told with a `state`, not by
+    matching the spoken line, and before that line, so it can skip playing it."""
+    async def scenario():
+        brain = Brain(
+            make_config(tmp_path, follow_up_s=0.4),
+            transcriber=FakeTranscriber("Jarvis, search black holes"),
+        )
+        await brain.start()
+        try:
+            async with connected(brain) as edge:
+                await edge.say()
+                speech = await edge.expect("speech", timeout=10)
+                await edge.send(P.control(P.CONTROL.PLAYBACK_DONE, id=speech["id"]))
+
+                # the follow-up window lapses in silence: JARVIS drops to standby
+                state = await edge.expect("state", timeout=6)
+                while state["value"] != "standby":
+                    state = await edge.expect("state", timeout=6)
+                standby_at = len(edge.received)
+
+                line = await edge.expect("speech", timeout=6)
+                assert line["text"] == "<standby>"
+                assert edge.received.index(line) >= standby_at
+                await edge.send(P.control(P.CONTROL.PLAYBACK_DONE, id=line["id"]))
+        finally:
+            await brain.stop()
+
+    run(scenario())

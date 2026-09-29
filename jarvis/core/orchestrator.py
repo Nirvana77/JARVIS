@@ -162,6 +162,21 @@ class Orchestrator:
         await asyncio.sleep(0.2)
         self._drain_mic()
 
+    async def _enter_standby(self) -> None:
+        """Drop to standby, and tell the speaker *before* saying so.
+
+        A remote edge on a battery (the watch) powers down on standby. The
+        spoken line is persona text — and "Standing by, sir." is also a wake
+        acknowledgement — so it gets a signal it can trust instead, early
+        enough to skip playing the line. Speakers without the hook (the local
+        one, the fakes) are unaffected.
+        """
+        self.standby = True
+        notify = getattr(self.tts, "entering_standby", None)
+        if callable(notify):
+            await asyncio.to_thread(notify)
+        await self._speak(self.persona.line("standby"))
+
     def _drain_mic(self) -> None:
         drain = getattr(self.mic, "drain", None)
         if callable(drain):
@@ -296,8 +311,7 @@ class Orchestrator:
             # before the drop to standby: a finished job's question shouldn't
             # have to wait for the next wake word
             await self._safe_point()
-            self.standby = True
-            await self._speak(self.persona.line("standby"))
+            await self._enter_standby()
 
     def _print_heard(self, text: str) -> None:
         asr = getattr(self.stt, "last_avg_logprob", None)
@@ -340,8 +354,7 @@ class Orchestrator:
                 await self._speak(self.persona.line("already_awake"))
             return
         if action == "exit":
-            self.standby = True
-            await self._speak(self.persona.line("standby"))
+            await self._enter_standby()
             return
         if action == "shutdown":
             await self._speak(self.persona.line("shutdown"))
