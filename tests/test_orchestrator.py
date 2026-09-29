@@ -479,3 +479,32 @@ def test_self_check_present_false_rejects_a_removal_that_did_not_take(orch):
 
     assert orch._self_check(Still(), manifest, present=False) is False
     assert orch._self_check(Gone(), manifest, present=False) is True
+
+
+# -- standby is announced to the speaker before it is spoken ------------------
+# A remote edge (the watch) powers down on standby. The spoken standby line is
+# persona text and can collide with other lines ("Standing by, sir." is also a
+# wake acknowledgement), so the edge needs a signal it can trust — and it needs
+# it *before* the line, so it can skip playing it.
+
+class StandbyAwareTTS(FakeTTS):
+    def entering_standby(self):
+        self.persona.spoken.append("<entering-standby>")
+
+
+def test_the_end_of_a_session_tells_the_speaker_before_saying_standby(orch):
+    orch.tts = StandbyAwareTTS(orch._persona)
+    orch.mic = FakeMic(script=[True, False])
+    asyncio.run(orch.run())
+    spoken = orch._persona.spoken
+    assert "<entering-standby>" in spoken
+    assert spoken.index("<entering-standby>") < spoken.index("<standby>")
+    assert orch.standby is True
+
+
+def test_goodbye_tells_the_speaker_before_saying_standby(orch):
+    orch.tts = StandbyAwareTTS(orch._persona)
+    orch.standby = False
+    asyncio.run(orch.handle("goodbye", "go to sleep"))
+    spoken = orch._persona.spoken
+    assert spoken.index("<entering-standby>") < spoken.index("<standby>")
