@@ -46,7 +46,7 @@ from jarvis.remote.addressing import (
     apply_mode_command,
     route,
 )
-from jarvis.remote.firmware import FirmwareStore
+from jarvis.remote.firmware import Firmware, FirmwareStore
 from jarvis.remote.intake import AudioIntake
 
 log = logging.getLogger(__name__)
@@ -113,6 +113,45 @@ class DeviceSession:
     window: HoldWindow
     wake: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task | None = None
+    #: the firmware version it reported in `hello`; None = cannot flash itself
+    fw: str | None = None
+    #: an update asked for by voice, announced once the reply has played
+    pending_ota: Firmware | None = None
+
+
+@dataclass(frozen=True)
+class FirmwareUpdate:
+    """What ``RemoteServer.update_firmware`` did: ``sent`` (announced, or
+    about to be), ``current`` (it runs that already), ``none`` (nothing
+    staged), ``unsupported`` (the edge never said what it runs), ``offline``."""
+
+    status: str
+    version: str = ""
+    device_id: str = ""
+
+
+class EdgeControl:
+    """What a skill may ask of the connected edges (``ctx.edges``).
+
+    Skills run on a worker thread (the orchestrator's ``asyncio.to_thread``),
+    so each call hops onto the server's loop and waits for the answer. Never
+    call it from the loop itself.
+    """
+
+    def __init__(self, server: "RemoteServer", timeout_s: float = 5.0) -> None:
+        self._server = server
+        self._timeout_s = timeout_s
+
+    def update_firmware(self) -> FirmwareUpdate:
+        loop = self._server.link._loop
+        if loop is None or not loop.is_running():
+            return FirmwareUpdate("offline")
+        future = asyncio.run_coroutine_threadsafe(self._server.update_firmware(), loop)
+        try:
+            return future.result(self._timeout_s)
+        except Exception:  # noqa: BLE001 — a timeout or a closing loop
+            future.cancel()
+            return FirmwareUpdate("offline")
 
 
 # -- the link --------------------------------------------------------------
@@ -517,6 +556,7 @@ class RemoteServer:
         link.modes = self.modes
         self.tokens = tokens if tokens is not None else dict(config.edge_tokens)
         self.firmware = FirmwareStore(config.firmware_dir)
+        self.edges = EdgeControl(self)
         # Parsed here so a mistyped CIDR stops the brain at startup rather than
         # quietly disabling the thing that tells clients apart.
         self._trusted_networks = config.server.trusted_networks()
@@ -661,6 +701,43 @@ class RemoteServer:
         )
         return Response(200, "OK", headers, body)
 
+    # -- firmware, on request (the update_watch skill) --------------------
+
+    #: if the reply never reports playbackDone, announce anyway after this
+    OTA_ANNOUNCE_FALLBACK_S = 30.0
+
+    async def update_firmware(self) -> FirmwareUpdate:
+        """Offer the staged image to the connected edge now, not on its next
+        connect. With speech on, the ``ota`` event waits for the reply to
+        finish playing (``playbackDone``) so the download does not start while
+        JARVIS is still saying so."""
+        session = next(iter(self.sessions.values()), None)  # one edge per brain
+        if session is None:
+            return FirmwareUpdate("offline")
+        device_id = session.connection.device_id
+        if not session.fw:
+            return FirmwareUpdate("unsupported", device_id=device_id)
+        image = self.firmware.get(device_id)
+        if image is None:
+            return FirmwareUpdate("none", device_id=device_id)
+        if image.version == session.fw:
+            return FirmwareUpdate("current", version=image.version, device_id=device_id)
+        log.info("edge %s runs %s; update to %s asked for", device_id, session.fw, image.version)
+        session.pending_ota = image
+        if not session.connection.speech_on:
+            await self._announce_pending_ota(session)
+        else:
+            asyncio.get_running_loop().call_later(
+                self.OTA_ANNOUNCE_FALLBACK_S,
+                lambda: asyncio.ensure_future(self._announce_pending_ota(session)),
+            )
+        return FirmwareUpdate("sent", version=image.version, device_id=device_id)
+
+    async def _announce_pending_ota(self, session: DeviceSession) -> None:
+        image, session.pending_ota = session.pending_ota, None
+        if image is not None and self.sessions.get(session.connection.device_id) is session:
+            await session.connection.send(P.event("ota", image.announcement(P.FIRMWARE_PATH)))
+
     # -- the connection ------------------------------------------------
 
     async def handle(self, ws) -> None:
@@ -713,6 +790,7 @@ class RemoteServer:
             mode=stored.mode,
             previous_mode=stored.previous_mode,
             window=HoldWindow(self.config.addressing.hold_ms),
+            fw=msg.get("fw"),
         )
         self.sessions[device_id] = session
         self.link.bind_loop()
@@ -799,6 +877,7 @@ class RemoteServer:
         if action == P.CONTROL.PLAYBACK_DONE:
             self.link.playback_done(str(args.get("id", "")))
             self.link.set_state("idle")
+            await self._announce_pending_ota(session)
             return
         if action == P.CONTROL.SET_MODE:
             await self._set_mode(session, args.get("mode"))
