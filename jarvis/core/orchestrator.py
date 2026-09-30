@@ -104,8 +104,12 @@ class Orchestrator:
         claude_client=None,
         sandbox=None,
         train_and_load=None,
+        allow_shutdown: bool = True,
     ) -> None:
         self.config = config
+        #: False under `serve`: the brain is a server, and "shut down" said to
+        #: an edge only stands it by — nobody is at the AI PC to restart it.
+        self.allow_shutdown = allow_shutdown
         self.wake = wake
         self.mic = mic
         self.stt = stt
@@ -361,6 +365,10 @@ class Orchestrator:
             await self._enter_standby()
             return
         if action == "shutdown":
+            if not self.allow_shutdown:
+                log.info("shutdown asked for by voice on a remote brain: standing by instead")
+                await self._enter_standby()
+                return
             await self._speak(self.persona.line("shutdown"))
             self.running = False
             return

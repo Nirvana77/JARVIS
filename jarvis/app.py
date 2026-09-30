@@ -249,6 +249,9 @@ def build_server_orchestrator(config: Config, link, edges=None) -> Orchestrator:
         intent_meta=intent_meta(),
         claude_client=claude_client,
         sandbox=sandbox,
+        # A server: "shut down" from the watch stands by, it does not stop the
+        # brain (Ctrl-C / systemd still do).
+        allow_shutdown=False,
     )
     link.attach(orchestrator)
     return orchestrator
