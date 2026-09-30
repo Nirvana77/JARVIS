@@ -4,6 +4,10 @@ Keeps skills decoupled from the audio/core stack. M1 exposes ``say`` (speak a
 line immediately, e.g. progress chatter), ``data_dir`` (per-skill scratch
 directory, created on request), ``config``, and an optional ``llm`` (the Ollama
 reasoner, or ``None``). ``schedule``/``http`` land with the M2 sandbox.
+
+``edges`` is what a skill may ask of the connected edge devices
+(``jarvis.remote.server.EdgeControl``) — only under ``python -m jarvis serve``;
+``None`` everywhere else.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from typing import TYPE_CHECKING, Callable
 if TYPE_CHECKING:
     from jarvis.config import Config
     from jarvis.core.reasoner import Reasoner
+    from jarvis.remote.server import EdgeControl
 
 
 @dataclass
@@ -23,6 +28,7 @@ class Context:
     config: "Config"
     _data_dir: Path
     llm: "Reasoner | None" = None
+    edges: "EdgeControl | None" = None
 
     @property
     def data_dir(self) -> Path:

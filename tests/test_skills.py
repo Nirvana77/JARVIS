@@ -5,11 +5,17 @@ from __future__ import annotations
 import pytest
 
 from jarvis.core.context import Context
-from jarvis.skills.builtin import note, open_app, play, search
+from jarvis.skills.builtin import note, open_app, play, search, update_watch
 from jarvis.skills.contract import PERMISSIONS, SkillManifest, SkillNotFound
 from jarvis.skills.registry import BUILTIN_PACKAGE, Registry
 
-BUILTINS = {"search": search, "open_app": open_app, "play": play, "note": note}
+BUILTINS = {
+    "search": search,
+    "open_app": open_app,
+    "play": play,
+    "note": note,
+    "update_watch": update_watch,
+}
 
 
 def _ctx(config, tmp_path):
@@ -18,14 +24,14 @@ def _ctx(config, tmp_path):
 
 # -- manifests / registry -------------------------------------------------
 
-def test_registry_discovers_the_four_builtins(config):
+def test_registry_discovers_the_builtins(config):
     # `packages=(BUILTIN_PACKAGE,)` — deliberately not the default, which also
     # scans `jarvis.skills.learned`. That directory is real, per-install state
     # (M2's `teach`/`edit_skill` write to it), so a test asserting the exact
     # builtin roster must not be coupled to whatever a developer has actually
     # taught their local JARVIS.
     reg = Registry.discover(config, packages=(BUILTIN_PACKAGE,))
-    assert reg.names() == ["note", "open_app", "play", "search"]
+    assert reg.names() == ["note", "open_app", "play", "search", "update_watch"]
 
 
 @pytest.mark.parametrize("name,module", BUILTINS.items())

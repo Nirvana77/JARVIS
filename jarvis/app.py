@@ -10,6 +10,7 @@ pipeline minus audio, for scripted conversation testing; see
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 
@@ -41,10 +42,22 @@ def rebuild_nlu(config: Config, registry: Registry) -> TrainResult:
 
 
 def ensure_nlu(config: Config, registry: Registry) -> int:
-    """Train v1 if there is no model yet. Returns the current version."""
+    """Train v1 if there is no model yet — or retrain if a registered skill
+    with examples is missing from the model's labels (a builtin added since
+    the last training), so a new skill is never silently unreachable. Returns
+    the current version."""
     version = latest_version(config.nlu_model_dir)
     if version is None:
         log.info("no NLU model found — training v1")
+        return rebuild_nlu(config, registry).version
+    try:
+        labels_path = config.nlu_model_dir / f"v{version}" / "labels.json"
+        labels = set(json.loads(labels_path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return version
+    missing = sorted(m.name for m in registry.manifests() if m.examples and m.name not in labels)
+    if missing:
+        log.info("NLU v%d does not know %s — retraining", version, ", ".join(missing))
         return rebuild_nlu(config, registry).version
     return version
 
@@ -194,7 +207,7 @@ def build_text_orchestrator(config: Config, lines: list[str] | None = None) -> O
 
 # -- M3: the brain, with the audio layer out on an edge device -------------
 
-def build_server_orchestrator(config: Config, link) -> Orchestrator:
+def build_server_orchestrator(config: Config, link, edges=None) -> Orchestrator:
     """Same wiring as `build_orchestrator`, with `link` (a `RemoteLink`) in
     place of wake/mic/STT/TTS — the segments are transcribed by
     `jarvis-whisper` and spoken by `jarvis-voder`, both out of process, so
@@ -207,7 +220,7 @@ def build_server_orchestrator(config: Config, link) -> Orchestrator:
     if getattr(link.voder, "voice", None) is None and persona.voice:
         link.voder.voice = persona.voice
 
-    registry = Registry.discover(config, reasoner, say=link.say)
+    registry = Registry.discover(config, reasoner, say=link.say, edges=edges)
     print("· NLU model", flush=True)
     ensure_nlu(config, registry)
     nlu = load_classifier(config)
@@ -280,7 +293,7 @@ def run_server_mode(config: Config) -> int:
         lambda: link.voder.health(),
         lambda h: f"{h.get('voice')} at {h.get('sample_rate')} Hz",
     )
-    orchestrator = build_server_orchestrator(config, link)
+    orchestrator = build_server_orchestrator(config, link, edges=server.edges)
 
     async def main() -> None:
         link.bind_loop()

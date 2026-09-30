@@ -253,6 +253,12 @@ tunnel, using `Authorization: Bearer <its token>` and `X-Jarvis-Device: <id>`.
 The auth backoff is the same as for `hello`. Whether and when to flash is the
 edge's call.
 
+To push it without waiting for a reconnect, say **"update the watch"**. JARVIS
+answers ("Updating the watch to <version>…", "already running …", "no new
+firmware", or "isn't connected"). The `ota` event goes out once that answer has
+finished playing, so the download does not start while JARVIS is still
+speaking.
+
 ### Over the internet, with a Cloudflare Tunnel
 
 The recommended shape: no certificate, no open port, no port-forwarding.
