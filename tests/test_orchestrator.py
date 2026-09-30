@@ -213,6 +213,56 @@ def test_shutdown_stops_the_loop(orch):
     assert "<shutdown>" in orch._persona.spoken
 
 
+def test_a_remote_brain_is_not_shut_down_by_voice(orch):
+    """Under `serve` the brain is a server: "shut down" said to the watch must
+    not stop it (nobody at the AI PC to start it again). It stands by instead,
+    which also puts the watch into watch mode."""
+    orch.allow_shutdown = False
+    orch.standby = False
+    orch.running = True
+    asyncio.run(orch.handle("shutdown", "shut down"))
+    assert orch.running is True
+    assert orch.standby is True
+    assert "<standby>" in orch._persona.spoken
+    assert "<shutdown>" not in orch._persona.spoken
+
+
+def test_serve_builds_an_orchestrator_that_cannot_be_shut_down(config, monkeypatch):
+    from jarvis import app
+
+    class Stub:
+        voice = None
+
+        def __init__(self, *a, **k):
+            self.kwargs = k
+
+        def __getattr__(self, name):
+            return lambda *a, **k: Stub()
+
+        def __len__(self):
+            return 0
+
+    built = {}
+
+    def fake_orchestrator(**kwargs):
+        built.update(kwargs)
+        return Stub()
+
+    monkeypatch.setattr(app.Reasoner, "from_config", lambda c: None)
+    monkeypatch.setattr(app.Persona, "load", lambda *a, **k: Stub())
+    monkeypatch.setattr(app.Registry, "discover", lambda *a, **k: Stub())
+    monkeypatch.setattr(app, "ensure_nlu", lambda c, r: 1)
+    monkeypatch.setattr(app, "load_classifier", lambda c: type("N", (), {"version": 1})())
+    monkeypatch.setattr(app.ClaudeClient, "from_config", lambda c: type("C", (), {"available": False})())
+    monkeypatch.setattr(app, "SubprocessSandbox", lambda **k: None)
+    monkeypatch.setattr(app, "Orchestrator", fake_orchestrator)
+
+    link = Stub()
+    link.voder = Stub()
+    app.build_server_orchestrator(config, link)
+    assert built["allow_shutdown"] is False
+
+
 def test_unknown_speaks_the_unknown_line(orch):
     orch.standby = False
     asyncio.run(orch.handle("unknown", "flibber"))
