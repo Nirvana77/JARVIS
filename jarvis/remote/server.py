@@ -46,6 +46,7 @@ from jarvis.remote.addressing import (
     apply_mode_command,
     route,
 )
+from jarvis.remote.firmware import FirmwareStore
 from jarvis.remote.intake import AudioIntake
 
 log = logging.getLogger(__name__)
@@ -515,6 +516,7 @@ class RemoteServer:
         )
         link.modes = self.modes
         self.tokens = tokens if tokens is not None else dict(config.edge_tokens)
+        self.firmware = FirmwareStore(config.firmware_dir)
         # Parsed here so a mistyped CIDR stops the brain at startup rather than
         # quietly disabling the thing that tells clients apart.
         self._trusted_networks = config.server.trusted_networks()
@@ -599,6 +601,66 @@ class RemoteServer:
             return "unauthorized"
         return None
 
+    def _refused(self, peer: str, device_id) -> None:
+        """Per address, and doubling: the point is to make guessing slow, not
+        to lock out the Pi in the hall after somebody fat-fingers an .env."""
+        failures = self._failures[peer] = self._failures.get(peer, 0) + 1
+        step = min(_AUTH_BACKOFF_MAX_S, _AUTH_BACKOFF_S * 2 ** (failures - 1))
+        self._backoff[peer] = time.monotonic() + step
+        log.warning("refused %s from %s (attempt %d, %.0fs)", device_id, peer, failures, step)
+
+    # -- firmware, over plain HTTP on the same port -----------------------
+
+    async def process_request(self, connection, request):
+        """``GET /firmware``: the device's staged OTA image (``firmware.py``).
+
+        Same port, same tunnel, same token as the WebSocket — sent as
+        ``Authorization: Bearer <token>`` with ``X-Jarvis-Device: <id>`` — and
+        the same per-address backoff, so this is not a second door for
+        guessing. Every other path goes on to the WebSocket handshake.
+        """
+        from http import HTTPStatus
+
+        from websockets.datastructures import Headers
+        from websockets.http11 import Response
+
+        if request.path.split("?", 1)[0] != P.FIRMWARE_PATH:
+            return None
+        peer = self.client_key(connection)
+        self._prune_backoff()
+        if time.monotonic() < self._backoff.get(peer, 0.0):
+            return connection.respond(HTTPStatus.TOO_MANY_REQUESTS, "slow down\n")
+        device_id = request.headers.get("X-Jarvis-Device", "")
+        scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+        if scheme.lower() != "bearer" or self._authorise(
+            {"device_id": device_id, "token": token.strip()}
+        ):
+            self._refused(peer, device_id or "?")
+            return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
+        self._backoff.pop(peer, None)
+        self._failures.pop(peer, None)
+
+        image = self.firmware.get(device_id)
+        if image is None:
+            return connection.respond(HTTPStatus.NOT_FOUND, "no firmware staged\n")
+        try:
+            body = await asyncio.to_thread(image.path.read_bytes)
+        except OSError:
+            return connection.respond(HTTPStatus.NOT_FOUND, "no firmware staged\n")
+        log.info("serving firmware %s (%d bytes) to %s", image.version, len(body), device_id)
+        headers = Headers(
+            [
+                ("Content-Type", "application/octet-stream"),
+                ("Content-Length", str(len(body))),
+                # Through a tunnel: never let a cache hand this to anyone else.
+                ("Cache-Control", "no-store"),
+                ("X-Firmware-Version", image.version),
+                ("X-Firmware-Sha256", image.sha256),
+                ("Connection", "close"),
+            ]
+        )
+        return Response(200, "OK", headers, body)
+
     # -- the connection ------------------------------------------------
 
     async def handle(self, ws) -> None:
@@ -627,16 +689,7 @@ class RemoteServer:
             return
         denial = self._authorise(msg)
         if denial:
-            # Per address, and doubling: the point is to make guessing slow,
-            # not to lock out the Pi in the hall after somebody fat-fingers
-            # an .env.
-            failures = self._failures[peer] = self._failures.get(peer, 0) + 1
-            step = min(_AUTH_BACKOFF_MAX_S, _AUTH_BACKOFF_S * 2 ** (failures - 1))
-            self._backoff[peer] = time.monotonic() + step
-            log.warning(
-                "refused %s from %s (attempt %d, %.0fs)",
-                msg.get("device_id"), peer, failures, step,
-            )
+            self._refused(peer, msg.get("device_id"))
             await ws.close(P.CLOSE.UNAUTHORIZED, denial)
             return
         self._backoff.pop(peer, None)
@@ -668,6 +721,10 @@ class RemoteServer:
         log.info("edge %s connected from %s (mode %s)", device_id, peer, session.mode)
         await connection.send(P.ready(session.mode, speech=False))
         await connection.send(P.state(self.link.state, session.mode, connection.mic_on))
+        image = self.firmware.offer(device_id, msg.get("fw"))
+        if image is not None:
+            log.info("edge %s runs %s; offering firmware %s", device_id, msg["fw"], image.version)
+            await connection.send(P.event("ota", image.announcement(P.FIRMWARE_PATH)))
 
         intake = AudioIntake(
             lambda pcm: asyncio.to_thread(self.transcriber.transcribe_full, pcm),
@@ -858,6 +915,7 @@ class RemoteServer:
             self.handle,
             self.config.server.host,
             self.config.server.port,
+            process_request=self.process_request,
             ssl=context,
             max_size=self.config.server.max_size,
             ping_interval=self.config.server.ping_interval_s,

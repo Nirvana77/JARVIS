@@ -347,6 +347,11 @@ class Config:
         return self.data_dir / "remote"
 
     @property
+    def firmware_dir(self) -> Path:
+        """OTA images for edges that flash themselves: ``<device_id>.bin``."""
+        return self.data_dir / "firmware"
+
+    @property
     def skill_quarantine_dir(self) -> Path:
         """M2: self-check failures and skills displaced by `revert_skill` — kept
         for inspection, never imported."""
