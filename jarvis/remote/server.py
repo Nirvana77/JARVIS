@@ -820,7 +820,10 @@ class RemoteServer:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
             session.window.clear()
-            self.sessions.pop(device_id, None)
+            # A reconnect registers its new session before this (replaced)
+            # socket's cleanup gets here: only remove our own.
+            if self.sessions.get(device_id) is session:
+                del self.sessions[device_id]
             self.link.disconnect(connection)
             log.info("edge %s gone", device_id)
 
