@@ -44,11 +44,17 @@ MAX_CLIENT_LOG = 500
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _SEGMENT_REASONS = ("silence", "maximum", "release", "close")
 
+#: Where an edge fetches its staged firmware image: a plain ``GET`` on the
+#: WebSocket's own port (``firmware.py``).
+FIRMWARE_PATH = "/firmware"
+#: ``esp_app_desc_t.version`` is 32 bytes, NUL included.
+MAX_FW_VERSION = 31
+
 
 class C2S:
     """Edge -> brain."""
 
-    HELLO = "hello"          # {protocol, token, device_id} — first, within 10 s
+    HELLO = "hello"          # {protocol, token, device_id, fw?} — first, within 10 s
     AUDIO = "audio"          # {pcm, final?, reason?, floor_db?, peak_db?}
     SPEAKING = "speaking"    # {on} — sent the moment the segmenter opens/closes
     INTERRUPT = "interrupt"  # {} — the button's cancel, or a spoken "stop"
@@ -63,7 +69,7 @@ class S2C:
     STATE = "state"    # {value, mode, mic}
     TEXT = "text"      # {text, from}
     SPEECH = "speech"  # {id, part, text, pcm, sample_rate, final}
-    EVENT = "event"    # {kind, data}
+    EVENT = "event"    # {kind, data} — kind "ota": {version, size, sha256, path}
     ERROR = "error"    # {message, fatal}
 
 
@@ -103,13 +109,17 @@ def decode_pcm(b64: str) -> np.ndarray:
 
 # -- edge -> brain constructors -------------------------------------------
 
-def hello(token: str, device_id: str) -> dict:
-    return {
+def hello(token: str, device_id: str, fw: str | None = None) -> dict:
+    msg = {
         "type": C2S.HELLO,
         "protocol": PROTOCOL_VERSION,
         "token": token,
         "device_id": device_id,
     }
+    if fw is not None:
+        # The running firmware version, from an edge that can flash itself.
+        msg["fw"] = fw
+    return msg
 
 
 def audio(
@@ -231,6 +241,9 @@ def validate_c2s(raw: Any) -> tuple[bool, Any]:
             # It becomes a filename under data/remote/. A client sending
             # "../../x" must not decide where the brain writes.
             return False, "device_id must be 1-64 chars of [A-Za-z0-9._-]"
+        fw = raw.get("fw")
+        if fw is not None and (not _is_str(fw) or len(fw) > MAX_FW_VERSION):
+            return False, f"fw must be a version string of at most {MAX_FW_VERSION} chars"
         return True, raw
 
     if kind == C2S.AUDIO:

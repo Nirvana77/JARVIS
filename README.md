@@ -241,6 +241,18 @@ JARVIS_EDGE_TOKENS="livingroom:s3cret,kitchen:other"   # the brain's devices
 JARVIS_EDGE_TOKEN="s3cret"                             # this edge's own
 ```
 
+### Firmware updates (OTA) for edges that flash themselves
+
+An edge that reports its firmware version in `hello` (`fw`; the ESP32 watch
+does) can be updated over the link. Copy the image `idf.py build` produced to
+`data/firmware/<device_id>.bin`, e.g. `data/firmware/watch.bin`. The version
+is read from the image itself. On its next connect, the edge is told about an
+image whose version differs from what it runs (`event` `ota`: version, size,
+sha256). It then fetches the image with `GET /firmware` on the same port and
+tunnel, using `Authorization: Bearer <its token>` and `X-Jarvis-Device: <id>`.
+The auth backoff is the same as for `hello`. Whether and when to flash is the
+edge's call.
+
 ### Over the internet, with a Cloudflare Tunnel
 
 The recommended shape: no certificate, no open port, no port-forwarding.
