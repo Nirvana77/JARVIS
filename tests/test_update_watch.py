@@ -228,3 +228,32 @@ def test_a_skill_the_model_has_never_seen_triggers_a_retrain(config, tmp_path, m
     retrained.clear()
     assert app.ensure_nlu(cfg, registry) == 1
     assert retrained == []
+
+
+def test_a_reconnect_keeps_the_new_session(tmp_path):
+    """The watch reconnects before the brain has noticed the old socket died:
+    the old handler's cleanup runs *after* the new session is in place, and
+    must not take the new one with it — or "update the watch" says it isn't
+    connected while it is (seen on the real brain, 2026-09-30)."""
+
+    async def scenario():
+        config = make_config(tmp_path)
+        brain = await Brain(config).start(run_orchestrator=False)
+        try:
+            old_ws, _ = await connected(brain, fw="1.0", speech=False)
+            new_ws, edge = await connected(brain, fw="1.0", speech=False)
+            # the brain closes the old socket; give its handler time to finish
+            for _ in range(50):
+                if old_ws.close_code is not None:
+                    break
+                await asyncio.sleep(0.02)
+            await asyncio.sleep(0.2)
+            assert DEVICE in brain.server.sessions
+            put_image(config, fake_image("1.1"))
+            assert (await brain.server.update_firmware()).status == "sent"
+            await edge.expect("event")
+            await new_ws.close()
+        finally:
+            await close(brain)
+
+    run(scenario())
