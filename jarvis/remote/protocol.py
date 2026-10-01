@@ -47,18 +47,35 @@ _SEGMENT_REASONS = ("silence", "maximum", "release", "close")
 #: Where an edge fetches its staged firmware image: a plain ``GET`` on the
 #: WebSocket's own port (``firmware.py``).
 FIRMWARE_PATH = "/firmware"
+#: A notification for the edge, from outside a conversation (``python -m
+#: jarvis notify``): ``GET /notify?text=...`` on the same port, same token.
+NOTIFY_PATH = "/notify"
 #: ``esp_app_desc_t.version`` is 32 bytes, NUL included.
 MAX_FW_VERSION = 31
+
+#: Edge tools (``jarvis/skills/edge.py``): what an edge may declare in ``hello``. Every
+#: string ends up in the NLU corpus or a spoken line, so all of it is bounded.
+MAX_TOOLS = 16
+MAX_TOOL_DESCRIPTION = 200
+MAX_TOOL_EXAMPLES = 24
+MAX_TOOL_EXAMPLE = 120
+MAX_TOOL_PARAMS = 4
+#: param types the brain knows how to pull out of an utterance (nlu/slots.py)
+TOOL_PARAM_TYPES = ("duration", "number", "text")
+#: what a tool's `result` may ask JARVIS to say
+MAX_TOOL_SAY = 300
+_TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
 
 class C2S:
     """Edge -> brain."""
 
-    HELLO = "hello"          # {protocol, token, device_id, fw?} — first, within 10 s
+    HELLO = "hello"          # {protocol, token, device_id, fw?, tools?} — first, within 10 s
     AUDIO = "audio"          # {pcm, final?, reason?, floor_db?, peak_db?}
     SPEAKING = "speaking"    # {on} — sent the moment the segmenter opens/closes
     INTERRUPT = "interrupt"  # {} — the button's cancel, or a spoken "stop"
     CONTROL = "control"      # {action, args}
+    RESULT = "result"        # {id, ok, say?} — the answer to a `call`
 
 
 class S2C:
@@ -71,6 +88,7 @@ class S2C:
     SPEECH = "speech"  # {id, part, text, pcm, sample_rate, final}
     EVENT = "event"    # {kind, data} — kind "ota": {version, size, sha256, path}
     ERROR = "error"    # {message, fatal}
+    CALL = "call"      # {id, tool, args} — run one of the tools the edge declared
 
 
 class CONTROL:
@@ -144,6 +162,10 @@ def speaking(on: bool) -> dict:
     return {"type": C2S.SPEAKING, "on": bool(on)}
 
 
+def result(id: str, ok: bool, say: str = "") -> dict:
+    return {"type": C2S.RESULT, "id": id, "ok": bool(ok), "say": say}
+
+
 def interrupt() -> dict:
     return {"type": C2S.INTERRUPT}
 
@@ -192,6 +214,10 @@ def error(message: str, fatal: bool = False) -> dict:
     return {"type": S2C.ERROR, "message": message, "fatal": bool(fatal)}
 
 
+def call(id: str, tool: str, args: dict) -> dict:
+    return {"type": S2C.CALL, "id": id, "tool": tool, "args": args}
+
+
 # -- validation -----------------------------------------------------------
 
 def _is_obj(value) -> bool:
@@ -205,6 +231,54 @@ def _is_str(value) -> bool:
 def _is_int(value) -> bool:
     # bool is an int in Python, and "protocol": true is not a protocol number
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def validate_tools(raw: Any) -> tuple[bool, Any]:
+    """An edge's tool list from ``hello``: ``(True, tools)`` or ``(False,
+    error)``. Each tool is ``{name, description, examples, params}``, params
+    being ``{name: {"type": one of TOOL_PARAM_TYPES, "required"?: bool}}``."""
+    if not isinstance(raw, list):
+        return False, "tools must be a list"
+    if len(raw) > MAX_TOOLS:
+        return False, f"at most {MAX_TOOLS} tools"
+    names: set[str] = set()
+    tools = []
+    for tool in raw:
+        if not _is_obj(tool):
+            return False, "each tool must be an object"
+        name = tool.get("name")
+        if not _is_str(name) or not _TOOL_NAME_RE.match(name):
+            return False, "tool name must be 1-32 chars of [a-z0-9_], starting with a letter"
+        if name in names:
+            return False, f"tool {name} declared twice"
+        names.add(name)
+        description = tool.get("description", "")
+        if not _is_str(description) or len(description) > MAX_TOOL_DESCRIPTION:
+            return False, f"tool {name}: description must be a string of at most {MAX_TOOL_DESCRIPTION} chars"
+        examples = tool.get("examples", [])
+        if (
+            not isinstance(examples, list)
+            or len(examples) > MAX_TOOL_EXAMPLES
+            or not all(_is_str(e) and 0 < len(e) <= MAX_TOOL_EXAMPLE for e in examples)
+        ):
+            return False, (
+                f"tool {name}: examples must be at most {MAX_TOOL_EXAMPLES} strings "
+                f"of at most {MAX_TOOL_EXAMPLE} chars"
+            )
+        params = tool.get("params", {})
+        if not _is_obj(params) or len(params) > MAX_TOOL_PARAMS:
+            return False, f"tool {name}: params must be an object of at most {MAX_TOOL_PARAMS}"
+        clean = {}
+        for key, spec in params.items():
+            if not key.isidentifier() or len(key) > 32:
+                return False, f"tool {name}: bad param name"
+            if not _is_obj(spec) or spec.get("type") not in TOOL_PARAM_TYPES:
+                return False, f"tool {name}: param {key} needs a type of {', '.join(TOOL_PARAM_TYPES)}"
+            clean[key] = {"type": spec["type"], "required": spec.get("required") is True}
+        tools.append(
+            {"name": name, "description": description, "examples": list(examples), "params": clean}
+        )
+    return True, tools
 
 
 def validate_c2s(raw: Any) -> tuple[bool, Any]:
@@ -244,6 +318,11 @@ def validate_c2s(raw: Any) -> tuple[bool, Any]:
         fw = raw.get("fw")
         if fw is not None and (not _is_str(fw) or len(fw) > MAX_FW_VERSION):
             return False, f"fw must be a version string of at most {MAX_FW_VERSION} chars"
+        if raw.get("tools") is not None:
+            ok, tools = validate_tools(raw["tools"])
+            if not ok:
+                return False, tools
+            raw = {**raw, "tools": tools}
         return True, raw
 
     if kind == C2S.AUDIO:
@@ -288,6 +367,17 @@ def validate_c2s(raw: Any) -> tuple[bool, Any]:
 
     if kind == C2S.INTERRUPT:
         return True, raw
+
+    if kind == C2S.RESULT:
+        call_id = raw.get("id")
+        if not _is_str(call_id) or not 0 < len(call_id) <= 40:
+            return False, "result needs the call's id"
+        if not isinstance(raw.get("ok"), bool):
+            return False, "result needs ok: boolean"
+        say = raw.get("say", "")
+        if not _is_str(say):
+            return False, "say must be a string"
+        return True, {**raw, "say": say[:MAX_TOOL_SAY]}
 
     if kind == C2S.CONTROL:
         action = raw.get("action")

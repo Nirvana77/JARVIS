@@ -297,6 +297,9 @@ def run_server_mode(config: Config) -> int:
         lambda h: f"{h.get('voice')} at {h.get('sample_rate')} Hz",
     )
     orchestrator = build_server_orchestrator(config, link, edges=server.edges)
+    # An edge with new tools (new firmware): learn them in the background; the
+    # new model lands at the next safe point, as a learned skill's does.
+    server.on_tools_changed = lambda _device: asyncio.ensure_future(orchestrator.refresh_skills())
 
     async def main() -> None:
         link.bind_loop()
@@ -333,6 +336,60 @@ def run_server_mode(config: Config) -> int:
         # only the ones we started; an adopted service is left running
         supervisor.stop_all()
     return 0
+
+
+def notify_request(config: Config, text: str, device_id: str | None = None):
+    """The ``GET /notify`` the running brain on this machine takes: ``(url,
+    headers)``. The device is the one named, else the one whose tools include
+    ``notify``, else the first with a token."""
+    from urllib.parse import urlencode
+
+    from jarvis.skills.edge import EdgeTools
+
+    if device_id is None:
+        store = EdgeTools(config.remote_dir)
+        device_id = next(
+            (d for d in store.devices() if any(t["name"] == "notify" for t in store.tools(d))),
+            next(iter(config.edge_tokens), None),
+        )
+    token = config.edge_tokens.get(device_id or "")
+    if not token:
+        raise ValueError("no device token for notify (JARVIS_EDGE_TOKENS in .env)")
+    scheme = "https" if config.server.tls_enabled else "http"
+    url = f"{scheme}://127.0.0.1:{config.server.port}/notify?{urlencode({'text': text})}"
+    return url, {"Authorization": f"Bearer {token}", "X-Jarvis-Device": device_id}
+
+
+def notify(config: Config, text: str, device_id: str | None = None) -> int:
+    """`python -m jarvis notify "the build is done"` — shown on the watch now,
+    or as soon as it connects. For the end of a long command:
+    ``make && python -m jarvis notify "Build done"``."""
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    try:
+        url, headers = notify_request(config, text, device_id)
+    except ValueError as exc:
+        print(f"error: {exc}", flush=True)
+        return 2
+    # Loopback to our own listener: its certificate names the public host,
+    # not 127.0.0.1, and there is nobody in between to check for.
+    context = ssl._create_unverified_context() if url.startswith("https") else None
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=15, context=context
+        ) as resp:
+            status = resp.read().decode().strip()
+    except urllib.error.HTTPError as exc:
+        print(f"error: the brain said {exc.code} {exc.reason}", flush=True)
+        return 1
+    except OSError as exc:
+        print(f"error: no brain on {url.split('/notify')[0]} ({exc})", flush=True)
+        return 1
+    print({"sent": "Sent.", "queued": "Queued: the watch gets it when it connects.",
+           "unsupported": "The watch has no notifications (old firmware?)."}.get(status, status))
+    return 0 if status in ("sent", "queued") else 1
 
 
 def _report_service(label: str, url: str, health, describe) -> None:
