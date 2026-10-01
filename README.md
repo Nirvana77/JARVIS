@@ -278,6 +278,16 @@ you in 20 minutes to take the pizza out." A tool cannot take the name of a
 builtin or learned skill. While the edge is away its tools still exist and
 answer "The watch isn't connected."
 
+How to write a tool on the watch side (fields, limits, examples that route):
+`docs/edge-tools.md` in the watch repo (Nirvana77/esp32-s3-touch-amoled-2.06).
+
+**The watch's power log** comes up the same way: `python -m jarvis power`
+(`--day YYYY-MM-DD`, `--no-fetch`) asks the watch for what the brain lacks of its
+SD-card log (`send_power_log`; the files arrive as `file` messages in
+`data/remote/power/<device_id>/`) and prints the day: time per mode, how much of
+it asleep, battery drain in mV/h per mode, restarts and drops. "How was the watch
+battery today?" says the short version.
+
 **Notifications** come from outside a conversation:
 
 ```bash
