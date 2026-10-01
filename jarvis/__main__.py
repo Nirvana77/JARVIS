@@ -72,6 +72,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     notify.add_argument("text", nargs="+", help="what to show")
     notify.add_argument("--device-id", help="which edge (default: the one with notify)")
+    pair = sub.add_parser("pair", help="approve a device: the 6-digit code it shows")
+    pair.add_argument("code", nargs="+", help="e.g. 482913 or 482 913")
+    devs = sub.add_parser("devices", help="the devices that may connect")
+    devs.add_argument("--remove", metavar="ID", help="revoke a paired device's token")
     power = sub.add_parser(
         "power", help="fetch the watch's power log through the running brain, and read it"
     )
@@ -128,6 +132,10 @@ def main(argv: list[str] | None = None) -> int:
         return app.run_server_mode(config)
     if args.command == "notify":
         return app.notify(config, " ".join(args.text), args.device_id)
+    if args.command == "pair":
+        return app.pair(config, "".join(args.code))
+    if args.command == "devices":
+        return app.devices(config, args.remove)
     if args.command == "power":
         return app.power(config, args.day, fetch=not args.no_fetch)
 

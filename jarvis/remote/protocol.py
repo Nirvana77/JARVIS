@@ -47,6 +47,9 @@ _SEGMENT_REASONS = ("silence", "maximum", "release", "close")
 #: Where an edge fetches its staged firmware image: a plain ``GET`` on the
 #: WebSocket's own port (``firmware.py``).
 FIRMWARE_PATH = "/firmware"
+#: Approving a pairing (``python -m jarvis pair <code>``): ``GET
+#: /pair?code=NNNNNN`` with the brain's admin secret, not a device token.
+PAIR_PATH = "/pair"
 #: A notification for the edge, from outside a conversation (``python -m
 #: jarvis notify``): ``GET /notify?text=...`` on the same port, same token.
 NOTIFY_PATH = "/notify"
@@ -81,6 +84,7 @@ class C2S:
     """Edge -> brain."""
 
     HELLO = "hello"          # {protocol, token, device_id, fw?, tools?} — first, within 10 s
+    PAIR = "pair"            # {protocol, device_id, key} — first, instead of hello: no token yet
     AUDIO = "audio"          # {pcm, final?, reason?, floor_db?, peak_db?}
     SPEAKING = "speaking"    # {on} — sent the moment the segmenter opens/closes
     INTERRUPT = "interrupt"  # {} — the button's cancel, or a spoken "stop"
@@ -100,6 +104,8 @@ class S2C:
     EVENT = "event"    # {kind, data} — kind "ota": {version, size, sha256, path}
     ERROR = "error"    # {message, fatal}
     CALL = "call"      # {id, tool, args} — run one of the tools the edge declared
+    PAIRING = "pairing"  # {key, expires_s} — the brain's half; the device shows the code
+    PAIRED = "paired"    # {nonce, box} — the token, sealed with the shared key (pairing.py)
 
 
 class CONTROL:
@@ -119,6 +125,7 @@ class CLOSE:
     BAD_PROTOCOL = 4002   # including no or late `hello`
     BAD_MESSAGE = 4003
     SERVER_SHUTDOWN = 4004
+    PAIR_EXPIRED = 4005   # nobody confirmed the code in time (or too many waiting)
 
 
 # -- PCM ------------------------------------------------------------------
@@ -149,6 +156,13 @@ def hello(token: str, device_id: str, fw: str | None = None) -> dict:
         # The running firmware version, from an edge that can flash itself.
         msg["fw"] = fw
     return msg
+
+
+def pair(device_id: str, key: bytes) -> dict:
+    return {
+        "type": C2S.PAIR, "protocol": PROTOCOL_VERSION, "device_id": device_id,
+        "key": base64.b64encode(key).decode("ascii"),
+    }
 
 
 def audio(
@@ -236,6 +250,17 @@ def event(kind: str, data: dict | None = None) -> dict:
 
 def error(message: str, fatal: bool = False) -> dict:
     return {"type": S2C.ERROR, "message": message, "fatal": bool(fatal)}
+
+
+def pairing(key: bytes, expires_s: float) -> dict:
+    return {"type": S2C.PAIRING, "key": base64.b64encode(key).decode("ascii"), "expires_s": int(expires_s)}
+
+
+def paired(nonce: bytes, box: bytes) -> dict:
+    return {
+        "type": S2C.PAIRED, "nonce": base64.b64encode(nonce).decode("ascii"),
+        "box": base64.b64encode(box).decode("ascii"),
+    }
 
 
 def call(id: str, tool: str, args: dict) -> dict:
@@ -347,6 +372,21 @@ def validate_c2s(raw: Any) -> tuple[bool, Any]:
             if not ok:
                 return False, tools
             raw = {**raw, "tools": tools}
+        return True, raw
+
+    if kind == C2S.PAIR:
+        if not _is_int(raw.get("protocol")):
+            return False, "pair needs a protocol number"
+        device_id = raw.get("device_id")
+        if not _is_str(device_id) or not _DEVICE_ID_RE.match(device_id):
+            return False, "device_id must be 1-64 chars of [A-Za-z0-9._-]"
+        key = raw.get("key")
+        try:
+            ok = _is_str(key) and len(base64.b64decode(key, validate=True)) == 32
+        except (ValueError, TypeError):
+            ok = False
+        if not ok:
+            return False, "pair needs key: a base64 X25519 public key"
         return True, raw
 
     if kind == C2S.AUDIO:

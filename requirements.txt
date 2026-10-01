@@ -40,6 +40,7 @@ httpx>=0.28.1               # the whisper/voder service clients (M3)
 
 # -- the remote edge link (M3) ---------------------------------------------
 websockets>=17.1
+cryptography>=50.0         # device pairing: X25519 and AES-GCM (jarvis/remote/pairing.py)
 
 # -- configuration and models ----------------------------------------------
 python-dotenv>=1.2.3        # reads .env (secrets only)
