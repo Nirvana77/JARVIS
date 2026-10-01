@@ -22,17 +22,22 @@ late ``hello`` closes the socket. Tokens and audio are never logged.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import dataclasses
 import hmac
 import ipaddress
 import itertools
 import json
 import logging
 import queue
+import re
 import ssl
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
@@ -50,6 +55,7 @@ from jarvis.remote.addressing import (
     route,
 )
 from jarvis.remote.firmware import Firmware, FirmwareStore, refusal
+from jarvis.remote import powerlog
 from jarvis.remote.intake import AudioIntake
 from jarvis.skills.edge import EdgeTools
 
@@ -77,6 +83,10 @@ NOTIFY_TOOL = "notify"
 NOTIFY_QUEUE = 20
 #: and how long one may be: it is shown on a watch
 MAX_NOTIFY_TEXT = 300
+#: The edge tool that sends the power log up (``fetch_power_log``), and how
+#: long the whole upload may take: a full day is under 1 MB.
+POWER_TOOL = "send_power_log"
+POWER_FETCH_TIMEOUT_S = 120.0
 
 
 class Cancelled(Exception):
@@ -133,6 +143,8 @@ class DeviceSession:
     pending_ota: Firmware | None = None
     #: `call`s sent and not yet answered: id -> the future its `result` resolves
     calls: dict[str, asyncio.Future] = field(default_factory=dict)
+    #: a power log upload under way: resolved with the file count on `done`
+    upload: asyncio.Future | None = None
 
 
 @dataclass(frozen=True)
@@ -159,6 +171,19 @@ class ToolResult:
     say: str = ""
 
 
+@dataclass(frozen=True)
+class PowerFetch:
+    """What ``fetch_power_log`` came to: ``ok`` (``files`` came up),
+    ``offline``, ``unsupported`` (no ``send_power_log``), ``timeout``,
+    ``failed``. ``report``/``spoken`` read whatever the brain has for the
+    day, fetched now or not."""
+
+    status: str
+    files: int = 0
+    report: str = ""
+    spoken: str = ""
+
+
 class EdgeControl:
     """What a skill may ask of the connected edges (``ctx.edges``).
 
@@ -181,6 +206,18 @@ class EdgeControl:
         except Exception:  # noqa: BLE001 — a timeout or a closing loop
             future.cancel()
             return FirmwareUpdate("offline")
+
+    def power_report(self, day: str | None = None) -> PowerFetch:
+        """Fetch the watch's power log and read the day (the watch_power skill)."""
+        loop = self._server.link._loop
+        if loop is None or not loop.is_running():
+            return self._server.power_report(PowerFetch("offline"), day)
+        future = asyncio.run_coroutine_threadsafe(self._server.fetch_power_log(day=day), loop)
+        try:
+            return future.result(POWER_FETCH_TIMEOUT_S + CALL_TIMEOUT_S + self._timeout_s)
+        except Exception:  # noqa: BLE001 — a timeout or a closing loop
+            future.cancel()
+            return self._server.power_report(PowerFetch("timeout"), day)
 
     def call(self, tool: str, args: dict) -> ToolResult:
         """Run an edge tool (``jarvis/skills/edge.py``) and wait for its answer."""
@@ -714,13 +751,15 @@ class RemoteServer:
         from websockets.http11 import Response
 
         path = request.path.split("?", 1)[0]
-        if path not in (P.FIRMWARE_PATH, P.NOTIFY_PATH):
+        if path not in (P.FIRMWARE_PATH, P.NOTIFY_PATH, P.POWER_PATH):
             return None
         device_id, refusal = self._http_auth(connection, request)
         if refusal is not None:
             return refusal
         if path == P.NOTIFY_PATH:
             return await self._http_notify(connection, request, device_id)
+        if path == P.POWER_PATH:
+            return await self._http_power(connection, request, device_id)
 
         image = self.firmware.get(device_id)
         if image is None:
@@ -777,6 +816,105 @@ class RemoteServer:
         status = await self.notify(text, device_id)
         log.info("notify for %s: %s", device_id, status)
         return connection.respond(HTTPStatus.OK, f"{status}\n")
+
+    async def _http_power(self, connection, request, device_id: str):
+        """``GET /power?day=YYYY-MM-DD&fetch=1``: fetch the edge's power log
+        (unless ``fetch=0``) and read the day (``python -m jarvis power``)."""
+        from http import HTTPStatus
+
+        query = parse_qs(urlsplit(request.path).query)
+        day = (query.get("day") or [None])[0]
+        if day is not None and not re.match(r"^\d{4}-\d{2}-\d{2}$", day):
+            return connection.respond(HTTPStatus.BAD_REQUEST, "day=YYYY-MM-DD\n")
+        if (query.get("fetch") or ["1"])[0] == "0":
+            result = self.power_report(PowerFetch("skipped"), day, device_id)
+        else:
+            result = await self.fetch_power_log(day=day, device_id=device_id)
+        head = (
+            f"fetched {result.files} file(s)" if result.status == "ok"
+            else f"not fetched: {result.status}"
+        )
+        return connection.respond(HTTPStatus.OK, f"{head}\n{result.report}\n")
+
+    # -- the power log -------------------------------------------------
+
+    def _power_dir(self, device_id: str) -> Path:
+        return self.config.remote_dir / "power" / device_id
+
+    def power_report(self, result: PowerFetch, day: str | None = None,
+                     device_id: str | None = None) -> PowerFetch:
+        """``result`` with the day's report added, from what the brain has."""
+        device_id = device_id or next(iter(self.sessions), None) or self._power_device()
+        day = day or time.strftime("%Y-%m-%d")
+        path = self._power_dir(device_id or "?") / f"{day}.csv"
+        if not path.is_file():
+            return dataclasses.replace(
+                result, report=f"no power log for {day}",
+                spoken="There's nothing in the watch's power log for today yet.",
+            )
+        summary = powerlog.summarize(powerlog.read_rows([path]))
+        return dataclasses.replace(
+            result, report=powerlog.report(summary, f"Power log {day}"),
+            spoken=powerlog.spoken(summary),
+        )
+
+    def _power_device(self) -> str | None:
+        for device_id in self.tools.devices():
+            if any(t["name"] == POWER_TOOL for t in self.tools.tools(device_id)):
+                return device_id
+        return next(iter(self.tokens), None)
+
+    async def fetch_power_log(self, *, day: str | None = None, device_id: str | None = None,
+                              timeout_s: float = POWER_FETCH_TIMEOUT_S) -> PowerFetch:
+        """Ask the edge for the power log it has and we lack (``have``: our
+        size of each file), then wait for its ``done``."""
+        session = next(iter(self.sessions.values()), None)
+        if session is None or (device_id and session.connection.device_id != device_id):
+            return self.power_report(PowerFetch("offline"), day, device_id)
+        device_id = session.connection.device_id
+        folder = self._power_dir(device_id)
+        have = {p.name: p.stat().st_size for p in folder.glob("*.csv")} if folder.is_dir() else {}
+        session.upload = asyncio.get_running_loop().create_future()
+        try:
+            result = await self.call_tool(POWER_TOOL, {"have": have})
+            if result.status != "ok":
+                status = "failed" if result.status == "failed" else result.status
+                return self.power_report(PowerFetch(status), day, device_id)
+            files = await asyncio.wait_for(session.upload, timeout_s)
+            if files < 0:
+                return self.power_report(PowerFetch("offline"), day, device_id)
+        except asyncio.TimeoutError:
+            log.warning("power log from %s: no done within %.0f s", device_id, timeout_s)
+            return self.power_report(PowerFetch("timeout"), day, device_id)
+        finally:
+            session.upload = None
+        log.info("power log from %s: %d file(s)", device_id, files)
+        return self.power_report(PowerFetch("ok", files=files), day, device_id)
+
+    def _file(self, session: DeviceSession, msg: dict) -> None:
+        """One ``file`` message: a chunk written at its offset, or ``done``."""
+        if msg.get("done"):
+            if session.upload is not None and not session.upload.done():
+                session.upload.set_result(int(msg.get("files", 0)))
+            return
+        try:
+            data = base64.b64decode(msg["b64"], validate=True)
+        except (binascii.Error, ValueError):
+            log.warning("file %s: bad base64", msg["name"])
+            return
+        folder = self._power_dir(session.connection.device_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / msg["name"]
+        size = path.stat().st_size if path.exists() else 0
+        offset = msg["offset"]
+        if offset > size:
+            # A gap: we lost a chunk. The next fetch asks from `size` again.
+            log.warning("file %s: chunk at %d, but we have %d bytes", msg["name"], offset, size)
+            return
+        with open(path, "r+b" if path.exists() else "wb") as f:
+            f.seek(offset)
+            f.write(data)
+            f.truncate()
 
     # -- edge tools ----------------------------------------------------
 
@@ -975,6 +1113,8 @@ class RemoteServer:
             for future in session.calls.values():
                 if not future.done():
                     future.set_result(ToolResult("offline"))
+            if session.upload is not None and not session.upload.done():
+                session.upload.set_result(-1)  # gone mid-upload
             # A reconnect registers its new session before this (replaced)
             # socket's cleanup gets here: only remove our own.
             if self.sessions.get(device_id) is session:
@@ -1020,6 +1160,9 @@ class RemoteServer:
             return
         if kind == P.C2S.RESULT:
             self._result(session, msg)
+            return
+        if kind == P.C2S.FILE:
+            self._file(session, msg)
             return
 
     async def _control(self, session: DeviceSession, action: str, args: dict) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from jarvis.core.context import Context
-from jarvis.skills.builtin import note, open_app, play, search, update_watch
+from jarvis.skills.builtin import note, open_app, play, search, update_watch, watch_power
 from jarvis.skills.contract import PERMISSIONS, SkillManifest, SkillNotFound
 from jarvis.skills.registry import BUILTIN_PACKAGE, Registry
 
@@ -15,6 +15,7 @@ BUILTINS = {
     "play": play,
     "note": note,
     "update_watch": update_watch,
+    "watch_power": watch_power,
 }
 
 
@@ -31,7 +32,7 @@ def test_registry_discovers_the_builtins(config):
     # builtin roster must not be coupled to whatever a developer has actually
     # taught their local JARVIS.
     reg = Registry.discover(config, packages=(BUILTIN_PACKAGE,))
-    assert reg.names() == ["note", "open_app", "play", "search", "update_watch"]
+    assert reg.names() == ["note", "open_app", "play", "search", "update_watch", "watch_power"]
 
 
 @pytest.mark.parametrize("name,module", BUILTINS.items())
