@@ -135,6 +135,10 @@ def test_durations(text, seconds):
         ("remind me in 20 minutes to take the pizza out", "take the pizza out"),
         ("remind me to call mom in an hour", "call mom"),
         ("set a timer for 5 minutes", None),
+        # "for" names the thing, once the duration (and its own "for") is out
+        ("cancel the timer for the oven", "the oven"),
+        ("set a timer for the pizza for 10 minutes", "the pizza"),
+        ("cancel the 5 minute timer", None),
     ],
 )
 def test_text_after_the_duration(text, label):

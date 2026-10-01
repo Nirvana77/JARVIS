@@ -85,7 +85,7 @@ def extract(label: str, text: str) -> dict[str, str]:
 #
 #   duration  "5 minutes", "an hour and a half", "1 hour and 30 minutes" -> seconds
 #   number    "40", "seventy" -> 40, 70
-#   text      what follows "to" / "that" / "saying" / "about", once any
+#   text      what follows "to" / "that" / "saying" / "about" / "for", once any
 #             duration phrase is taken out: "remind me in 20 minutes to take
 #             the pizza out" -> "take the pizza out"
 
@@ -109,7 +109,7 @@ _UNITS = {
 #: what introduces a duration ("in 5 minutes", "for an hour"): taken out with it
 _DURATION_LEADS = {"in", "for", "after", "within"}
 #: what introduces a text param, first one wins
-_TEXT_MARKERS = ("to", "that", "saying", "about")
+_TEXT_MARKERS = ("to", "that", "saying", "about", "for")
 
 
 def _number_at(norm: list[str], i: int, *, articles: bool) -> tuple[float, int] | None:
