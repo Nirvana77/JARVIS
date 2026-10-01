@@ -338,6 +338,84 @@ def run_server_mode(config: Config) -> int:
     return 0
 
 
+def _device_token(config: Config, device_id: str | None) -> str | None:
+    """A device's token: .env's, else the one pairing handed out."""
+    from jarvis.remote.pairing import TokenStore
+
+    if not device_id:
+        return None
+    return config.edge_tokens.get(device_id) or TokenStore(config.remote_dir).get(device_id)
+
+
+def _first_device(config: Config) -> str | None:
+    from jarvis.remote.pairing import TokenStore
+
+    return next(iter(config.edge_tokens), None) or next(iter(TokenStore(config.remote_dir).devices()), None)
+
+
+def pair_request(config: Config, code: str):
+    """The ``GET /pair`` that confirms a device's code: ``(url, headers)``,
+    with this machine's admin secret."""
+    from jarvis.remote.pairing import admin_secret
+
+    digits = "".join(ch for ch in code if ch.isdigit())
+    scheme = "https" if config.server.tls_enabled else "http"
+    url = f"{scheme}://127.0.0.1:{config.server.port}/pair?code={digits}"
+    return url, {"Authorization": f"Bearer {admin_secret(config.remote_dir)}"}
+
+
+def pair(config: Config, code: str) -> int:
+    """`python -m jarvis pair 482913` — approve the device showing that code."""
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    url, headers = pair_request(config, code)
+    if len(url.rsplit("=", 1)[1]) != 6:
+        print("error: the code is 6 digits, as the device shows it", flush=True)
+        return 2
+    context = ssl._create_unverified_context() if url.startswith("https") else None  # loopback
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=15, context=context
+        ) as resp:
+            print(resp.read().decode().strip().replace("paired:", "Paired:"))
+            return 0
+    except urllib.error.HTTPError as exc:
+        reason = exc.read().decode().strip() if exc.code == 404 else f"{exc.code} {exc.reason}"
+        print(f"error: {reason}", flush=True)
+        return 1
+    except OSError as exc:
+        print(f"error: no brain on {url.split('/pair')[0]} ({exc})", flush=True)
+        return 1
+
+
+def devices(config: Config, remove: str | None = None) -> int:
+    """`python -m jarvis devices [--remove ID]` — who may connect, and how."""
+    from jarvis.remote.pairing import TokenStore
+
+    store = TokenStore(config.remote_dir)
+    if remove:
+        if store.remove(remove):
+            print(f"Removed {remove}: its token no longer works (from its next connect).")
+            return 0
+        if remove in config.edge_tokens:
+            print(f"{remove} has its token in .env (JARVIS_EDGE_TOKENS): remove it there.")
+            return 1
+        print(f"No device {remove}.")
+        return 1
+    rows = [(d, ".env") for d in sorted(config.edge_tokens)]
+    rows += [(d, "paired") for d in store.devices() if d not in config.edge_tokens]
+    rows += [(d, ".env + paired") for d in store.devices() if d in config.edge_tokens]
+    rows = sorted(dict(rows).items())
+    if not rows:
+        print("No devices yet: pair one (a device without a token shows a code).")
+        return 0
+    for device_id, source in rows:
+        print(f"  {device_id:<20} {source}")
+    return 0
+
+
 def notify_request(config: Config, text: str, device_id: str | None = None):
     """The ``GET /notify`` the running brain on this machine takes: ``(url,
     headers)``. The device is the one named, else the one whose tools include
@@ -350,11 +428,11 @@ def notify_request(config: Config, text: str, device_id: str | None = None):
         store = EdgeTools(config.remote_dir)
         device_id = next(
             (d for d in store.devices() if any(t["name"] == "notify" for t in store.tools(d))),
-            next(iter(config.edge_tokens), None),
+            _first_device(config),
         )
-    token = config.edge_tokens.get(device_id or "")
+    token = _device_token(config, device_id)
     if not token:
-        raise ValueError("no device token for notify (JARVIS_EDGE_TOKENS in .env)")
+        raise ValueError("no device token for notify (pair one, or JARVIS_EDGE_TOKENS in .env)")
     scheme = "https" if config.server.tls_enabled else "http"
     url = f"{scheme}://127.0.0.1:{config.server.port}/notify?{urlencode({'text': text})}"
     return url, {"Authorization": f"Bearer {token}", "X-Jarvis-Device": device_id}
@@ -370,11 +448,11 @@ def power_request(config: Config, day: str | None = None, fetch: bool = True):
     store = EdgeTools(config.remote_dir)
     device_id = next(
         (d for d in store.devices() if any(t["name"] == "send_power_log" for t in store.tools(d))),
-        next(iter(config.edge_tokens), None),
+        _first_device(config),
     )
-    token = config.edge_tokens.get(device_id or "")
+    token = _device_token(config, device_id)
     if not token:
-        raise ValueError("no device token (JARVIS_EDGE_TOKENS in .env)")
+        raise ValueError("no device token (pair one, or JARVIS_EDGE_TOKENS in .env)")
     query = {"day": day} if day else {}
     query["fetch"] = "1" if fetch else "0"
     scheme = "https" if config.server.tls_enabled else "http"

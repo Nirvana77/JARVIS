@@ -32,6 +32,7 @@ import json
 import logging
 import queue
 import re
+import secrets
 import ssl
 import threading
 import time
@@ -55,7 +56,7 @@ from jarvis.remote.addressing import (
     route,
 )
 from jarvis.remote.firmware import Firmware, FirmwareStore, refusal
-from jarvis.remote import powerlog
+from jarvis.remote import pairing, powerlog
 from jarvis.remote.intake import AudioIntake
 from jarvis.skills.edge import EdgeTools
 
@@ -159,6 +160,14 @@ class FirmwareUpdate:
     version: str = ""
     device_id: str = ""
     running: str = ""
+
+
+@dataclass
+class PendingPair:
+    """A device waiting for its code to be confirmed."""
+
+    secret: pairing.Secret
+    approved: asyncio.Future
 
 
 @dataclass(frozen=True)
@@ -633,6 +642,10 @@ class RemoteServer:
         )
         link.modes = self.modes
         self.tokens = tokens if tokens is not None else dict(config.edge_tokens)
+        #: tokens handed out by pairing (data/remote/tokens.json), next to .env's
+        self.paired = pairing.TokenStore(config.remote_dir)
+        #: devices waiting for their pairing code to be confirmed, by device id
+        self._pending: dict[str, PendingPair] = {}
         self.firmware = FirmwareStore(config.firmware_dir)
         self.edges = EdgeControl(self)
         #: what each edge said it can do (jarvis/skills/edge.py)
@@ -718,14 +731,14 @@ class RemoteServer:
         """The token for this device, compared in constant time. Returns an
         error string, or ``None`` when it is allowed."""
         device_id = msg.get("device_id", "")
-        expected = self.tokens.get(device_id)
-        if not expected:
-            # Same answer either way: "no such device" and "wrong token" are
-            # the same sentence to whoever is guessing.
-            return "unauthorized"
-        if not hmac.compare_digest(str(msg.get("token", "")), str(expected)):
-            return "unauthorized"
-        return None
+        given = str(msg.get("token", ""))
+        # .env's token, and the one pairing handed out: either will do. Both
+        # are compared, each in constant time.
+        expected = [t for t in (self.tokens.get(device_id), self.paired.get(device_id)) if t]
+        matches = [hmac.compare_digest(given, str(t)) for t in expected]
+        # Same answer either way: "no such device" and "wrong token" are the
+        # same sentence to whoever is guessing.
+        return None if any(matches) else "unauthorized"
 
     def _refused(self, peer: str, device_id) -> None:
         """Per address, and doubling: the point is to make guessing slow, not
@@ -751,6 +764,8 @@ class RemoteServer:
         from websockets.http11 import Response
 
         path = request.path.split("?", 1)[0]
+        if path == P.PAIR_PATH:
+            return self._http_pair(connection, request)
         if path not in (P.FIRMWARE_PATH, P.NOTIFY_PATH, P.POWER_PATH):
             return None
         device_id, refusal = self._http_auth(connection, request)
@@ -816,6 +831,100 @@ class RemoteServer:
         status = await self.notify(text, device_id)
         log.info("notify for %s: %s", device_id, status)
         return connection.respond(HTTPStatus.OK, f"{status}\n")
+
+    def _http_pair(self, connection, request):
+        """``GET /pair?code=NNNNNN``: confirm a device's pairing code. Takes
+        the admin secret (``data/remote/admin.token``), never a device token:
+        approving a new device is the brain's owner's call."""
+        from http import HTTPStatus
+
+        peer = self.client_key(connection)
+        self._prune_backoff()
+        if time.monotonic() < self._backoff.get(peer, 0.0):
+            return connection.respond(HTTPStatus.TOO_MANY_REQUESTS, "slow down\n")
+        scheme, _, given = request.headers.get("Authorization", "").partition(" ")
+        admin = pairing.admin_secret(self.config.remote_dir)
+        if scheme.lower() != "bearer" or not hmac.compare_digest(given.strip(), admin):
+            self._refused(peer, "admin")
+            return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
+        self._backoff.pop(peer, None)
+        self._failures.pop(peer, None)
+        code = "".join(ch for ch in (parse_qs(urlsplit(request.path).query).get("code") or [""])[0] if ch.isdigit())
+        device_id = self.approve_pairing(code)
+        if device_id is None:
+            return connection.respond(HTTPStatus.NOT_FOUND, "no device is waiting with that code\n")
+        return connection.respond(HTTPStatus.OK, f"paired: {device_id}\n")
+
+    # -- pairing -------------------------------------------------------
+
+    #: how long a device waits for its code to be confirmed, and how many may
+    PAIR_TIMEOUT_S = 120.0
+    MAX_PENDING_PAIRS = 4
+
+    def approve_pairing(self, code: str) -> str | None:
+        """The device showing this code, approved; None if none is."""
+        for device_id, pending in self._pending.items():
+            if hmac.compare_digest(pending.secret.code, code) and not pending.approved.done():
+                pending.approved.set_result(True)
+                return device_id
+        return None
+
+    async def _pair(self, ws, peer: str, msg: dict) -> None:
+        """A device with no token: exchange keys, wait for its code to be
+        confirmed, then send it a token sealed with the shared key."""
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        device_id = msg["device_id"]
+        if device_id not in self._pending and len(self._pending) >= self.MAX_PENDING_PAIRS:
+            await ws.close(P.CLOSE.PAIR_EXPIRED, "too many pairing requests")
+            return
+        device_pub = base64.b64decode(msg["key"])
+        private = X25519PrivateKey.generate()
+        brain_pub = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+        try:
+            shared = private.exchange(pairing.public_key(device_pub))
+        except ValueError:  # a low-order point: not a key
+            await ws.close(P.CLOSE.BAD_MESSAGE, "bad key")
+            return
+        secret = pairing.derive(shared, device_id, device_pub, brain_pub)
+        pending = PendingPair(secret, asyncio.get_running_loop().create_future())
+        old = self._pending.get(device_id)
+        if old is not None and not old.approved.done():
+            old.approved.set_result(False)  # a newer request from it replaces this one
+        self._pending[device_id] = pending
+        log.info(
+            "pairing request from %s (%s): confirm the code it shows with "
+            "`python -m jarvis pair <code>`", device_id, peer,
+        )
+        try:
+            await ws.send(json.dumps(P.pairing(brain_pub, self.PAIR_TIMEOUT_S)))
+            closed = asyncio.ensure_future(ws.wait_closed())
+            done, _ = await asyncio.wait(
+                {pending.approved, closed}, timeout=self.PAIR_TIMEOUT_S,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            closed.cancel()
+            # Decided: from here on its code approves nothing, closing or not.
+            if self._pending.get(device_id) is pending:
+                del self._pending[device_id]
+            if pending.approved not in done or not pending.approved.result():
+                if pending.approved not in done:
+                    log.info("pairing request from %s expired", device_id)
+                    self._refused(peer, device_id)  # and slows down whoever is asking
+                await ws.close(P.CLOSE.PAIR_EXPIRED, "pairing expired")
+                return
+            token = secrets.token_urlsafe(32)
+            self.paired.set(device_id, token)
+            nonce, box = pairing.seal(secret.key, device_id, token)
+            await ws.send(json.dumps(P.paired(nonce, box)))
+            log.info("paired %s", device_id)
+            await ws.close(1000, "paired")
+        except Exception as exc:  # noqa: BLE001 — the device went away
+            log.info("pairing with %s ended: %s", device_id, type(exc).__name__)
+        finally:
+            if self._pending.get(device_id) is pending:
+                del self._pending[device_id]
 
     async def _http_power(self, connection, request, device_id: str):
         """``GET /power?day=YYYY-MM-DD&fetch=1``: fetch the edge's power log
@@ -1038,6 +1147,12 @@ class RemoteServer:
             return
 
         ok, msg = P.validate_c2s(raw)
+        if ok and msg.get("type") == P.C2S.PAIR:
+            if msg["protocol"] != P.PROTOCOL_VERSION:
+                await ws.close(P.CLOSE.BAD_PROTOCOL, f"this brain speaks {P.PROTOCOL_VERSION}")
+                return
+            await self._pair(ws, peer, msg)
+            return
         if not ok or msg.get("type") != P.C2S.HELLO:
             # Before `hello`, a malformed message closes the socket.
             await ws.close(P.CLOSE.BAD_PROTOCOL, msg if isinstance(msg, str) else "hello first")

@@ -241,6 +241,27 @@ JARVIS_EDGE_TOKENS="livingroom:s3cret,kitchen:other"   # the brain's devices
 JARVIS_EDGE_TOKEN="s3cret"                             # this edge's own
 ```
 
+Or let a device **pair** and get its own token (the ESP32 watch does, with
+`JARVIS_TOKEN ""`). It sends `pair` with an X25519 key instead of `hello`. Both
+sides derive a key and a 6-digit code (`jarvis/remote/pairing.py`), and the
+device shows the code. Nothing happens until you confirm it on the brain's
+machine:
+
+```bash
+python -m jarvis pair 482913      # approve the device showing that code
+python -m jarvis devices          # who may connect (.env and paired)
+python -m jarvis devices --remove watch   # revoke a paired device's token
+```
+
+Approving takes the admin secret in `data/remote/admin.token`, made on first
+use and readable by this user only. A device token never approves anything:
+behind a tunnel, a request from 127.0.0.1 proves nothing. The brain then sends
+a fresh token sealed with AES-256-GCM under the shared key, and keeps it in
+`data/remote/tokens.json` (0600) next to `.env`'s. The code matching on both
+sides is what proves nobody swapped the keys in between. An unconfirmed
+request expires after 2 minutes (close 4005) and counts toward the auth
+backoff. At most 4 wait at once.
+
 ### Firmware updates (OTA) for edges that flash themselves
 
 An edge that reports its firmware version in `hello` (`fw`; the ESP32 watch
