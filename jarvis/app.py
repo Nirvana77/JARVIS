@@ -360,6 +360,55 @@ def notify_request(config: Config, text: str, device_id: str | None = None):
     return url, {"Authorization": f"Bearer {token}", "X-Jarvis-Device": device_id}
 
 
+def power_request(config: Config, day: str | None = None, fetch: bool = True):
+    """The ``GET /power`` the running brain on this machine takes: ``(url,
+    headers)``, for the device with ``send_power_log`` (else the first)."""
+    from urllib.parse import urlencode
+
+    from jarvis.skills.edge import EdgeTools
+
+    store = EdgeTools(config.remote_dir)
+    device_id = next(
+        (d for d in store.devices() if any(t["name"] == "send_power_log" for t in store.tools(d))),
+        next(iter(config.edge_tokens), None),
+    )
+    token = config.edge_tokens.get(device_id or "")
+    if not token:
+        raise ValueError("no device token (JARVIS_EDGE_TOKENS in .env)")
+    query = {"day": day} if day else {}
+    query["fetch"] = "1" if fetch else "0"
+    scheme = "https" if config.server.tls_enabled else "http"
+    url = f"{scheme}://127.0.0.1:{config.server.port}/power?{urlencode(query)}"
+    return url, {"Authorization": f"Bearer {token}", "X-Jarvis-Device": device_id}
+
+
+def power(config: Config, day: str | None = None, fetch: bool = True) -> int:
+    """`python -m jarvis power [--day YYYY-MM-DD] [--no-fetch]` — fetch the
+    watch's power log through the running brain and print the day."""
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    try:
+        url, headers = power_request(config, day, fetch)
+    except ValueError as exc:
+        print(f"error: {exc}", flush=True)
+        return 2
+    context = ssl._create_unverified_context() if url.startswith("https") else None  # loopback
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=180, context=context
+        ) as resp:
+            print(resp.read().decode().rstrip())
+    except urllib.error.HTTPError as exc:
+        print(f"error: the brain said {exc.code} {exc.reason}", flush=True)
+        return 1
+    except OSError as exc:
+        print(f"error: no brain on {url.split('/power')[0]} ({exc})", flush=True)
+        return 1
+    return 0
+
+
 def notify(config: Config, text: str, device_id: str | None = None) -> int:
     """`python -m jarvis notify "the build is done"` — shown on the watch now,
     or as soon as it connects. For the end of a long command:

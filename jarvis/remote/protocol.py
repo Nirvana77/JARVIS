@@ -50,6 +50,9 @@ FIRMWARE_PATH = "/firmware"
 #: A notification for the edge, from outside a conversation (``python -m
 #: jarvis notify``): ``GET /notify?text=...`` on the same port, same token.
 NOTIFY_PATH = "/notify"
+#: The edge's power log, fetched and read (``python -m jarvis power``):
+#: ``GET /power?day=YYYY-MM-DD&fetch=1``, same port, same token.
+POWER_PATH = "/power"
 #: ``esp_app_desc_t.version`` is 32 bytes, NUL included.
 MAX_FW_VERSION = 31
 
@@ -66,6 +69,13 @@ TOOL_PARAM_TYPES = ("duration", "number", "text")
 MAX_TOOL_SAY = 300
 _TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
+#: Files an edge sends up (``file``): its power log, so far. Base64, because a
+#: chunk is cut at a byte offset and may split a UTF-8 character in two.
+FILE_KINDS = ("power",)
+MAX_FILE_CHUNK = 65_536            # base64 chars in one message
+MAX_FILE_OFFSET = 64 * 1024 * 1024
+_FILE_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|nodate)\.csv$")
+
 
 class C2S:
     """Edge -> brain."""
@@ -76,6 +86,7 @@ class C2S:
     INTERRUPT = "interrupt"  # {} — the button's cancel, or a spoken "stop"
     CONTROL = "control"      # {action, args}
     RESULT = "result"        # {id, ok, say?} — the answer to a `call`
+    FILE = "file"            # {kind, name, offset, b64, eof?} | {kind, done, files?}
 
 
 class S2C:
@@ -164,6 +175,19 @@ def speaking(on: bool) -> dict:
 
 def result(id: str, ok: bool, say: str = "") -> dict:
     return {"type": C2S.RESULT, "id": id, "ok": bool(ok), "say": say}
+
+
+def file_chunk(kind: str, name: str, offset: int, data: bytes | str, eof: bool = False) -> dict:
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return {
+        "type": C2S.FILE, "kind": kind, "name": name, "offset": int(offset),
+        "b64": base64.b64encode(data).decode("ascii"), "eof": bool(eof),
+    }
+
+
+def file_done(kind: str, files: int = 0) -> dict:
+    return {"type": C2S.FILE, "kind": kind, "done": True, "files": int(files)}
 
 
 def interrupt() -> dict:
@@ -366,6 +390,28 @@ def validate_c2s(raw: Any) -> tuple[bool, Any]:
         return True, raw
 
     if kind == C2S.INTERRUPT:
+        return True, raw
+
+    if kind == C2S.FILE:
+        if raw.get("kind") not in FILE_KINDS:
+            return False, f"file kind must be one of {', '.join(FILE_KINDS)}"
+        if raw.get("done") is True:
+            files = raw.get("files", 0)
+            if not _is_int(files) or files < 0:
+                return False, "files must be a count"
+            return True, raw
+        name = raw.get("name")
+        if not _is_str(name) or not _FILE_NAME_RE.match(name):
+            # It becomes a filename under data/remote/power/<device>/.
+            return False, "file name must be YYYY-MM-DD.csv or nodate.csv"
+        offset = raw.get("offset")
+        if not _is_int(offset) or not 0 <= offset <= MAX_FILE_OFFSET:
+            return False, "file offset must be a byte offset"
+        b64 = raw.get("b64")
+        if not _is_str(b64) or len(b64) > MAX_FILE_CHUNK:
+            return False, f"file b64 must be a string of at most {MAX_FILE_CHUNK} chars"
+        if raw.get("eof") is not None and not isinstance(raw["eof"], bool):
+            return False, "eof must be a boolean"
         return True, raw
 
     if kind == C2S.RESULT:

@@ -72,6 +72,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     notify.add_argument("text", nargs="+", help="what to show")
     notify.add_argument("--device-id", help="which edge (default: the one with notify)")
+    power = sub.add_parser(
+        "power", help="fetch the watch's power log through the running brain, and read it"
+    )
+    power.add_argument("--day", help="YYYY-MM-DD (default: today)")
+    power.add_argument("--no-fetch", action="store_true", help="read what the brain already has")
     edge = sub.add_parser("edge", help="M3: run the audio satellite (mic + speaker only)")
     edge.add_argument("--server", help="override [edge] server_url")
     edge.add_argument("--device-id", help="override [edge] device_id")
@@ -123,6 +128,8 @@ def main(argv: list[str] | None = None) -> int:
         return app.run_server_mode(config)
     if args.command == "notify":
         return app.notify(config, " ".join(args.text), args.device_id)
+    if args.command == "power":
+        return app.power(config, args.day, fetch=not args.no_fetch)
 
     try:
         orchestrator = app.build_orchestrator(config)
