@@ -297,3 +297,80 @@ def test_a_reconnect_keeps_the_new_session(tmp_path):
             await close(brain)
 
     run(scenario())
+
+
+# -- "force update": past the dev build, the same version, a newer one -----------
+
+
+def test_a_forced_update_goes_out_over_a_dev_build(tmp_path):
+    async def scenario():
+        config = make_config(tmp_path)
+        put_image(config, fake_image("1.2"))
+        brain = await Brain(config).start(run_orchestrator=False)
+        try:
+            ws, edge = await connected(brain, fw="1.1-dirty", speech=False)
+            assert (await brain.server.update_firmware()).status == "dev"  # asked politely: no
+            result = await brain.server.update_firmware(force=True)
+            assert result.status == "sent" and result.version == "1.2"
+            event = await edge.expect("event")
+            assert event["kind"] == "ota" and event["data"]["force"] is True
+            await ws.close()
+        finally:
+            await close(brain)
+
+    run(scenario())
+
+
+def test_a_forced_update_reinstalls_the_same_version(tmp_path):
+    async def scenario():
+        config = make_config(tmp_path)
+        put_image(config, fake_image("1.2"))
+        brain = await Brain(config).start(run_orchestrator=False)
+        try:
+            ws, edge = await connected(brain, fw="1.2", speech=False)
+            assert (await brain.server.update_firmware(force=True)).status == "sent"
+            assert (await edge.expect("event"))["data"]["force"] is True
+            await ws.close()
+        finally:
+            await close(brain)
+
+    run(scenario())
+
+
+def test_an_ordinary_offer_is_not_forced(tmp_path):
+    async def scenario():
+        config = make_config(tmp_path)
+        put_image(config, fake_image("1.2"))
+        brain = await Brain(config).start(run_orchestrator=False)
+        try:
+            ws, edge = await connected(brain, fw="1.1", speech=False)
+            event = await edge.expect("event")  # the one on connect
+            assert "force" not in event["data"]
+            await ws.close()
+        finally:
+            await close(brain)
+
+    run(scenario())
+
+
+class ForceEdges:
+    def __init__(self, result):
+        self.result = result
+        self.forced = []
+
+    def update_firmware(self, force=False):
+        self.forced.append(force)
+        return self.result
+
+
+def test_the_force_skill(config, tmp_path):
+    from jarvis.skills.builtin import force_update_watch
+
+    edges = ForceEdges(FirmwareUpdate("sent", version="abc123", device_id="watch"))
+    line = force_update_watch.run(ctx(config, tmp_path, edges))
+    assert edges.forced == [True]
+    assert "abc123" in line and "forc" in line.lower()
+    for status, words in (("none", "no firmware"), ("offline", "isn't connected"), ("unsupported", "can't")):
+        line = force_update_watch.run(ctx(config, tmp_path, ForceEdges(FirmwareUpdate(status))))
+        assert words in line.lower()
+    assert "isn't connected" in force_update_watch.run(ctx(config, tmp_path, None)).lower()

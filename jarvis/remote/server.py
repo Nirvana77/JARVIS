@@ -142,6 +142,8 @@ class DeviceSession:
     fw: str | None = None
     #: an update asked for by voice, announced once the reply has played
     pending_ota: Firmware | None = None
+    #: and whether it was "force update": past every version check
+    pending_force: bool = False
     #: `call`s sent and not yet answered: id -> the future its `result` resolves
     calls: dict[str, asyncio.Future] = field(default_factory=dict)
     #: a power log upload under way: resolved with the file count on `done`
@@ -205,11 +207,11 @@ class EdgeControl:
         self._server = server
         self._timeout_s = timeout_s
 
-    def update_firmware(self) -> FirmwareUpdate:
+    def update_firmware(self, force: bool = False) -> FirmwareUpdate:
         loop = self._server.link._loop
         if loop is None or not loop.is_running():
             return FirmwareUpdate("offline")
-        future = asyncio.run_coroutine_threadsafe(self._server.update_firmware(), loop)
+        future = asyncio.run_coroutine_threadsafe(self._server.update_firmware(force=force), loop)
         try:
             return future.result(self._timeout_s)
         except Exception:  # noqa: BLE001 — a timeout or a closing loop
@@ -1095,11 +1097,15 @@ class RemoteServer:
     #: if the reply never reports playbackDone, announce anyway after this
     OTA_ANNOUNCE_FALLBACK_S = 30.0
 
-    async def update_firmware(self) -> FirmwareUpdate:
+    async def update_firmware(self, force: bool = False) -> FirmwareUpdate:
         """Offer the staged image to the connected edge now, not on its next
         connect. With speech on, the ``ota`` event waits for the reply to
         finish playing (``playbackDone``) so the download does not start while
-        JARVIS is still saying so."""
+        JARVIS is still saying so.
+
+        ``force`` ("force update"): past ``refusal`` — a dev build, the same
+        version, a newer one — and the event says ``force``, so the edge
+        skips its own version checks too (not its battery or checksum)."""
         session = next(iter(self.sessions.values()), None)  # one edge per brain
         if session is None:
             return FirmwareUpdate("offline")
@@ -1109,14 +1115,16 @@ class RemoteServer:
         image = self.firmware.get(device_id)
         if image is None:
             return FirmwareUpdate("none", device_id=device_id)
-        why_not = refusal(session.fw, image.version)
+        why_not = None if force else refusal(session.fw, image.version)
         if why_not == "current":
             return FirmwareUpdate("current", version=image.version, device_id=device_id)
         if why_not:
             log.info("edge %s runs %s; not offering %s (%s)", device_id, session.fw, image.version, why_not)
             return FirmwareUpdate(why_not, version=image.version, device_id=device_id, running=session.fw)
-        log.info("edge %s runs %s; update to %s asked for", device_id, session.fw, image.version)
+        log.info("edge %s runs %s; update to %s asked for%s", device_id, session.fw, image.version,
+                 " (forced)" if force else "")
         session.pending_ota = image
+        session.pending_force = force
         if not session.connection.speech_on:
             await self._announce_pending_ota(session)
         else:
@@ -1128,8 +1136,12 @@ class RemoteServer:
 
     async def _announce_pending_ota(self, session: DeviceSession) -> None:
         image, session.pending_ota = session.pending_ota, None
+        force, session.pending_force = session.pending_force, False
         if image is not None and self.sessions.get(session.connection.device_id) is session:
-            await session.connection.send(P.event("ota", image.announcement(P.FIRMWARE_PATH)))
+            data = image.announcement(P.FIRMWARE_PATH)
+            if force:
+                data["force"] = True
+            await session.connection.send(P.event("ota", data))
 
     # -- the connection ------------------------------------------------
 
