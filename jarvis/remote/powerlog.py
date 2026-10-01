@@ -30,6 +30,9 @@ HEADER = (
     "sleep_pct,sleeps,heap_kb,event\n"
 )
 _COLUMNS = HEADER.strip().split(",")
+#: newer firmware appends its own estimate of the current: a 17th column, so
+#: rows (and files) from before it still read
+_COLUMNS_NEW = _COLUMNS + ["ma_est"]
 MODES = ("awake", "watch", "offline")
 _MODE_NAME = {"awake": "awake", "watch": "watch mode", "offline": "offline"}
 #: two rows further apart than this are not one stretch (a reboot, a gap)
@@ -56,6 +59,7 @@ class Row:
     usb: bool
     sleep_pct: float | None  # periodic rows only
     event: str
+    ma_est: float | None = None  # the watch's own: its gauge, regressed over 30 min
 
 
 @dataclass
@@ -66,6 +70,13 @@ class ModeStats:
     battery_s: float = 0.0    # and over how long
     drop_pct: float = 0.0     # the gauge's fall while on battery
     gauge_s: float = 0.0      # and over how long
+    est_ma_s: float = 0.0     # the watch's own ma_est, time-weighted
+    est_s: float = 0.0
+
+    @property
+    def watch_ma(self) -> float | None:
+        """The watch's own estimate (ma_est), averaged over the mode."""
+        return self.est_ma_s / self.est_s if self.est_s else None
 
     @property
     def sleep_pct(self) -> float | None:
@@ -132,9 +143,9 @@ def read_rows(paths: Iterable[str | Path]) -> list[Row]:
         except OSError:
             continue
         for fields in csv.reader(text.splitlines()):
-            if len(fields) != len(_COLUMNS) or fields[0] == "time":
+            if len(fields) not in (len(_COLUMNS), len(_COLUMNS_NEW)) or fields[0] == "time":
                 continue
-            rec = dict(zip(_COLUMNS, fields))
+            rec = dict(zip(_COLUMNS_NEW, fields))
             uptime = _int(rec["uptime_s"])
             if uptime is None or rec["mode"] not in MODES:
                 continue
@@ -151,6 +162,7 @@ def read_rows(paths: Iterable[str | Path]) -> list[Row]:
                     usb=rec["usb"] == "1",
                     sleep_pct=_float(rec["sleep_pct"]),
                     event=rec["event"],
+                    ma_est=_float(rec.get("ma_est", "")),
                 )
             )
     return rows
@@ -183,6 +195,9 @@ def summarize(rows: list[Row]) -> Summary:
             stats = s.modes[row.mode]
             stats.seconds += step
             stats.asleep_s += step * row.sleep_pct / 100.0
+            if row.ma_est is not None:
+                stats.est_ma_s += step * row.ma_est
+                stats.est_s += step
             on_battery = not (row.charging or row.usb or prev.charging or prev.usb)
             if on_battery and prev.mode == row.mode and row.batt_mv and prev.batt_mv:
                 stats.drop_mv += prev.batt_mv - row.batt_mv
@@ -216,7 +231,7 @@ def report(s: Summary, title: str = "") -> str:
         share = 100.0 * m.seconds / total
         sleep = f"{m.sleep_pct:.0f}%"
         drain = f"{m.mv_per_h:.0f} mV/h" if m.mv_per_h is not None else "-"
-        ma = m.ma()
+        ma = m.ma() if m.ma() is not None else m.watch_ma  # ours, else the watch's own
         current = f"{ma:.0f} mA" if ma is not None else "-"
         lines.append(f"{mode:<9}{_duration(m.seconds):>9}{share:>6.0f}%{sleep:>8}{drain:>12}{current:>10}")
     battery = "battery: "
@@ -247,7 +262,7 @@ def spoken(s: Summary) -> str:
     lines = ["Today the watch was " + (", ".join(parts[:-1]) + " and " + parts[-1] if len(parts) > 1 else parts[0]) + " of the time."]
     watch = s.modes["watch"]
     if watch.seconds and watch.sleep_pct is not None:
-        ma = watch.ma()
+        ma = watch.ma() if watch.ma() is not None else watch.watch_ma
         drawing = f", drawing about {ma:.0f} mA" if ma is not None else ""
         lines.append(f"In watch mode it slept {watch.sleep_pct:.0f}% of the time{drawing}.")
     if s.last_pct is not None:

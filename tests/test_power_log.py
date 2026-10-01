@@ -330,3 +330,30 @@ def test_too_little_to_say_says_nothing(tmp_path):
     path.write_text(day_csv(), encoding="utf-8")  # the gauge never moves on battery
     s = PL.summarize(PL.read_rows([path]))
     assert s.modes["watch"].ma(PL.BATTERY_MAH) is None
+
+
+def test_rows_with_the_watchs_own_estimate(tmp_path):
+    """Newer firmware appends ma_est (its own gauge regression) as a 17th
+    column; older rows have 16. Both read, and a day mixes them."""
+    old = row("09:00:00", 1, "watch", 3900, sleep=95)
+    new = row("09:00:10", 11, "watch", 3900, sleep=95).rstrip("\n") + ",12.5\n"
+    newer = row("09:00:20", 21, "watch", 3900, sleep=95).rstrip("\n") + ",13.5\n"
+    path = tmp_path / "2026-10-01.csv"
+    path.write_text(HEADER + old + new + newer, encoding="utf-8")
+    rows = PL.read_rows([path])
+    assert [r.ma_est for r in rows] == [None, 12.5, 13.5]
+    s = PL.summarize(rows)
+    assert s.modes["watch"].watch_ma == pytest.approx(13.0)
+
+
+def test_the_watchs_estimate_stands_in_for_the_brains(tmp_path):
+    rows = [row("09:00:00", 1, "watch", 3900, event="watch mode (idle timeout)")]
+    up = 1
+    for _ in range(30):  # 5 min: too short for the brain's own estimate
+        up += 10
+        rows.append(row("09:00:00", up, "watch", 3900, sleep=95).rstrip("\n") + ",9.0\n")
+    path = tmp_path / "2026-10-01.csv"
+    path.write_text(HEADER + "".join(rows), encoding="utf-8")
+    s = PL.summarize(PL.read_rows([path]))
+    assert s.modes["watch"].ma() is None
+    assert "9 mA" in PL.report(s)
