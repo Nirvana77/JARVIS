@@ -306,3 +306,27 @@ def test_the_skill(config, tmp_path, result, words):
 
 def test_the_skill_without_a_remote_link(config, tmp_path):
     assert "isn't connected" in watch_power.run(ctx(config, tmp_path, None)).lower()
+
+
+def test_current_is_estimated_from_the_gauge(tmp_path):
+    """The AXP2101 measures no current: it is the gauge's fall on battery,
+    times the cell's capacity. 2 h in watch mode, 90% -> 85% on 400 mAh:
+    20 mAh over 2 h = 10 mA."""
+    rows = [row("10:00:00", 1, "watch", 3900, event="watch mode (idle timeout)", pct=90)]
+    up = 1
+    for i in range(720):  # 2 h of 10 s rows
+        up += 10
+        rows.append(row("10:00:00", up, "watch", 3900, sleep=95, pct=90 - (i * 5) // 720 - (1 if i == 719 else 0)))
+    path = tmp_path / "2026-10-01.csv"
+    path.write_text(HEADER + "".join(rows), encoding="utf-8")
+    s = PL.summarize(PL.read_rows([path]))
+    assert s.modes["watch"].ma(PL.BATTERY_MAH) == pytest.approx(10, rel=0.15)
+    assert s.modes["awake"].ma(PL.BATTERY_MAH) is None  # no data, no number
+    assert "mA" in PL.report(s) and "mA" in PL.spoken(s)
+
+
+def test_too_little_to_say_says_nothing(tmp_path):
+    path = tmp_path / "2026-10-01.csv"
+    path.write_text(day_csv(), encoding="utf-8")  # the gauge never moves on battery
+    s = PL.summarize(PL.read_rows([path]))
+    assert s.modes["watch"].ma(PL.BATTERY_MAH) is None
