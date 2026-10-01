@@ -27,13 +27,17 @@ _NEAR_TIE = 0.05
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _HEADING_MARK = re.compile(r"(?:^|(?<=\s))#{1,6}\s+")
 
+#: what the reasoner replies when the excerpts do not answer the question — a
+#: chunk can clear the score bar without holding the answer
+NO_ANSWER = "NO_ANSWER"
+
 _SYSTEM = (
     "You answer a question using only the numbered excerpts from the user's own "
     "notes. Do not add anything that is not in them. If the excerpts do not "
-    "answer the question, say you have nothing on that. If two excerpts "
-    "disagree, trust the most recent one. Reply in one or two short sentences "
-    "meant to be spoken aloud, and say which source the answer came from. "
-    "No markdown, no lists."
+    f"answer the question, reply with exactly {NO_ANSWER} and nothing else. If "
+    "two excerpts disagree, trust the most recent one. Reply in one or two short "
+    "sentences meant to be spoken aloud, and say which source the answer came "
+    "from. No markdown, no lists."
 )
 
 
@@ -72,14 +76,16 @@ def frame(hit: Hit) -> str:
 
 def _prompt(question: str, hits: list[Hit]) -> str:
     excerpts = "\n".join(
-        f"[{i}] (source: {source_name(hit)}) {snippet(hit.text, 600)}"
+        f"[{i}] (source: {source_name(hit)}, {hit.when.day} {hit.when:%B %Y}) "
+        f"{snippet(hit.text, 600)}"
         for i, hit in enumerate(hits, start=1)
     )
     return f"Excerpts:\n{excerpts}\n\nQuestion: {question}"
 
 
-def compose(question: str, hits: list[Hit], llm=None) -> str:
-    """The spoken answer to ``question`` from ``hits`` (best first, not empty)."""
+def compose(question: str, hits: list[Hit], llm=None) -> str | None:
+    """The spoken answer to ``question`` from ``hits`` (best first, not empty),
+    or ``None`` when the reasoner read them and found no answer there."""
     top = best(hits)
     if llm is not None and getattr(llm, "available", False):
         try:
@@ -87,6 +93,8 @@ def compose(question: str, hits: list[Hit], llm=None) -> str:
         except Exception as exc:  # noqa: BLE001 - degrade to the snippet
             log.warning("knowledge: reasoner failed, reading the snippet instead: %s", exc)
             reply = ""
+        if NO_ANSWER.lower() in reply.lower():
+            return None
         if reply:
             sources = {source_name(hit).lower() for hit in hits}
             if not any(name in reply.lower() for name in sources):

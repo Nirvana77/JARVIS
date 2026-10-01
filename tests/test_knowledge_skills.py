@@ -156,6 +156,35 @@ def test_the_reasoner_is_not_asked_about_nothing(config, tmp_path, kb):
     assert llm.calls == []
 
 
+def test_a_reasoner_that_finds_no_answer_in_the_chunks_means_no_answer(config, tmp_path, kb):
+    """A chunk can clear the bar without answering the question. The model
+    says so with a fixed token, and that is "nothing on that" — not a spoken
+    "I have nothing on that — from coffee manual"."""
+    llm = FakeReasoner("NO_ANSWER")
+    line = recall.run(_ctx(config, tmp_path, kb, llm), query=QUESTION)
+    assert line == "I have nothing on that in your notes, sir."
+    assert len(llm.calls) == 1
+    assert "NO_ANSWER" in llm.calls[0][0]  # it was told the token
+
+
+def test_an_old_line_in_a_file_indexed_today_does_not_beat_a_newer_fact(config, tmp_path):
+    knowledge = make_knowledge(tmp_path)
+    knowledge.store.replace_source(
+        "/docs/dictated-notes.md", "1:1", ["i parked on level two"],
+        when=dt.datetime(2026, 9, 1, 8, 0),
+    )
+    knowledge.remember("i parked on level three", dt.datetime(2026, 9, 30, 8, 0))
+    # a new note re-indexes the whole file today
+    knowledge.store.replace_source(
+        "/docs/dictated-notes.md", "2:2", ["i parked on level two", "buy oat milk"],
+        when=dt.datetime(2026, 10, 1, 8, 0),
+    )
+
+    line = recall.run(_ctx(config, tmp_path, knowledge), query="where did i park")
+
+    assert "level three" in line
+
+
 # -- remember ---------------------------------------------------------------------
 
 def test_remember_then_recall(config, tmp_path, kb):
@@ -254,6 +283,20 @@ def test_what_is_goes_to_wikipedia_when_the_notes_only_brush_the_subject(
     line = search.run(_ctx(config, tmp_path, knowledge), query="python code")
 
     assert line == "According to Wikipedia: Python is a programming language."
+
+
+def test_what_is_goes_to_wikipedia_when_the_reasoner_finds_no_answer_in_the_notes(
+    config, tmp_path, monkeypatch
+):
+    knowledge = make_knowledge(tmp_path, search_min_score=0.6)
+    knowledge.store.replace_source("/docs/house.md", "1:1", ["the door code is 4821"])
+    _wikipedia_says(monkeypatch, "A door code is a sequence of digits.")
+
+    line = search.run(
+        _ctx(config, tmp_path, knowledge, FakeReasoner("NO_ANSWER")), query="the door code"
+    )
+
+    assert line == "According to Wikipedia: A door code is a sequence of digits."
 
 
 def test_search_survives_a_broken_knowledge_base(config, tmp_path, monkeypatch):

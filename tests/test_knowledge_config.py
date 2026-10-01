@@ -46,3 +46,20 @@ chunk_overlap = 40
         chunk_overlap=40,
     )
     assert config.knowledge.docs_path == tmp_path / "docs"
+
+
+def test_values_that_would_hang_or_break_it_are_clamped(tmp_path):
+    """`chunk_chars = 0` would never finish chunking; sqlite-vec refuses a k
+    above 4096; an interval of 0 would scan without pause."""
+    config = load_config(_write(tmp_path, """
+[knowledge]
+scan_interval_s = 0
+top_k = 0
+chunk_chars = 0
+chunk_overlap = 5000
+"""))
+
+    assert config.knowledge.scan_interval_s == 1.0
+    assert config.knowledge.top_k == 1
+    assert config.knowledge.chunk_chars == 100
+    assert config.knowledge.chunk_overlap == 99

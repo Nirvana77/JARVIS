@@ -3,7 +3,8 @@
 One sqlite file (``data/knowledge/kb.sqlite``):
 
 - ``sources`` — one row per ingested file, one per spoken fact
-- ``chunks``  — the text, a hash of it, and its embedding as a float32 BLOB
+- ``chunks``  — the text, a hash of it, when that text was first seen, and its
+  embedding as a float32 BLOB
 - ``meta``    — the embedding model and dimension, and a write generation
 
 The BLOB is the source of truth. When the ``sqlite-vec`` extension loads, a
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     ord INTEGER NOT NULL,
     text TEXT NOT NULL,
     text_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
     embedding BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS chunks_by_source ON chunks(source_id, ord);
@@ -69,7 +71,8 @@ class Hit:
     source: str
     kind: str
     score: float
-    #: when the file was last indexed / when the fact was said
+    #: when this text was written: the fact's own time, or the modification
+    #: time of the file the first time the chunk was seen in it
     when: dt.datetime
 
 
@@ -94,18 +97,23 @@ def _blob(vector: np.ndarray) -> bytes:
 
 def fastembed_embedder(model_name: str) -> Embed:
     """The production embedder: fastembed's model, loaded on first use — so a
-    JARVIS with nothing in its knowledge base never loads it."""
+    JARVIS with nothing in its knowledge base never loads it.
+
+    Only the loading is locked. Embedding is not (onnxruntime's session is
+    thread-safe): a question must not queue behind a scan that is embedding a
+    large file."""
     lock = threading.Lock()
     model = None
 
     def embed(texts: list[str]) -> np.ndarray:
         nonlocal model
-        with lock:
-            if model is None:
-                from fastembed import TextEmbedding
+        if model is None:
+            with lock:
+                if model is None:
+                    from fastembed import TextEmbedding
 
-                model = TextEmbedding(model_name=model_name)
-            return np.asarray(list(model.embed(list(texts))), dtype=np.float32)
+                    model = TextEmbedding(model_name=model_name)
+        return np.asarray(list(model.embed(list(texts))), dtype=np.float32)
 
     return embed
 
@@ -124,6 +132,7 @@ class KnowledgeStore:
         self._model_name = model_name
         self._use_sqlite_vec = use_sqlite_vec
         self._lock = threading.RLock()
+        self._source_locks: dict[str, threading.RLock] = {}
         self._conn: sqlite3.Connection | None = None
         self._vec: bool | None = None  # None until the extension has been tried
         #: (generation, chunk ids, matrix) for the brute-force path
@@ -256,6 +265,14 @@ class KnowledgeStore:
 
     # -- writing --------------------------------------------------------------
 
+    def source_lock(self, path: str) -> threading.RLock:
+        """One lock per source. Whoever indexes a file holds it across "read
+        the file, then store it", so of two writers the one that read the file
+        last is the one whose text is kept — a scan that read the notes file a
+        moment before a new note was appended cannot overwrite that note."""
+        with self._lock:
+            return self._source_locks.setdefault(path, threading.RLock())
+
     def replace_source(
         self,
         path: str,
@@ -266,20 +283,28 @@ class KnowledgeStore:
         when: dt.datetime | None = None,
     ) -> int:
         """Make ``path``'s chunks exactly ``chunks``. A chunk whose text was
-        already stored for this source keeps its embedding; returns how many
-        had to be embedded."""
-        chunks = list(chunks)
+        already stored for this source keeps its embedding and its date; a new
+        one is dated ``when``. Returns how many had to be embedded."""
+        with self.source_lock(path):
+            return self._replace_source(path, digest, list(chunks), kind, when)
+
+    def _replace_source(
+        self, path: str, digest: str, chunks: list[str], kind: str, when: dt.datetime | None
+    ) -> int:
         when = when or dt.datetime.now()
+        stamp = when.isoformat(timespec="seconds")
         with self._lock:
             conn = self._open(create=True)
             self._ready(conn)
-            known = dict(
-                conn.execute(
-                    "SELECT c.text_hash, c.embedding FROM chunks c "
+            #: text hash -> (embedding, first seen)
+            known = {
+                h: (blob, created)
+                for h, blob, created in conn.execute(
+                    "SELECT c.text_hash, c.embedding, c.created_at FROM chunks c "
                     "JOIN sources s ON s.id = c.source_id WHERE s.path = ?",
                     (path,),
-                ).fetchall()
-            )
+                )
+            }
         hashes = [_hash(text) for text in chunks]
         missing: dict[str, str] = {}  # hash -> text, each new text once
         for h, text in zip(hashes, chunks):
@@ -288,7 +313,7 @@ class KnowledgeStore:
         if missing:
             # Outside the lock: embedding a large file must not stall a search.
             for h, vector in zip(missing, self._embed(list(missing.values()))):
-                known[h] = _blob(vector)
+                known[h] = (_blob(vector), stamp)
 
         with self._lock:
             conn = self._open(create=True)
@@ -298,26 +323,27 @@ class KnowledgeStore:
                     "INSERT INTO sources(path, kind, digest, updated_at) VALUES(?, ?, ?, ?) "
                     "ON CONFLICT(path) DO UPDATE SET kind = excluded.kind, "
                     "digest = excluded.digest, updated_at = excluded.updated_at",
-                    (path, kind, digest, when.isoformat(timespec="seconds")),
+                    (path, kind, digest, stamp),
                 )
                 (source_id,) = conn.execute(
                     "SELECT id FROM sources WHERE path = ?", (path,)
                 ).fetchone()
                 if chunks:
-                    dim = len(known[hashes[0]]) // 4
+                    dim = len(known[hashes[0]][0]) // 4
                     self._set_meta(conn, "dim", str(dim))
                     if self._vec:
                         self._create_index(conn, dim)
                 for ord_, (text, h) in enumerate(zip(chunks, hashes)):
+                    blob, created = known[h]
                     cursor = conn.execute(
-                        "INSERT INTO chunks(source_id, ord, text, text_hash, embedding) "
-                        "VALUES(?, ?, ?, ?, ?)",
-                        (source_id, ord_, text, h, known[h]),
+                        "INSERT INTO chunks(source_id, ord, text, text_hash, created_at, embedding) "
+                        "VALUES(?, ?, ?, ?, ?, ?)",
+                        (source_id, ord_, text, h, created, blob),
                     )
                     if self._vec:
                         conn.execute(
                             f"INSERT INTO {_VEC_TABLE}(rowid, embedding) VALUES(?, ?)",
-                            (cursor.lastrowid, known[h]),
+                            (cursor.lastrowid, blob),
                         )
                 self._bump(conn, vec_in_step=bool(self._vec))
         return len(missing)
@@ -333,6 +359,19 @@ class KnowledgeStore:
             "DELETE FROM chunks WHERE source_id IN (SELECT id FROM sources WHERE path = ?)",
             (path,),
         )
+
+    def set_digest(self, path: str, digest: str) -> None:
+        """Record ``digest`` for ``path`` and leave its chunks alone — how a
+        file that could not be read is marked as "already tried in this state"
+        without losing what was last indexed from it."""
+        with self._lock:
+            conn = self._open(create=True)
+            with conn:
+                conn.execute(
+                    "INSERT INTO sources(path, kind, digest, updated_at) VALUES(?, ?, ?, ?) "
+                    "ON CONFLICT(path) DO UPDATE SET digest = excluded.digest",
+                    (path, FILE, digest, dt.datetime.now().isoformat(timespec="seconds")),
+                )
 
     def remove_source(self, path: str) -> bool:
         with self._lock:
@@ -423,6 +462,8 @@ class KnowledgeStore:
                         "WHERE embedding MATCH ? AND k = ? ORDER BY distance",
                         (_blob(vector), k),
                     )
+                    # a zero vector has no cosine distance: sqlite-vec says NULL
+                    if distance is not None
                 ]
             else:
                 scored = self._brute_force(conn, vector, k)
@@ -431,7 +472,7 @@ class KnowledgeStore:
             hits = []
             for cid, score in scored:
                 row = conn.execute(
-                    "SELECT c.text, s.path, s.kind, s.updated_at FROM chunks c "
+                    "SELECT c.text, s.path, s.kind, c.created_at FROM chunks c "
                     "JOIN sources s ON s.id = c.source_id WHERE c.id = ?",
                     (cid,),
                 ).fetchone()
@@ -448,6 +489,8 @@ class KnowledgeStore:
         generation = self._meta(conn, "generation")
         if self._matrix is None or self._matrix[0] != generation:
             rows = conn.execute("SELECT id, embedding FROM chunks ORDER BY id").fetchall()
+            if not rows:  # emptied while the query was being embedded
+                return []
             matrix = np.vstack([np.frombuffer(blob, dtype=np.float32) for _id, blob in rows])
             self._matrix = (generation, [cid for cid, _blob_ in rows], matrix)
         _generation, ids, matrix = self._matrix

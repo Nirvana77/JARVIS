@@ -4,6 +4,7 @@ with the docs folder (startup scan + the asyncio interval task)."""
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import os
 import threading
 
@@ -88,6 +89,32 @@ def test_a_heading_stays_with_the_paragraph_under_it():
 def test_headings_stack_and_a_last_one_is_not_lost():
     text = "# House\n\n## Coffee machine\n\nDescale it every two months.\n\n# Garden\n"
     assert chunk(text) == ["House: Coffee machine: Descale it every two months.", "Garden"]
+
+
+def test_a_heading_needs_no_blank_line_under_it():
+    """The usual way to write markdown: each section is its own chunk."""
+    text = (
+        "# Wifi\nThe code is 1234.\n\n# Boiler\nService due in May.\n\n"
+        "# Car\r\nParked on level 3.\r\n\r\nA later paragraph."
+    )
+    assert chunk(text) == [
+        "Wifi: The code is 1234.",
+        "Boiler: Service due in May.",
+        "Car: Parked on level 3.",
+        "A later paragraph.",
+    ]
+
+
+def test_a_hash_without_a_space_is_not_a_heading():
+    assert chunk("#todo buy milk\n\nThe bins go out on Thursday.") == [
+        "#todo buy milk",
+        "The bins go out on Thursday.",
+    ]
+
+
+def test_a_nonsense_chunk_size_still_terminates():
+    chunks = chunk("hello world", max_chars=0, overlap=50)
+    assert "".join(chunks) == "helloworld"
 
 
 def test_line_breaks_inside_a_paragraph_are_just_spaces():
@@ -255,6 +282,130 @@ def test_a_file_that_cannot_be_read_does_not_stop_the_others(tmp_path, docs):
     assert again.failed == [] and not again.changed
 
 
+def _not_root():
+    return os.geteuid() != 0
+
+
+def test_a_folder_that_went_away_does_not_empty_the_index(tmp_path, docs):
+    """A docs folder on a drive that dropped out is not a folder whose files
+    were all deleted: the index is kept, and nothing is re-embedded when the
+    folder comes back."""
+    (docs / "wifi.md").write_text("The wifi code is 1234.", encoding="utf-8")
+    embed = FakeEmbed()
+    store = make_store(tmp_path, embed)
+    scan_docs(store, docs)
+    embedded = len(embed.calls)
+
+    away = tmp_path / "unmounted"
+    docs.rename(away)
+    result = scan_docs(store, docs)
+
+    assert result.unavailable and result.removed == []
+    assert store.search("wifi code", k=1)[0].text == "The wifi code is 1234."
+
+    away.rename(docs)
+    result = scan_docs(store, docs)
+    assert not result.unavailable and not result.changed
+    assert len(embed.calls) == embedded + 1  # only the search above
+
+
+@pytest.mark.skipif(not _not_root(), reason="root can read anything")
+def test_a_folder_that_cannot_be_listed_does_not_empty_the_index(tmp_path, docs):
+    (docs / "wifi.md").write_text("The wifi code is 1234.", encoding="utf-8")
+    store = make_store(tmp_path)
+    scan_docs(store, docs)
+
+    docs.chmod(0o000)
+    try:
+        result = scan_docs(store, docs)
+    finally:
+        docs.chmod(0o755)
+
+    assert result.unavailable and result.removed == []
+    assert store.stats()["files"] == 1
+
+
+def test_an_emptied_folder_does_empty_the_index(tmp_path, docs):
+    wifi = docs / "wifi.md"
+    wifi.write_text("The wifi code is 1234.", encoding="utf-8")
+    store = make_store(tmp_path)
+    scan_docs(store, docs)
+
+    wifi.unlink()
+    result = scan_docs(store, docs)
+
+    assert result.removed == [str(wifi)] and not result.unavailable
+
+
+@pytest.mark.skipif(not _not_root(), reason="root can read anything")
+def test_a_file_that_stops_being_readable_keeps_what_was_indexed_and_is_retried(tmp_path, docs):
+    wifi = docs / "wifi.md"
+    wifi.write_text("The wifi code is 1234.", encoding="utf-8")
+    store = make_store(tmp_path)
+    scan_docs(store, docs)
+
+    wifi.write_text("The wifi code is 987654 now.", encoding="utf-8")
+    wifi.chmod(0o000)
+    try:
+        result = scan_docs(store, docs)
+        assert result.failed == [str(wifi)]
+        # the last good version is still the answer...
+        assert store.search("wifi code", k=1)[0].text == "The wifi code is 1234."
+        # ...and the failure is reported once, not every interval
+        again = scan_docs(store, docs)
+        assert again.failed == [] and not again.changed
+    finally:
+        wifi.chmod(0o644)
+
+    # readable again — same mtime and size, but it is looked at again
+    result = scan_docs(store, docs)
+    assert result.updated == [str(wifi)]
+    assert store.search("wifi code", k=1)[0].text == "The wifi code is 987654 now."
+
+
+def test_a_file_dictated_into_mid_scan_ends_up_with_its_newest_text(tmp_path, docs):
+    """A scan is embedding the notes file when `note` appends to it and indexes
+    it: whichever read the file last must be the one whose text is stored."""
+    notes = docs / "dictated-notes.md"
+    notes.write_text("the old note about the boiler\n\n", encoding="utf-8")
+    started, release = threading.Event(), threading.Event()
+    fake = FakeEmbed()
+
+    def gated(texts):
+        if not started.is_set():
+            started.set()
+            assert release.wait(10)
+        return fake(texts)
+
+    store = make_store(tmp_path, gated)
+    scan = threading.Thread(target=scan_docs, args=(store, docs))
+    scan.start()
+    assert started.wait(5)  # the scan has read the old text and is embedding it
+
+    with notes.open("a", encoding="utf-8") as fh:
+        fh.write("the new note about the door code 4821\n\n")
+    dictated = threading.Thread(target=ingest.index_file, args=(store, notes))
+    dictated.start()
+    release.set()
+    scan.join()
+    dictated.join()
+
+    assert store.search("door code 4821", k=1)[0].text == "the new note about the door code 4821"
+    assert store.file_digests()[str(notes)] == ingest.digest(notes)
+
+
+def test_a_chunk_is_dated_by_the_file_it_was_first_seen_in(tmp_path, docs):
+    old = docs / "manual.md"
+    old.write_text("Descale the machine every two months.", encoding="utf-8")
+    two_years_ago = dt.datetime(2024, 10, 1, 12, 0)
+    os.utime(old, (two_years_ago.timestamp(), two_years_ago.timestamp()))
+    store = make_store(tmp_path)
+
+    scan_docs(store, docs)
+
+    assert store.search("descale", k=1)[0].when == two_years_ago
+
+
 def test_a_scan_stops_between_files_when_told_to(tmp_path, docs):
     for name in ("a.md", "b.md", "c.md"):
         (docs / name).write_text(f"note {name} about something", encoding="utf-8")
@@ -391,3 +542,37 @@ def test_a_scan_that_blows_up_does_not_end_the_watch(tmp_path, monkeypatch):
 
     run(scenario())
     assert len(calls) >= 2
+
+
+def test_a_second_cancel_still_waits_for_the_worker_and_leaves_scanning_usable(tmp_path):
+    """Ctrl-C twice: the worker is still not abandoned, and the stop flag is
+    not left set for every later scan."""
+    started, release = threading.Event(), threading.Event()
+    fake = FakeEmbed()
+
+    def slow_embed(texts):
+        started.set()
+        assert release.wait(10)
+        return fake(texts)
+
+    kb = make_knowledge(tmp_path, slow_embed, scan_interval_s=0.01)
+    kb.docs_dir.mkdir()
+    for name in ("a.md", "b.md"):
+        (kb.docs_dir / name).write_text(f"note {name} about something", encoding="utf-8")
+    before = threading.active_count()
+
+    async def scenario():
+        task = asyncio.ensure_future(kb.watch())
+        assert await asyncio.to_thread(started.wait, 10)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    run(scenario())
+    assert threading.active_count() == before
+    assert len(kb.scan().added) == 1

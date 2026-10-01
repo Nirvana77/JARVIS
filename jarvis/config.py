@@ -437,6 +437,28 @@ def _section(raw: dict, key: str) -> dict:
     return value
 
 
+def _knowledge_config(raw: dict) -> KnowledgeConfig:
+    """`[knowledge]`, with the values that would hang or break it clamped
+    rather than refused: this file is also the edge's, and a brain-only typo
+    should not stop a Pi from starting."""
+    defaults = KnowledgeConfig()
+    chunk_chars = max(100, int(raw.get("chunk_chars", defaults.chunk_chars)))
+    return KnowledgeConfig(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        docs_dir=str(raw.get("docs_dir", defaults.docs_dir)),
+        scan_interval_s=max(1.0, float(raw.get("scan_interval_s", defaults.scan_interval_s))),
+        # sqlite-vec refuses a k above 4096; far below that is already too many
+        # chunks to hand a small local model
+        top_k=min(max(1, int(raw.get("top_k", defaults.top_k))), 50),
+        min_score=float(raw.get("min_score", defaults.min_score)),
+        search_min_score=float(raw.get("search_min_score", defaults.search_min_score)),
+        chunk_chars=chunk_chars,
+        chunk_overlap=min(
+            max(0, int(raw.get("chunk_overlap", defaults.chunk_overlap))), chunk_chars - 1
+        ),
+    )
+
+
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     """Build a :class:`Config`. Missing file -> all defaults. Env overrides win."""
     load_dotenv()  # make secrets visible to os.getenv elsewhere; harmless if absent
@@ -532,16 +554,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             sandbox_cpu_s=int(factory.get("sandbox_cpu_s", 5)),
             max_generate_attempts=int(factory.get("max_generate_attempts", 5)),
         ),
-        knowledge=KnowledgeConfig(
-            enabled=bool(knowledge.get("enabled", True)),
-            docs_dir=str(knowledge.get("docs_dir", "~/jarvis/knowledge")),
-            scan_interval_s=float(knowledge.get("scan_interval_s", 60.0)),
-            top_k=int(knowledge.get("top_k", 4)),
-            min_score=float(knowledge.get("min_score", 0.3)),
-            search_min_score=float(knowledge.get("search_min_score", 0.6)),
-            chunk_chars=int(knowledge.get("chunk_chars", 800)),
-            chunk_overlap=int(knowledge.get("chunk_overlap", 100)),
-        ),
+        knowledge=_knowledge_config(knowledge),
         server=ServerConfig(
             host=str(server.get("host", "0.0.0.0")),
             port=int(server.get("port", 8765)),

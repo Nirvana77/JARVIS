@@ -7,12 +7,15 @@ nothing here loads a model.
 from __future__ import annotations
 
 import datetime as dt
+import sys
 import threading
+import types
 
+import numpy as np
 import pytest
 
 from jarvis.knowledge import store as store_mod
-from jarvis.knowledge.store import KnowledgeStore
+from jarvis.knowledge.store import KnowledgeStore, fastembed_embedder
 from tests.knowledge_harness import FakeEmbed, make_store
 
 BACKENDS = pytest.mark.parametrize("use_sqlite_vec", [True, False], ids=["sqlite-vec", "numpy"])
@@ -257,3 +260,111 @@ def test_it_is_usable_from_another_thread(tmp_path):
     assert not errors
     assert found == ["the spare key is under the blue pot"] * 4
     assert threading.active_count() == before
+
+
+# -- found in review ------------------------------------------------------------
+
+def test_a_chunk_keeps_the_time_its_text_was_first_seen(tmp_path):
+    """A notes file is re-indexed on every new note; a line written a month
+    ago must not look as if it were written today."""
+    store = make_store(tmp_path)
+    september, october = dt.datetime(2026, 9, 1, 8, 0), dt.datetime(2026, 10, 1, 8, 0)
+    store.replace_source("/docs/notes.md", "1:1", ["i parked on level two"], when=september)
+    store.replace_source(
+        "/docs/notes.md", "2:2",
+        ["i parked on level two", "the door code is 4821"], when=october,
+    )
+
+    assert store.search("parked on level two", k=1)[0].when == september
+    assert store.search("the door code is 4821", k=1)[0].when == october
+
+
+@BACKENDS
+def test_a_chunk_with_nothing_to_embed_does_not_break_the_search(tmp_path, use_sqlite_vec):
+    """A zero vector has no cosine distance: sqlite-vec answers NULL for it."""
+    store = make_store(tmp_path, use_sqlite_vec=use_sqlite_vec)
+    store.replace_source("/docs/a.md", "1:1", ["!!! ??? ...", "the door code is 4821"])
+
+    hits = store.search("the door code", k=5)
+
+    assert hits[0].text == "the door code is 4821"
+
+
+def test_a_search_racing_the_last_removal_finds_nothing(tmp_path):
+    """The lock is not held while the query is embedded, so the store can be
+    emptied in between — that is an empty answer, not an error."""
+    fake = FakeEmbed()
+    box = {}
+
+    def embed(texts):
+        if box.get("empty_it"):
+            box["store"].remove_source("/docs/a.md")
+        return fake(texts)
+
+    store = box["store"] = make_store(tmp_path, embed, use_sqlite_vec=False)
+    store.replace_source("/docs/a.md", "1:1", ["the door code is 4821"])
+    box["empty_it"] = True
+
+    assert store.search("the door code") == []
+
+
+def test_two_writers_of_one_source_take_turns(tmp_path):
+    """`note` indexes the notes file while a scan may be indexing it too. The
+    per-source lock is what makes "read the file, then store it" one step."""
+    store = make_store(tmp_path)
+    order: list[str] = []
+    inside = threading.Event()
+
+    def first():
+        with store.source_lock("/docs/notes.md"):
+            order.append("first in")
+            inside.set()
+            threading.Event().wait(0.1)
+            order.append("first out")
+
+    thread = threading.Thread(target=first)
+    thread.start()
+    assert inside.wait(5)
+    with store.source_lock("/docs/notes.md"):
+        order.append("second in")
+    thread.join()
+
+    assert order == ["first in", "first out", "second in"]
+    # another source is not held up by it
+    assert store.source_lock("/docs/other.md") is not store.source_lock("/docs/notes.md")
+
+
+def test_a_query_is_not_embedded_behind_a_whole_file(monkeypatch):
+    """The model is built once, under a lock — but embedding is not: a recall
+    must not queue behind a scan that is embedding a large PDF."""
+    started, release = threading.Event(), threading.Event()
+    built: list[str] = []
+
+    class SlowModel:
+        def __init__(self, model_name):
+            built.append(model_name)
+
+        def embed(self, texts):
+            if len(texts) > 1:  # the "large file"
+                started.set()
+                assert release.wait(10)
+            return [np.ones(4, dtype=np.float32) for _ in texts]
+
+    monkeypatch.setitem(sys.modules, "fastembed", types.SimpleNamespace(TextEmbedding=SlowModel))
+    embed = fastembed_embedder("some-model")
+
+    scan = threading.Thread(target=embed, args=(["chunk one", "chunk two"],))
+    scan.start()
+    assert started.wait(5)
+    answered: list = []
+    query = threading.Thread(target=lambda: answered.append(embed(["a question"])))
+    query.start()
+    query.join(3)
+    waited = query.is_alive()
+    release.set()
+    scan.join()
+    query.join()
+
+    assert not waited, "the query waited for the file's batch to finish"
+    assert answered[0].shape == (1, 4)
+    assert built == ["some-model"]

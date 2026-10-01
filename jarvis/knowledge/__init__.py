@@ -32,6 +32,7 @@ class Knowledge:
         #: one scan at a time: the interval task, `note`, and the CLI can all ask
         self._scan_lock = threading.Lock()
         self._stop = threading.Event()
+        self._warned_unavailable = False
 
     @property
     def docs_dir(self):
@@ -75,13 +76,22 @@ class Knowledge:
         """Bring the store in line with ``docs_dir``. Blocking; call it from a
         worker thread."""
         with self._scan_lock:
-            return ingest.scan(
+            result = ingest.scan(
                 self.store,
                 self.docs_dir,
                 chunk_chars=self.settings.chunk_chars,
                 chunk_overlap=self.settings.chunk_overlap,
                 stop=self._stop,
             )
+        # Said once, not every interval — and only if something was indexed
+        # from the folder: a folder that was never made is not worth a warning.
+        if result.unavailable and not self._warned_unavailable and self.store.file_digests():
+            log.warning(
+                "knowledge: %s is missing or unreadable — keeping what was indexed from it",
+                self.docs_dir,
+            )
+        self._warned_unavailable = result.unavailable
+        return result
 
     async def watch(self) -> None:
         """The interval task: a scan every ``scan_interval_s``. (The startup
@@ -100,8 +110,14 @@ class Knowledge:
                     log.info("knowledge: %s", result.summary())
             except asyncio.CancelledError:
                 self._stop.set()
-                await asyncio.wait([scan])
-                self._stop.clear()
+                try:
+                    while not scan.done():  # a second cancel still waits
+                        try:
+                            await asyncio.wait([scan])
+                        except asyncio.CancelledError:
+                            pass
+                finally:
+                    self._stop.clear()
                 raise
             except Exception:  # noqa: BLE001 - one bad scan must not end the watch
                 log.exception("knowledge scan failed")
