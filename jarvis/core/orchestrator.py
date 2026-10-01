@@ -484,7 +484,7 @@ class Orchestrator:
         for name, spec, question in missing(manifest, params):
             answer = await self._ask(question)
             found = _slots.extract_typed({name: spec}, answer or "")
-            if name not in found and spec.get("type") == "text" and (answer or "").strip(" .!?"):
+            if name not in found and spec.get("type") in ("text", "name") and (answer or "").strip(" .!?"):
                 found = {name: answer.strip(" .!?")}  # asked for the text itself: all of it
             if name not in found:
                 await self._speak(self.persona.phrase("I didn't catch that, sir."))

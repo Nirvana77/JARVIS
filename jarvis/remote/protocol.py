@@ -64,7 +64,7 @@ MAX_TOOL_EXAMPLES = 24
 MAX_TOOL_EXAMPLE = 120
 MAX_TOOL_PARAMS = 4
 #: param types the brain knows how to pull out of an utterance (nlu/slots.py)
-TOOL_PARAM_TYPES = ("duration", "number", "text")
+TOOL_PARAM_TYPES = ("duration", "number", "text", "name")
 #: what a tool's `result` may ask JARVIS to say
 MAX_TOOL_SAY = 300
 _TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")

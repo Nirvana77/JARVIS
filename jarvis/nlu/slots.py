@@ -88,8 +88,11 @@ def extract(label: str, text: str) -> dict[str, str]:
 #   text      what follows "to" / "that" / "saying" / "about" / "for", once any
 #             duration phrase is taken out: "remind me in 20 minutes to take
 #             the pizza out" -> "take the pizza out"
+#   name      what a thing is called: after "called" / "named", or the words in
+#             front of "timer" / "reminder" / "alarm": "set a pizza timer for
+#             10 minutes", "cancel the pizza timer" -> "pizza"
 
-PARAM_TYPES = ("duration", "number", "text")
+PARAM_TYPES = ("duration", "number", "text", "name")
 
 _ONES = {
     "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
@@ -110,6 +113,15 @@ _UNITS = {
 _DURATION_LEADS = {"in", "for", "after", "within"}
 #: what introduces a text param, first one wins
 _TEXT_MARKERS = ("to", "that", "saying", "about", "for")
+#: what a name param names, and what introduces one outright
+_NAME_NOUNS = {"timer", "timers", "reminder", "reminders", "alarm", "alarms"}
+_NAME_LEADS = ("called", "named")
+#: words that end a name, walking back from the noun ("cancel the | pizza timer")
+_NAME_STOPS = {
+    "a", "an", "the", "my", "this", "that", "your", "all", "every", "any", "new", "other",
+    "set", "start", "make", "create", "cancel", "stop", "delete", "clear", "remove", "end",
+    "for", "in", "of", "please",
+}
 
 
 def _number_at(norm: list[str], i: int, *, articles: bool) -> tuple[float, int] | None:
@@ -162,12 +174,44 @@ def _durations(norm: list[str]) -> tuple[float, list[tuple[int, int]]]:
     return total, spans
 
 
+def _name(kept: list[tuple[str, str]]) -> str | None:
+    """"a timer called pizza" / "the pizza timer" -> "pizza"."""
+    norms = [n for _w, n in kept]
+    for k, n in enumerate(norms):
+        if n in _NAME_LEADS:
+            taken = []
+            for w, n2 in kept[k + 1 :]:
+                if n2 in _TEXT_MARKERS or n2 in _NAME_NOUNS:
+                    break
+                taken.append(n2)
+            return " ".join(taken).strip(" ,.!?") or None
+    at = next((k for k, n in enumerate(norms) if n in _NAME_NOUNS), None)
+    if at is None:
+        return None
+    taken = []
+    for k in range(at - 1, -1, -1):
+        n = norms[k]
+        if n in _NAME_STOPS or _number_at(norms, k, articles=False) is not None or n in _UNITS:
+            break
+        taken.insert(0, n)
+    return " ".join(taken).strip(" ,.!?") or None
+
+
 def extract_typed(spec: dict, text: str) -> dict:
     """Pull the params ``spec`` declares (``{name: {"type": ...}}``) out of an
     utterance. A param that is not there is left out, so the skill can ask."""
     words = [w for w in re.split(r"[\s\-]+", text.strip()) if w]
     norm = [w.lower().strip(",.!?;:'\"") for w in words]
     seconds, spans = _durations(norm)
+
+    # The words left once the durations are out, with the word that led into
+    # each ("in 5 minutes", "for an hour"): what text and name are read from.
+    drop: set[int] = set()
+    for start, end in spans:
+        drop.update(range(start, end))
+        if start > 0 and norm[start - 1] in _DURATION_LEADS:
+            drop.add(start - 1)
+    kept = [(w, n) for k, (w, n) in enumerate(zip(words, norm)) if k not in drop]
 
     out: dict = {}
     for name, param in spec.items():
@@ -181,14 +225,11 @@ def extract_typed(spec: dict, text: str) -> dict:
                     value = found[0]
                     out[name] = int(value) if value.is_integer() else value
                     break
+        elif kind == "name":
+            found = _name(kept)
+            if found:
+                out[name] = found
         elif kind == "text":
-            # Take the durations out, with the word that led into them.
-            drop: set[int] = set()
-            for start, end in spans:
-                drop.update(range(start, end))
-                if start > 0 and norm[start - 1] in _DURATION_LEADS:
-                    drop.add(start - 1)
-            kept = [(w, n) for k, (w, n) in enumerate(zip(words, norm)) if k not in drop]
             at = next((k for k, (_w, n) in enumerate(kept) if n in _TEXT_MARKERS), None)
             if at is not None:
                 phrase = " ".join(w for w, _n in kept[at + 1 :])
