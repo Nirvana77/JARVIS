@@ -135,6 +135,10 @@ def test_durations(text, seconds):
         ("remind me in 20 minutes to take the pizza out", "take the pizza out"),
         ("remind me to call mom in an hour", "call mom"),
         ("set a timer for 5 minutes", None),
+        # "for" names the thing, once the duration (and its own "for") is out
+        ("cancel the timer for the oven", "the oven"),
+        ("set a timer for the pizza for 10 minutes", "the pizza"),
+        ("cancel the 5 minute timer", None),
     ],
 )
 def test_text_after_the_duration(text, label):
@@ -501,5 +505,41 @@ def test_new_tools_are_learned_in_the_background(tmp_path):
         assert "set_timer" in registry
         await orch._merge_gate()
         assert orch.registry is registry
+
+    run(scenario())
+
+
+def test_a_missing_param_is_asked_for_and_the_answer_used(tmp_path):
+    from jarvis.core.orchestrator import Orchestrator
+
+    async def scenario():
+        orch = Orchestrator.__new__(Orchestrator)
+        orch.registry = ManifestRegistry(tmp_path)
+        asked, spoken = [], []
+
+        async def ask(prompt):
+            asked.append(prompt)
+            return answers.pop(0)
+
+        async def speak(line):
+            spoken.append(line)
+
+        orch._ask, orch._speak = ask, speak
+        orch.persona = type("P", (), {"phrase": staticmethod(lambda t: t)})()
+
+        answers = ["five minutes"]
+        params = await orch._fill_missing("set_timer", {})
+        assert params == {"seconds": 300}
+        assert asked == ["How long, sir?"]
+
+        answers = ["banana"]
+        assert await orch._fill_missing("set_timer", {}) is None
+        assert spoken and "catch" in spoken[-1]
+
+        # nothing missing, or not an edge skill: no question
+        asked.clear()
+        assert await orch._fill_missing("set_timer", {"seconds": 60}) == {"seconds": 60}
+        assert await orch._fill_missing("search", {"query": "x"}) == {"query": "x"}
+        assert asked == []
 
     run(scenario())

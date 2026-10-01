@@ -442,7 +442,9 @@ class Orchestrator:
 
         # a skill
         self.state = "acting"
-        params = self._params_for(label, text)
+        params = await self._fill_missing(label, self._params_for(label, text))
+        if params is None:
+            return
         try:
             line = await asyncio.to_thread(self.registry.dispatch, label, params)
         except KeyError:
@@ -465,6 +467,30 @@ class Orchestrator:
         if manifest is not None and manifest.origin == "edge":
             return _slots.extract_typed(manifest.params, text)
         return self._slot_extract(label, text)
+
+    async def _fill_missing(self, label: str, params: dict) -> dict | None:
+        """An edge tool said without a required param ("set a timer"): ask
+        for it ("How long, sir?") and take it from the answer ("five
+        minutes"). ``None`` when the answer didn't have it either — said so."""
+        try:
+            manifest = self.registry.manifest(label)
+        except Exception:  # noqa: BLE001 — not a registered skill / a fake
+            return params
+        if manifest.origin != "edge":
+            return params
+        from jarvis.skills.edge import missing
+
+        params = dict(params)
+        for name, spec, question in missing(manifest, params):
+            answer = await self._ask(question)
+            found = _slots.extract_typed({name: spec}, answer or "")
+            if name not in found and spec.get("type") == "text" and (answer or "").strip(" .!?"):
+                found = {name: answer.strip(" .!?")}  # asked for the text itself: all of it
+            if name not in found:
+                await self._speak(self.persona.phrase("I didn't catch that, sir."))
+                return None
+            params.update(found)
+        return params
 
     async def refresh_skills(self) -> None:
         """An edge declared new tools (``RemoteServer.on_tools_changed``):

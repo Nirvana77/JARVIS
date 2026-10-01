@@ -26,7 +26,7 @@ from jarvis.skills.contract import SkillManifest
 log = logging.getLogger(__name__)
 
 #: what a missing required param of each type asks
-_ASK = {
+ASK = {
     "duration": "How long, sir?",
     "number": "What number, sir?",
     "text": "What should it say, sir?",
@@ -70,6 +70,16 @@ class EdgeTools:
         return True
 
 
+def missing(manifest: SkillManifest, params: dict) -> list[tuple[str, dict, str]]:
+    """The required params ``params`` lacks: ``(name, spec, question)`` each,
+    for the orchestrator to ask before it runs the skill."""
+    return [
+        (name, manifest.params[name], ASK.get(manifest.params[name].get("type"), ASK["text"]))
+        for name in manifest.required_params
+        if name not in params
+    ]
+
+
 @dataclass(frozen=True)
 class EdgeSkill:
     """A skill whose ``run`` is a ``call`` to the edge. Quacks like a skill
@@ -84,7 +94,7 @@ class EdgeSkill:
         for name in self.MANIFEST.required_params:
             if name not in params:
                 kind = self.MANIFEST.params[name].get("type", "text")
-                return _ASK.get(kind, "I need a little more to go on, sir.")
+                return ASK.get(kind, "I need a little more to go on, sir.")
         result = ctx.edges.call(self.MANIFEST.name, params)
         if result.status == "offline":
             return "The watch isn't connected to me."
