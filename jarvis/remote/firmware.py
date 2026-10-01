@@ -6,16 +6,22 @@ version is read out of the image's own ``esp_app_desc_t``, so what the brain
 announces is exactly what the edge will report after it has flashed it.
 
 An edge that can take an update says what it runs in ``hello`` (``fw``). If the
-staged image differs — newer or older, either way it is what the owner put
-there — the brain announces it with ``event {kind: "ota"}`` after ``ready``,
-and the edge fetches it with ``GET /firmware`` on the same port (see
+staged image differs, the brain announces it with ``event {kind: "ota"}`` after
+``ready``, and the edge fetches it with ``GET /firmware`` on the same port (see
 ``RemoteServer.process_request``). Whether and when to flash is the edge's
 call: it knows its battery, and whether this version already failed on it.
+
+What the brain *can* know it does not offer (``refusal``): nothing over a dev
+build (``-dirty``), which the watch refuses anyway, and nothing older than what
+runs. Versions are ``git describe`` output, so "older" is only decidable when
+both carry a numeric tag (``v1.2-5-gabc1234``); bare commit hashes from an
+untagged repo cannot be ordered, and an image that merely differs is offered.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +35,33 @@ _APP_DESC_OFFSET = 32
 _APP_DESC_MAGIC = 0xABCD5432
 #: magic, secure_version, reserv1[2], version[32], project_name[32]
 _APP_DESC = struct.Struct("<II8s32s32s")
+
+
+#: ``git describe --tags --dirty``: ``<tag>[-<n>-g<hash>][-dirty]``, the tag
+#: numeric (``v1``, ``1.2``, ``v1.2.3``). A bare all-digit hash is not a tag.
+_DESCRIBE_RE = re.compile(r"^v?(?P<tag>\d+(?:\.\d+)*)(?:-(?P<n>\d+)-g[0-9a-f]+)?$")
+
+
+def _order(version: str) -> tuple | None:
+    """A sort key for a described version, or ``None`` if it has none."""
+    m = _DESCRIBE_RE.match(version)
+    if m is None or (not version.startswith("v") and "." not in m["tag"]):
+        return None
+    return tuple(int(part) for part in m["tag"].split(".")), int(m["n"] or 0)
+
+
+def refusal(running: str, staged: str) -> str | None:
+    """Why an edge running ``running`` should not be offered ``staged``:
+    ``current`` (it runs it), ``dev`` (a ``-dirty`` build, which the edge keeps),
+    ``newer`` (it runs a later version) — or ``None`` to offer it."""
+    if staged == running:
+        return "current"
+    if running.endswith("-dirty"):
+        return "dev"
+    have, offered = _order(running), _order(staged)
+    if have is not None and offered is not None and have > offered:
+        return "newer"
+    return None
 
 
 @dataclass(frozen=True)
@@ -100,6 +133,6 @@ class FirmwareStore:
         if not running:
             return None
         image = self.get(device_id)
-        if image is None or image.version == running:
+        if image is None or refusal(running, image.version):
             return None
         return image

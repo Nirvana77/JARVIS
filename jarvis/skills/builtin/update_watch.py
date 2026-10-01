@@ -36,6 +36,13 @@ def run(ctx, **_params) -> str:
         return f"Updating the watch to {result.version}. It will restart when it's done."
     if result.status == "current":
         return f"The watch is already running {result.version}."
+    if result.status == "dev":
+        return (
+            f"The watch is running a development build, {result.running}. "
+            f"It won't take {result.version} over that."
+        )
+    if result.status == "newer":
+        return f"The watch is already running {result.running}, newer than the {result.version} I have."
     if result.status == "none":
         return "I have no new firmware for the watch."
     if result.status == "unsupported":

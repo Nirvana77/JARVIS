@@ -110,6 +110,49 @@ def test_an_image_is_offered_only_when_it_differs_from_what_runs(tmp_path):
     assert store.offer("kitchen", "1.0") is None  # another device's image
 
 
+def test_a_dev_build_is_left_alone(tmp_path):
+    # -dirty was flashed over USB on purpose, and the watch refuses anything
+    # over it (ota.c) — so the brain does not pretend to offer it.
+    config = make_config(tmp_path)
+    store = FirmwareStore(config.firmware_dir)
+    put_image(config, fake_image("v1.0-3-gbbbbbbb"))
+    assert store.offer(DEVICE, "v1.0-5-gaaaaaaa-dirty") is None
+    assert store.offer(DEVICE, "f39716b-dirty") is None
+
+
+def test_an_older_image_is_not_offered_when_the_versions_can_be_ordered(tmp_path):
+    config = make_config(tmp_path)
+    store = FirmwareStore(config.firmware_dir)
+    put_image(config, fake_image("v1.0-3-gbbbbbbb"))
+    assert store.offer(DEVICE, "v1.0-5-gaaaaaaa") is None  # five commits past the tag
+    assert store.offer(DEVICE, "v1.1") is None  # a later tag
+    assert store.offer(DEVICE, "v1.0-1-gccccccc").version == "v1.0-3-gbbbbbbb"
+    assert store.offer(DEVICE, "v0.9-12-gddddddd").version == "v1.0-3-gbbbbbbb"
+
+
+@pytest.mark.parametrize(
+    "running,staged,expected",
+    [
+        ("1.0", "1.1", None),
+        ("1.1", "1.1", "current"),
+        ("1.2", "1.1", "newer"),
+        ("1.0-dirty", "1.1", "dev"),
+        ("v1.0-5-gaaaaaaa", "v1.0-3-gbbbbbbb", "newer"),
+        ("v1.0", "v1.0-3-gbbbbbbb", None),
+        ("v2", "v1.9", "newer"),
+        # bare commit hashes (a repo with no tags) cannot be ordered: offer it
+        ("f39716b", "f2e27ca", None),
+        ("1234567", "f2e27ca", None),
+        # different tag schemes cannot be ordered either
+        ("release-a-2-gaaaaaaa", "v1.0", None),
+    ],
+)
+def test_why_an_image_would_not_be_taken(running, staged, expected):
+    from jarvis.remote.firmware import refusal
+
+    assert refusal(running, staged) == expected
+
+
 def test_a_replaced_image_is_noticed(tmp_path):
     config = make_config(tmp_path)
     store = FirmwareStore(config.firmware_dir)

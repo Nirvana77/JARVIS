@@ -67,6 +67,20 @@ def test_the_skill_explains_why_nothing_happened(config, tmp_path, status, words
     assert words in line.lower()
 
 
+def test_the_skill_does_not_claim_an_update_over_a_dev_build(config, tmp_path):
+    result = FirmwareUpdate("dev", version="f2e27ca", device_id="watch", running="f39716b-dirty")
+    line = update_watch.run(ctx(config, tmp_path, FakeEdges(result)))
+    assert "development build" in line.lower() and "f39716b-dirty" in line
+    assert not line.lower().startswith("updating")
+
+
+def test_the_skill_does_not_claim_an_update_over_a_newer_version(config, tmp_path):
+    result = FirmwareUpdate("newer", version="v1.0-3-gb", device_id="watch", running="v1.0-5-ga")
+    line = update_watch.run(ctx(config, tmp_path, FakeEdges(result)))
+    assert "newer" in line.lower() and "v1.0-5-ga" in line and "v1.0-3-gb" in line
+    assert not line.lower().startswith("updating")
+
+
 def test_without_a_remote_link_the_skill_says_so(config, tmp_path):
     # all-in-one and text mode: there is no edge to update
     line = update_watch.run(ctx(config, tmp_path, None))
@@ -144,6 +158,32 @@ def test_nothing_is_sent_when_it_runs_that_version(tmp_path):
             ws, edge = await connected(brain, fw="1.1")
             assert await brain.server.update_firmware() == FirmwareUpdate(
                 "current", version="1.1", device_id=DEVICE
+            )
+            await edge.send(P.control(P.CONTROL.PLAYBACK_DONE, id="s1"))
+            await no_event(edge)
+            await ws.close()
+        finally:
+            await close(brain)
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    "running,status",
+    [("1.0-dirty", "dev"), ("1.2", "newer")],
+)
+def test_nothing_is_sent_when_the_watch_would_refuse_it(tmp_path, running, status):
+    """The watch keeps a dev build and (where it can tell) a newer one, so
+    saying "Updating the watch" would be a promise it then breaks."""
+
+    async def scenario():
+        config = make_config(tmp_path)
+        brain = await Brain(config).start(run_orchestrator=False)
+        try:
+            ws, edge = await connected(brain, fw=running)
+            put_image(config, fake_image("1.1"))
+            assert await brain.server.update_firmware() == FirmwareUpdate(
+                status, version="1.1", device_id=DEVICE, running=running
             )
             await edge.send(P.control(P.CONTROL.PLAYBACK_DONE, id="s1"))
             await no_event(edge)

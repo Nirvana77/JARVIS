@@ -46,7 +46,7 @@ from jarvis.remote.addressing import (
     apply_mode_command,
     route,
 )
-from jarvis.remote.firmware import Firmware, FirmwareStore
+from jarvis.remote.firmware import Firmware, FirmwareStore, refusal
 from jarvis.remote.intake import AudioIntake
 
 log = logging.getLogger(__name__)
@@ -122,12 +122,15 @@ class DeviceSession:
 @dataclass(frozen=True)
 class FirmwareUpdate:
     """What ``RemoteServer.update_firmware`` did: ``sent`` (announced, or
-    about to be), ``current`` (it runs that already), ``none`` (nothing
-    staged), ``unsupported`` (the edge never said what it runs), ``offline``."""
+    about to be), ``current`` (it runs that already), ``dev`` / ``newer`` (it
+    runs a dev build or a later version, which it would refuse to replace —
+    ``running`` says which), ``none`` (nothing staged), ``unsupported`` (the
+    edge never said what it runs), ``offline``."""
 
     status: str
     version: str = ""
     device_id: str = ""
+    running: str = ""
 
 
 class EdgeControl:
@@ -720,8 +723,12 @@ class RemoteServer:
         image = self.firmware.get(device_id)
         if image is None:
             return FirmwareUpdate("none", device_id=device_id)
-        if image.version == session.fw:
+        why_not = refusal(session.fw, image.version)
+        if why_not == "current":
             return FirmwareUpdate("current", version=image.version, device_id=device_id)
+        if why_not:
+            log.info("edge %s runs %s; not offering %s (%s)", device_id, session.fw, image.version, why_not)
+            return FirmwareUpdate(why_not, version=image.version, device_id=device_id, running=session.fw)
         log.info("edge %s runs %s; update to %s asked for", device_id, session.fw, image.version)
         session.pending_ota = image
         if not session.connection.speech_on:
