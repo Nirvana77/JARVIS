@@ -21,6 +21,10 @@ log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-opus-5"
 
+#: shared by adaptive thinking and both modules. 8000 truncated real skills
+#: mid-test; kept under the SDK's non-streaming ceiling (~21k).
+MAX_TOKENS = 16000
+
 _CONTRACT = '''\
 A JARVIS skill is a single Python module. It must define exactly two things
 at module scope:
@@ -89,6 +93,9 @@ def run(ctx, text: str = "") -> str:
 The test module (pytest, no fixtures beyond a plain stand-in `ctx` object you
 construct inline) must import the skill module and exercise `run()` for at
 least the happy path.
+
+Keep both modules compact: do what was asked, without extra features, and a
+handful of focused tests rather than an exhaustive suite.
 '''
 
 _RESPONSE_FORMAT = """\
@@ -168,7 +175,7 @@ class ClaudeClient:
         try:
             response = self._client.messages.create(
                 model=self.model,
-                max_tokens=8000,
+                max_tokens=MAX_TOKENS,
                 thinking={"type": "adaptive"},
                 system=_CONTRACT + "\n" + _RESPONSE_FORMAT,
                 messages=[{"role": "user", "content": prompt}],
@@ -177,6 +184,11 @@ class ClaudeClient:
             raise ClaudeClientError(f"Claude request failed: {exc}") from exc
 
         text = "".join(b.text for b in response.content if b.type == "text")
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            raise ClaudeClientError(
+                f"the reply was cut off at {MAX_TOKENS} tokens before both code "
+                "blocks were complete — write a smaller skill and fewer tests"
+            )
         match = _BLOCK_RE.search(text)
         if not match:
             raise ClaudeClientError("Claude's reply didn't contain the two expected code blocks")
@@ -206,6 +218,13 @@ class ClaudeClient:
             )
         else:
             lines.append("\nThis is a brand new skill — write it from scratch.")
+        lines.append(
+            f"\nThe skill is saved as `{spec.name}.py` and the test runs from the "
+            f"same directory, so the test must import it as a top-level module: "
+            f"`import {spec.name}` (or `from {spec.name} import run, MANIFEST`). "
+            f"It is not inside any package — `from jarvis.skills import {spec.name}` "
+            f"will fail."
+        )
         if feedback:
             lines.append(
                 "\nA previous attempt at this exact request was rejected. "

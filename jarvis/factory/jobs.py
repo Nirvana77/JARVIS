@@ -75,6 +75,13 @@ async def run_detached(fn, *args):
     return await future
 
 
+def _sandbox_output(result) -> str:
+    """What a sandbox run printed. pytest reports failures on *stdout* and
+    tracebacks land on stderr, so both are needed — stderr alone left the
+    log and Claude's retry feedback empty for every failing test."""
+    return "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+
+
 def _sample_params(manifest: SkillManifest) -> dict:
     defaults = {"integer": 1, "number": 1.0, "boolean": True}
     return {
@@ -202,13 +209,13 @@ class LearningJob:
                 if not test_result.ok:
                     log.warning(
                         "sandbox tests failed for %s (attempt %d/%d):\n%s",
-                        manifest.name, attempt, self.max_attempts, test_result.stderr,
+                        manifest.name, attempt, self.max_attempts, _sandbox_output(test_result),
                     )
                     reason = "sandbox tests failed"
                     feedback = (
                         "Your previous attempt's tests failed when run in the sandbox. "
                         "Fix the skill (or the test, if the test itself is wrong) so the "
-                        f"tests pass. Error output:\n{test_result.stderr}\n\n"
+                        f"tests pass. Error output:\n{_sandbox_output(test_result)}\n\n"
                         f"Here is the code you wrote:\n```python\n{generated.module_source}\n```\n\n"
                         f"Here is the test you wrote:\n```python\n{generated.test_source}\n```"
                     )
@@ -221,12 +228,12 @@ class LearningJob:
                 if not dry_result.ok:
                     log.warning(
                         "sandbox dry-run failed for %s (attempt %d/%d):\n%s",
-                        manifest.name, attempt, self.max_attempts, dry_result.stderr,
+                        manifest.name, attempt, self.max_attempts, _sandbox_output(dry_result),
                     )
                     reason = "sandbox dry-run failed"
                     feedback = (
                         "Your previous attempt's tests passed, but calling run() for real "
-                        f"crashed. Error output:\n{dry_result.stderr}\n\n"
+                        f"crashed. Error output:\n{_sandbox_output(dry_result)}\n\n"
                         f"Here is the code you wrote — fix it:\n```python\n{generated.module_source}\n```"
                     )
                     module_path.unlink(missing_ok=True)

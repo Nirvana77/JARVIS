@@ -48,6 +48,10 @@ from jarvis.nlu.corpus import build_corpus
 from jarvis.nlu.retrain_worker import RetrainWorker
 from jarvis.skills.registry import LEARNED_PACKAGE
 
+#: a retrain normally takes seconds; past this the worker is presumed stuck
+#: and the job is set aside out loud rather than waiting in silence forever
+RETRAIN_TIMEOUT_S = 300.0
+
 log = logging.getLogger(__name__)
 
 State = Literal["idle", "listening", "thinking", "acting", "speaking"]
@@ -603,10 +607,16 @@ class Orchestrator:
         await asyncio.to_thread(
             worker.start, examples, self.config.nlu.embedding_model, self.config.nlu_model_dir
         )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + RETRAIN_TIMEOUT_S
         try:
             while True:
                 result = await asyncio.to_thread(worker.poll, 0.5)
                 if result is not None:
+                    break
+                if loop.time() > deadline:
+                    worker.terminate()
+                    result = ("error", f"retrain timed out after {RETRAIN_TIMEOUT_S:.0f}s")
                     break
                 if worker.exited():
                     result = await asyncio.to_thread(worker.poll, 0.5)

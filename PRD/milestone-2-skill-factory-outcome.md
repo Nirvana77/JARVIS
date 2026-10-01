@@ -142,6 +142,44 @@ happened to have actually taught. Fixed by having that one test call
 test-isolation fix, not a loosened assertion — the test still asserts the
 exact four-name list.
 
+## Fixed after ship: `teach` never produced a skill (known issue #1)
+
+Reported 2026-09-25 from live use — "'<name>' failed its own tests, sir" on
+every attempt, or nothing at all. The fake-Claude tests all passed; it was
+four separate faults in the live path, found 2026-10-01 by running real
+generations through the real sandbox and then a real `teach` in
+`python -m jarvis text`. The resource-limit candidates the issue listed were
+ruled out first: a skill's pytest run takes 0.1 s well inside 512 MB / 5 s.
+
+1. **Claude didn't know how to import the skill.** The test runs beside
+   `<name>.py` in `jarvis/skills/staging/`, so only `import <name>` resolves;
+   the prompt never said so and Claude wrote `from jarvis.skills import
+   <name>` — 2/2 live generations failed collection with an ImportError. The
+   hand-written sandbox tests used `import coin_flip`, which is why they never
+   saw it. `_build_prompt` now names the file and the import (and the wrong
+   one). After: 6/6 live generations passed on the first attempt.
+2. **The retries were blind.** pytest reports failures on *stdout*; the job
+   logged and fed back only *stderr*, which was empty — so the WARNING showed
+   nothing and every retry asked Claude to fix an empty error.
+   `jobs._sandbox_output` now carries both.
+3. **Long replies were truncated and misreported.** `max_tokens=8000` is
+   shared with adaptive thinking; a richer skill (`days_until`) ran out
+   mid-test, `stop_reason: max_tokens`, reported as "didn't contain the two
+   expected code blocks". Raised to 16000 (under the SDK's non-streaming
+   ceiling), a truncated reply now says it was cut off, and the contract asks
+   for compact modules.
+4. **The retrain child deadlocked, silently.** With a skill accepted,
+   `RetrainWorker` *forked* the live brain — dozens of ONNX Runtime /
+   fastembed threads — and the child hung on a lock it inherited. The poll
+   loop had no deadline, so the job waited forever: no "learned", no "set
+   aside". The worker now uses the `spawn` context, and
+   `orchestrator.RETRAIN_TIMEOUT_S` (300 s) turns a stuck retrain into the
+   spoken "didn't train cleanly" instead of silence.
+
+Dry-run after the fix: teach `coin_flip` → "Shall I keep it?" → yes →
+"I've learned 'coin_flip'" → "flip a coin" routes to it at 0.85. Threads: 36
+idle, ~65 during the dialog and job, back to 36 after.
+
 ## Verification
 
 Automated (ran here):

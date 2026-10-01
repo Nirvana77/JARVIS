@@ -35,6 +35,10 @@ class RetrainWorker:
     timeout) until it returns a result."""
 
     def __init__(self) -> None:
+        #: spawn, not Linux's default fork: forking the live brain (dozens of
+        #: ONNX Runtime / fastembed threads) copies locks held by threads that
+        #: don't exist in the child, and the retrain deadlocked on one.
+        self._ctx = multiprocessing.get_context("spawn")
         self._proc: multiprocessing.Process | None = None
         self._queue: "multiprocessing.Queue | None" = None
 
@@ -45,8 +49,8 @@ class RetrainWorker:
         # tuple so the worker process doesn't need to import jarvis.nlu.corpus
         # before jarvis itself is on its sys.path.
         payload = [(e.text, e.label, e.source) for e in examples]
-        self._queue = multiprocessing.Queue()
-        self._proc = multiprocessing.Process(
+        self._queue = self._ctx.Queue()
+        self._proc = self._ctx.Process(
             target=_worker_entry,
             args=(payload, embedding_model, str(out_dir), self._queue),
             daemon=True,

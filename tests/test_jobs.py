@@ -403,3 +403,37 @@ def test_declined_permission_still_ends_the_flow_immediately():
     assert outcome.reason == "permission declined"
     assert len(channel.questions) == 1
     assert sandbox.calls == []
+
+
+class StdoutFailingSandbox:
+    """Fails like real pytest does: the report is on stdout, stderr is empty."""
+
+    def __init__(self, fail_times=1):
+        self.fail_times = fail_times
+        self.calls = []
+
+    def run_tests(self, module_path, test_path, permissions):
+        self.calls.append(("run_tests", module_path))
+        if len([c for c in self.calls if c[0] == "run_tests"]) <= self.fail_times:
+            return SandboxResult(
+                ok=False,
+                stdout="E   ImportError: cannot import name 'coin_flip' from 'jarvis.skills'",
+                stderr="",
+                returncode=2,
+            )
+        return SandboxResult(ok=True, stdout="1 passed", stderr="", returncode=0)
+
+    def dry_run(self, module_path, params, permissions):
+        self.calls.append(("dry_run", module_path))
+        return SandboxResult(ok=True, stdout="", stderr="", returncode=0)
+
+
+def test_sandbox_failure_feedback_carries_pytest_stdout():
+    """Known issue #1: pytest prints failures to stdout, so feeding back only
+    stderr handed Claude an empty error and every retry was blind."""
+    channel = Channel()
+    generate = sequence(module(), module())
+    job = make_job(teach_request(), channel=channel, generate=generate, sandbox=StdoutFailingSandbox())
+    outcome = asyncio.run(job.run())
+    assert outcome.accepted
+    assert "cannot import name 'coin_flip'" in generate.calls[1]
