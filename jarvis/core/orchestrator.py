@@ -109,6 +109,7 @@ class Orchestrator:
         sandbox=None,
         train_and_load=None,
         allow_shutdown: bool = True,
+        knowledge=None,
     ) -> None:
         self.config = config
         #: False under `serve`: the brain is a server, and "shut down" said to
@@ -146,6 +147,10 @@ class Orchestrator:
         self._decisions: list[_Decision] = []
         self._in_session = False
         self._idle_task: asyncio.Task | None = None
+        # M5: the knowledge base (or None when it is off). Skills reach it
+        # through the registry; the orchestrator only runs its re-scan task.
+        self.knowledge = knowledge
+        self._knowledge_task: asyncio.Task | None = None
 
         # Optional mid-command interrupt (Enter, and off-by-default voice
         # barge-in). Self-contained utility — see jarvis/core/interrupt.py.
@@ -907,6 +912,8 @@ class Orchestrator:
         self.mic.start()
         self._interrupter.install()
         self._idle_task = asyncio.ensure_future(self._idle_loop())
+        if self.knowledge is not None:
+            self._knowledge_task = asyncio.ensure_future(self.knowledge.watch())
         try:
             while self.running:
                 self.state = "idle"
@@ -923,12 +930,14 @@ class Orchestrator:
                     self.standby = True
         finally:
             self.running = False
-            if self._idle_task is not None:
-                self._idle_task.cancel()
-                try:
-                    await self._idle_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+            # the re-scan waits for its worker thread before it is done
+            for task in (self._idle_task, self._knowledge_task):
+                if task is not None:
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        pass
             await self.cancel_learning()
             await self._interrupter.shutdown()
             self.mic.stop()

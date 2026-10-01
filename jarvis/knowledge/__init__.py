@@ -84,12 +84,15 @@ class Knowledge:
             )
 
     async def watch(self) -> None:
-        """The interval task: scan now, then every ``scan_interval_s``. The scan
-        itself runs in a worker thread — embedding must not stall a turn.
+        """The interval task: a scan every ``scan_interval_s``. (The startup
+        scan is done by whoever builds JARVIS, before it says it is ready.)
+        The scan itself runs in a worker thread — embedding must not stall a
+        turn.
 
         Cancelling stops the scan at the next file and waits for the worker,
         because a thread cannot be killed and must not outlive the loop."""
         while True:
+            await asyncio.sleep(self.settings.scan_interval_s)
             scan = asyncio.ensure_future(asyncio.to_thread(self.scan))
             try:
                 result = await asyncio.shield(scan)
@@ -102,7 +105,6 @@ class Knowledge:
                 raise
             except Exception:  # noqa: BLE001 - one bad scan must not end the watch
                 log.exception("knowledge scan failed")
-            await asyncio.sleep(self.settings.scan_interval_s)
 
     def close(self) -> None:
         self.store.close()

@@ -82,7 +82,12 @@ def test_paragraphs_are_chunks_of_their_own():
 
 def test_a_heading_stays_with_the_paragraph_under_it():
     text = "# Coffee machine\n\nDescale it every two months with citric acid.\n"
-    assert chunk(text) == ["# Coffee machine Descale it every two months with citric acid."]
+    assert chunk(text) == ["Coffee machine: Descale it every two months with citric acid."]
+
+
+def test_headings_stack_and_a_last_one_is_not_lost():
+    text = "# House\n\n## Coffee machine\n\nDescale it every two months.\n\n# Garden\n"
+    assert chunk(text) == ["House: Coffee machine: Descale it every two months.", "Garden"]
 
 
 def test_line_breaks_inside_a_paragraph_are_just_spaces():
@@ -294,7 +299,9 @@ def test_remember_and_scan_go_through_the_facade(tmp_path):
 
 # -- the interval task ------------------------------------------------------------
 
-def test_watch_scans_at_once_and_then_on_the_interval(tmp_path):
+def test_watch_rescans_on_the_interval(tmp_path):
+    """The startup scan is done before JARVIS says it is ready (`app`), so the
+    task waits one interval before its first."""
     kb = make_knowledge(tmp_path, scan_interval_s=0.05)
     kb.docs_dir.mkdir()
     (kb.docs_dir / "wifi.md").write_text("The wifi code is 1234.", encoding="utf-8")
@@ -302,7 +309,9 @@ def test_watch_scans_at_once_and_then_on_the_interval(tmp_path):
 
     async def scenario():
         task = asyncio.ensure_future(kb.watch())
-        for _ in range(200):  # the startup scan
+        await asyncio.sleep(0)
+        assert kb.store.stats()["files"] == 0  # not before the interval is up
+        for _ in range(200):
             if kb.store.stats()["files"] == 1:
                 break
             await asyncio.sleep(0.01)
@@ -334,7 +343,7 @@ def test_cancelling_watch_mid_scan_waits_for_the_worker_and_stops_it(tmp_path):
         assert release.wait(10)
         return fake(texts)
 
-    kb = make_knowledge(tmp_path, slow_embed, scan_interval_s=60)
+    kb = make_knowledge(tmp_path, slow_embed, scan_interval_s=0.01)
     kb.docs_dir.mkdir()
     for name in ("a.md", "b.md", "c.md"):
         (kb.docs_dir / name).write_text(f"note {name} about something", encoding="utf-8")

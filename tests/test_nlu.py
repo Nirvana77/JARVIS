@@ -128,6 +128,9 @@ def test_knowledge_intents_classify_and_leave_search_alone(trained_with_builtins
         label, conf = clf.predict(text)
         assert label == expected, f"{text!r} -> {label} ({conf:.2f})"
         assert conf >= clf.threshold
+    # the new intents' frames must not be so loose that junk lands in them
+    for junk in ("asdf qwer zxcv", "blorp gnnn wibble frotz"):
+        assert clf.predict(junk)[0] == UNKNOWN
 
 
 def test_gibberish_is_unknown(trained):

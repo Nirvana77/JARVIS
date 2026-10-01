@@ -94,23 +94,26 @@ def chunk(text: str, max_chars: int = 800, overlap: int = 100) -> list[str]:
     """Split ``text`` into chunks worth retrieving on their own.
 
     A paragraph is a chunk: one note per paragraph comes back as that note. A
-    markdown heading is kept with the paragraph under it. Only a paragraph
-    longer than ``max_chars`` is split, on sentence boundaries, with
-    ``overlap`` characters carried between neighbours.
+    markdown heading is kept with the paragraph under it, as "Heading: text" —
+    it says what the paragraph is about, and its ``#`` marks are not for
+    speaking. Only a paragraph longer than ``max_chars`` is split, on sentence
+    boundaries, with ``overlap`` characters carried between neighbours.
     """
     paragraphs = [" ".join(p.split()) for p in _PARAGRAPH.split(text)]
     paragraphs = [p for p in paragraphs if p]
 
     merged: list[str] = []
-    heading = ""
+    headings: list[str] = []
     for paragraph in paragraphs:
         if paragraph.startswith("#") and len(paragraph) < max_chars // 2:
-            heading = f"{heading} {paragraph}".strip()
+            title = paragraph.lstrip("#").strip()
+            if title:
+                headings.append(title)
             continue
-        merged.append(f"{heading} {paragraph}".strip())
-        heading = ""
-    if heading:
-        merged.append(heading)
+        merged.append(": ".join(headings + [paragraph]))
+        headings = []
+    if headings:
+        merged.append(": ".join(headings))
 
     chunks: list[str] = []
     for paragraph in merged:

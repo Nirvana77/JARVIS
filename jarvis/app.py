@@ -14,6 +14,7 @@ import json
 import logging
 from pathlib import Path
 
+from jarvis import knowledge as knowledge_base
 from jarvis.config import Config
 from jarvis.core.orchestrator import Orchestrator
 from jarvis.core.persona import Persona
@@ -71,6 +72,37 @@ def load_classifier(config: Config) -> Classifier:
     )
 
 
+# -- M5: the knowledge base ---------------------------------------------------
+
+def _knowledge_summary(knowledge) -> str:
+    stats = knowledge.store.stats()
+    return (
+        f"{stats['files']} file(s), {stats['facts']} remembered fact(s), "
+        f"{stats['chunks']} chunk(s) · index: {stats['backend']}"
+    )
+
+
+def build_knowledge(config: Config):
+    """The knowledge base, brought in line with the docs folder *before* JARVIS
+    says it is ready — so the first question is asked of a current index, and a
+    first-run embedding of a large folder happens visibly here, not silently
+    behind the first few turns. Later changes are picked up by the interval
+    task the orchestrator runs (`Knowledge.watch`). ``None`` when it is off."""
+    knowledge = knowledge_base.build(config)
+    if knowledge is None:
+        print("· knowledge base: off", flush=True)
+        return None
+    print(f"· knowledge base ({knowledge.docs_dir})", flush=True)
+    try:
+        result = knowledge.scan()
+        changed = f" · {result.summary()}" if result.changed else ""
+        print(f"  {_knowledge_summary(knowledge)}{changed}", flush=True)
+    except Exception as exc:  # noqa: BLE001 - JARVIS still starts without it
+        log.warning("knowledge scan failed: %s", exc)
+        print(f"  ! could not scan it: {exc}", flush=True)
+    return knowledge
+
+
 # -- full assembly --------------------------------------------------------
 
 def build_orchestrator(config: Config) -> Orchestrator:
@@ -96,7 +128,8 @@ def build_orchestrator(config: Config) -> Orchestrator:
             flush=True,
         )
 
-    registry = Registry.discover(config, reasoner, say=tts.say)
+    knowledge = build_knowledge(config)
+    registry = Registry.discover(config, reasoner, say=tts.say, knowledge=knowledge)
     print("· NLU model", flush=True)
     ensure_nlu(config, registry)
     nlu = load_classifier(config)
@@ -155,6 +188,7 @@ def build_orchestrator(config: Config) -> Orchestrator:
         intent_meta=intent_meta(),
         claude_client=claude_client,
         sandbox=sandbox,
+        knowledge=knowledge,
     )
 
 
@@ -172,7 +206,8 @@ def build_text_orchestrator(config: Config, lines: list[str] | None = None) -> O
     persona = Persona.load(config.persona.active, config, reasoner)
     tts = TextTTS()
 
-    registry = Registry.discover(config, reasoner, say=tts.say)
+    knowledge = build_knowledge(config)
+    registry = Registry.discover(config, reasoner, say=tts.say, knowledge=knowledge)
     ensure_nlu(config, registry)
     nlu = load_classifier(config)
 
@@ -200,6 +235,7 @@ def build_text_orchestrator(config: Config, lines: list[str] | None = None) -> O
         intent_meta=intent_meta(),
         claude_client=claude_client,
         sandbox=sandbox,
+        knowledge=knowledge,
     )
     text_io.on_exhausted = orchestrator.stop
     return orchestrator
@@ -220,7 +256,10 @@ def build_server_orchestrator(config: Config, link, edges=None) -> Orchestrator:
     if getattr(link.voder, "voice", None) is None and persona.voice:
         link.voder.voice = persona.voice
 
-    registry = Registry.discover(config, reasoner, say=link.say, edges=edges)
+    knowledge = build_knowledge(config)
+    registry = Registry.discover(
+        config, reasoner, say=link.say, edges=edges, knowledge=knowledge
+    )
     print("· NLU model", flush=True)
     ensure_nlu(config, registry)
     nlu = load_classifier(config)
@@ -249,6 +288,7 @@ def build_server_orchestrator(config: Config, link, edges=None) -> Orchestrator:
         intent_meta=intent_meta(),
         claude_client=claude_client,
         sandbox=sandbox,
+        knowledge=knowledge,
         # A server: "shut down" from the watch stands by, it does not stop the
         # brain (Ctrl-C / systemd still do).
         allow_shutdown=False,
@@ -584,6 +624,11 @@ def selftest(config: Config) -> int:
     print(f"  reasoner       : {'ollama:' + reasoner.model if reasoner.available else 'none (plain phrasing)'}")
     print(f"  factory        : {'claude:' + claude_client.model if claude_client.available else 'unavailable (no API key)'}")
     print(f"  sandbox        : net-isolation {'yes' if sandbox.net_isolated else 'no (unshare unavailable)'}")
+    knowledge = knowledge_base.build(config)
+    print(
+        "  knowledge      : "
+        + (f"{_knowledge_summary(knowledge)} · {knowledge.docs_dir}" if knowledge else "off")
+    )
 
     probes = [
         ("search black holes", "search"),
@@ -681,6 +726,33 @@ def nlu_rebuild(config: Config) -> int:
     kept = sorted(p.name for p in config.nlu_model_dir.glob("v*"))
     print(f"NLU retrained -> v{result.version} "
           f"({result.n_examples} examples, accuracy={result.accuracy}); kept {kept}")
+    return 0
+
+
+def knowledge_command(config: Config, op: str) -> int:
+    """`python -m jarvis knowledge scan|status` — index the docs folder now
+    instead of waiting for the next interval, or see what is in the index."""
+    knowledge = knowledge_base.build(config)
+    if knowledge is None:
+        print("The knowledge base is off ([knowledge] enabled = false).")
+        return 1
+    if op == "scan":
+        result = knowledge.scan()
+        for label, names in (
+            ("added", result.added), ("updated", result.updated),
+            ("removed", result.removed), ("unreadable", result.failed),
+        ):
+            for name in names:
+                print(f"  {label:<10} {name}")
+        print(f"Scanned {knowledge.docs_dir}: {result.summary()}.")
+    else:
+        print(f"Docs folder : {knowledge.docs_dir}")
+        print(f"Database    : {config.knowledge_db_path}")
+        for path, kind, chunks, when in knowledge.store.sources():
+            if kind == "file":
+                print(f"  {chunks:>4} chunk(s)  {when:%Y-%m-%d %H:%M}  {path}")
+    print(f"Knowledge base: {_knowledge_summary(knowledge)}.")
+    knowledge.close()
     return 0
 
 
