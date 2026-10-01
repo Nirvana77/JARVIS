@@ -43,12 +43,15 @@ class Registry:
         reasoner=None,
         say: Callable[[str], None] | None = None,
         edges=None,
+        knowledge=None,
     ) -> None:
         self.config = config
         self.reasoner = reasoner
         self.say = say or (lambda text: print(f"Jarvis: {text}"))
         #: `EdgeControl` under `serve`, else None — handed to skills as ctx.edges
         self.edges = edges
+        #: M5: the knowledge base, or None when it is off — ctx.knowledge
+        self.knowledge = knowledge
         self._skills: dict[str, object] = {}
 
     # -- discovery ------------------------------------------------------------
@@ -61,8 +64,9 @@ class Registry:
         say: Callable[[str], None] | None = None,
         packages: tuple[str, ...] = DEFAULT_PACKAGES,
         edges=None,
+        knowledge=None,
     ) -> "Registry":
-        reg = cls(config, reasoner, say, edges)
+        reg = cls(config, reasoner, say, edges, knowledge)
         for package in packages:
             try:
                 pkg = importlib.import_module(package)
@@ -104,7 +108,9 @@ class Registry:
     def rebuilt(self) -> "Registry":
         """M2: a fresh registry that also picks up newly-promoted
         skills/learned/* modules (re-imports everything from scratch)."""
-        return Registry.discover(self.config, self.reasoner, self.say, edges=self.edges)
+        return Registry.discover(
+            self.config, self.reasoner, self.say, edges=self.edges, knowledge=self.knowledge
+        )
 
     # -- introspection -----------------------------------------------------
 
@@ -129,6 +135,7 @@ class Registry:
             _data_dir=self.config.skill_data_dir(name),
             llm=self.reasoner,
             edges=self.edges,
+            knowledge=self.knowledge,
         )
 
     def dispatch(self, label: str, params: dict | None = None) -> str:

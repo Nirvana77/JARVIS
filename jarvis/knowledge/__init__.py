@@ -15,6 +15,7 @@ import datetime as dt
 import logging
 import threading
 
+from jarvis.knowledge import answer as _answer
 from jarvis.knowledge import ingest
 from jarvis.knowledge.ingest import ScanResult
 from jarvis.knowledge.store import Hit, KnowledgeStore, fastembed_embedder
@@ -45,11 +46,30 @@ class Knowledge:
         hits = self.store.search(query, k=self.settings.top_k)
         return [h for h in hits if h.score >= floor]
 
+    def answer(self, question: str, llm=None, *, min_score: float | None = None) -> str | None:
+        """The line to speak in answer to ``question``, or ``None`` when the
+        knowledge base has nothing that clears the bar. ``llm`` is the local
+        reasoner, if any — never Claude."""
+        hits = self.search(question, min_score=min_score)
+        if not hits:
+            return None
+        return _answer.compose(question, hits, llm)
+
     # -- telling --------------------------------------------------------------
 
     def remember(self, text: str, when: dt.datetime | None = None) -> None:
         """A spoken fact, straight into the store — no file behind it."""
         self.store.add_fact(text.strip(), when)
+
+    def index_file(self, path) -> None:
+        """Index one file in ``docs_dir`` now, without waiting for a scan —
+        `note` uses it so a dictated note is recallable on the next turn."""
+        ingest.index_file(
+            self.store,
+            path,
+            chunk_chars=self.settings.chunk_chars,
+            chunk_overlap=self.settings.chunk_overlap,
+        )
 
     def scan(self) -> ScanResult:
         """Bring the store in line with ``docs_dir``. Blocking; call it from a

@@ -168,6 +168,13 @@ def _documents(docs_dir: Path) -> list[Path]:
     )
 
 
+def index_file(store, path: Path, *, chunk_chars: int = 800, chunk_overlap: int = 100) -> None:
+    """(Re)index one file. Raises if it cannot be read."""
+    path = Path(path)
+    current = digest(path)
+    store.replace_source(str(path), current, chunk(load_text(path), chunk_chars, chunk_overlap))
+
+
 def scan(
     store,
     docs_dir: Path,

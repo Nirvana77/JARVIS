@@ -72,7 +72,7 @@ MANIFEST = SkillManifest(
     description="Append a timestamped note to your notes file.",
     examples=[
         "note that the wifi code is 1234",
-        "remember that i parked on level three",
+        "write down buy milk on the way home",
         "make a note that the meeting moved to friday",
     ],
     params={"text": {"type": "string", "required": False}},
