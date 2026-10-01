@@ -67,6 +67,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--script", help="read a scripted conversation from this file instead of stdin"
     )
     sub.add_parser("serve", help="M3: run the brain, waiting for an audio edge")
+    notify = sub.add_parser(
+        "notify", help="show a notification on the watch, through the running brain"
+    )
+    notify.add_argument("text", nargs="+", help="what to show")
+    notify.add_argument("--device-id", help="which edge (default: the one with notify)")
     edge = sub.add_parser("edge", help="M3: run the audio satellite (mic + speaker only)")
     edge.add_argument("--server", help="override [edge] server_url")
     edge.add_argument("--device-id", help="override [edge] device_id")
@@ -116,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
         return app.run_text_mode(config, script_path=args.script)
     if args.command == "serve":
         return app.run_server_mode(config)
+    if args.command == "notify":
+        return app.notify(config, " ".join(args.text), args.device_id)
 
     try:
         orchestrator = app.build_orchestrator(config)

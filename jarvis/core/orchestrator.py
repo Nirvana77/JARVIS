@@ -442,7 +442,7 @@ class Orchestrator:
 
         # a skill
         self.state = "acting"
-        params = self._slot_extract(label, text)
+        params = self._params_for(label, text)
         try:
             line = await asyncio.to_thread(self.registry.dispatch, label, params)
         except KeyError:
@@ -454,6 +454,36 @@ class Orchestrator:
             return
         self.state = "speaking"
         await self._speak(self.persona.phrase(line))
+
+    def _params_for(self, label: str, text: str) -> dict:
+        """An edge tool declares typed params (``jarvis/skills/edge.py``) and
+        gets them by type; every other skill by its own slot rules."""
+        try:
+            manifest = self.registry.manifest(label)
+        except Exception:  # noqa: BLE001 — not a registered skill / a fake
+            manifest = None
+        if manifest is not None and manifest.origin == "edge":
+            return _slots.extract_typed(manifest.params, text)
+        return self._slot_extract(label, text)
+
+    async def refresh_skills(self) -> None:
+        """An edge declared new tools (``RemoteServer.on_tools_changed``):
+        retrain on a rebuilt registry and stage both for the merge gate, the
+        same way a learned skill lands. Nothing to ask, nothing to self-check:
+        the tools are the edge's, and a bad example list costs only them."""
+        registry = self._latest_registry().rebuilt()
+        examples = build_corpus(manifests=registry.manifests())
+        kind, payload = await self._train_and_load(examples)
+        if kind != "ok":
+            log.error("retrain for the edge's tools failed: %s", payload)
+            return
+        _train_result, classifier = payload
+        if self._staged is not None:
+            close = getattr(self._staged[0], "close", None)
+            if callable(close):
+                close()
+        self._staged = (classifier, registry)
+        log.info("edge tools learned; staged for the next safe point")
 
     def _action_for(self, label: str) -> str:
         meta = self.intent_meta.get(label)
