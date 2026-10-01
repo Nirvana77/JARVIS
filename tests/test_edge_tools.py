@@ -543,3 +543,42 @@ def test_a_missing_param_is_asked_for_and_the_answer_used(tmp_path):
         assert asked == []
 
     run(scenario())
+
+
+# -- names ("the pizza timer") -------------------------------------------------
+
+NAMED = {
+    "seconds": {"type": "duration"},
+    "name": {"type": "name"},
+    "label": {"type": "text"},
+}
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("set a pizza timer for 10 minutes", {"seconds": 600, "name": "pizza"}),
+        ("set a timer called pasta for 8 minutes", {"seconds": 480, "name": "pasta"}),
+        ("start a tea timer for 3 minutes", {"seconds": 180, "name": "tea"}),
+        ("set a 10 minute pizza timer", {"seconds": 600, "name": "pizza"}),
+        ("set a timer named egg for 6 minutes", {"seconds": 360, "name": "egg"}),
+        ("cancel the pizza timer", {"name": "pizza"}),
+        ("stop the timer called pasta", {"name": "pasta"}),
+        ("cancel the pasta sauce timer", {"name": "pasta sauce"}),
+        # no name: these are not names
+        ("set a timer for 5 minutes", {"seconds": 300}),
+        ("set a 3 minute timer", {"seconds": 180}),
+        ("cancel the timer", {}),
+        ("cancel my timer", {}),
+        ("cancel all timers", {}),
+        ("remind me in 20 minutes to take the pizza out", {"seconds": 1200, "label": "take the pizza out"}),
+    ],
+)
+def test_names(text, expected):
+    assert slots.extract_typed(NAMED, text) == expected
+
+
+def test_name_is_a_param_type_an_edge_may_declare():
+    tool = dict(TIMER, params={"name": {"type": "name"}})
+    ok, msg = P.validate_c2s(hello(tools=[tool]))
+    assert ok, msg

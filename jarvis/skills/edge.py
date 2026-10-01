@@ -30,6 +30,7 @@ ASK = {
     "duration": "How long, sir?",
     "number": "What number, sir?",
     "text": "What should it say, sir?",
+    "name": "What should I call it, sir?",
 }
 
 

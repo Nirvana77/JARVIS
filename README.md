@@ -269,7 +269,8 @@ phrases, typed params). The watch has `find_watch`, `set_timer`,
 examples. A new list, after new firmware, is learned in the background and
 swapped in at the next safe point, as a learned skill is. A tool's params are
 pulled out by type (`jarvis/nlu/slots.py` `extract_typed`): `duration` ("an
-hour and a half" → 5400 s), `number`, `text` (what follows "to" / "that" …).
+hour and a half" → 5400 s), `number`, `text` (what follows "to" / "that" …),
+`name` ("the **pizza** timer", "a timer called **pizza**").
 
 When one is said, the brain sends `call` {id, tool, args} and speaks the
 `say` of the edge's `result`. "Remind me in 20 minutes to take the pizza
