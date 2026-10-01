@@ -24,13 +24,16 @@ from __future__ import annotations
 import asyncio
 import hmac
 import ipaddress
+import itertools
 import json
 import logging
 import queue
 import ssl
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
+from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 
@@ -48,6 +51,7 @@ from jarvis.remote.addressing import (
 )
 from jarvis.remote.firmware import Firmware, FirmwareStore, refusal
 from jarvis.remote.intake import AudioIntake
+from jarvis.skills.edge import EdgeTools
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +67,16 @@ _AUTH_BACKOFF_MAX_S = 30.0
 
 #: `clientLog` lines are capped by the protocol; this is how many a minute.
 _CLIENT_LOG_PER_MIN = 30
+
+#: How long an edge has to answer a `call`. A tool does something quick and
+#: says so (the ringing, the timer itself, run on after the answer).
+CALL_TIMEOUT_S = 8.0
+#: The edge tool a notification goes to, and how many wait for an edge that
+#: is away (the oldest go first).
+NOTIFY_TOOL = "notify"
+NOTIFY_QUEUE = 20
+#: and how long one may be: it is shown on a watch
+MAX_NOTIFY_TEXT = 300
 
 
 class Cancelled(Exception):
@@ -117,6 +131,8 @@ class DeviceSession:
     fw: str | None = None
     #: an update asked for by voice, announced once the reply has played
     pending_ota: Firmware | None = None
+    #: `call`s sent and not yet answered: id -> the future its `result` resolves
+    calls: dict[str, asyncio.Future] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -131,6 +147,16 @@ class FirmwareUpdate:
     version: str = ""
     device_id: str = ""
     running: str = ""
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    """What a ``call`` to an edge tool came to: ``ok`` / ``failed`` (the edge
+    answered, ``say`` is its line), ``timeout``, ``offline`` (no edge, or it
+    went away), ``unsupported`` (the edge never declared that tool)."""
+
+    status: str
+    say: str = ""
 
 
 class EdgeControl:
@@ -155,6 +181,18 @@ class EdgeControl:
         except Exception:  # noqa: BLE001 — a timeout or a closing loop
             future.cancel()
             return FirmwareUpdate("offline")
+
+    def call(self, tool: str, args: dict) -> ToolResult:
+        """Run an edge tool (``jarvis/skills/edge.py``) and wait for its answer."""
+        loop = self._server.link._loop
+        if loop is None or not loop.is_running():
+            return ToolResult("offline")
+        future = asyncio.run_coroutine_threadsafe(self._server.call_tool(tool, args), loop)
+        try:
+            return future.result(CALL_TIMEOUT_S + self._timeout_s)
+        except Exception:  # noqa: BLE001 — a timeout or a closing loop
+            future.cancel()
+            return ToolResult("offline")
 
 
 # -- the link --------------------------------------------------------------
@@ -560,6 +598,14 @@ class RemoteServer:
         self.tokens = tokens if tokens is not None else dict(config.edge_tokens)
         self.firmware = FirmwareStore(config.firmware_dir)
         self.edges = EdgeControl(self)
+        #: what each edge said it can do (jarvis/skills/edge.py)
+        self.tools = EdgeTools(config.remote_dir)
+        #: called (on the loop) with the device id when an edge's tool list
+        #: changed — `serve` retrains the classifier then
+        self.on_tools_changed = None
+        #: notifications waiting for an edge that is away, per device
+        self.outbox: dict[str, deque[str]] = {}
+        self._call_ids = itertools.count(1)
         # Parsed here so a mistyped CIDR stops the brain at startup rather than
         # quietly disabling the thing that tells clients apart.
         self._trusted_networks = config.server.trusted_networks()
@@ -667,21 +713,14 @@ class RemoteServer:
         from websockets.datastructures import Headers
         from websockets.http11 import Response
 
-        if request.path.split("?", 1)[0] != P.FIRMWARE_PATH:
+        path = request.path.split("?", 1)[0]
+        if path not in (P.FIRMWARE_PATH, P.NOTIFY_PATH):
             return None
-        peer = self.client_key(connection)
-        self._prune_backoff()
-        if time.monotonic() < self._backoff.get(peer, 0.0):
-            return connection.respond(HTTPStatus.TOO_MANY_REQUESTS, "slow down\n")
-        device_id = request.headers.get("X-Jarvis-Device", "")
-        scheme, _, token = request.headers.get("Authorization", "").partition(" ")
-        if scheme.lower() != "bearer" or self._authorise(
-            {"device_id": device_id, "token": token.strip()}
-        ):
-            self._refused(peer, device_id or "?")
-            return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
-        self._backoff.pop(peer, None)
-        self._failures.pop(peer, None)
+        device_id, refusal = self._http_auth(connection, request)
+        if refusal is not None:
+            return refusal
+        if path == P.NOTIFY_PATH:
+            return await self._http_notify(connection, request, device_id)
 
         image = self.firmware.get(device_id)
         if image is None:
@@ -703,6 +742,106 @@ class RemoteServer:
             ]
         )
         return Response(200, "OK", headers, body)
+
+    def _http_auth(self, connection, request):
+        """``(device_id, None)``, or ``(None, the refusal to send)``: the
+        device's own token as ``Authorization: Bearer``, named by
+        ``X-Jarvis-Device``, with the WebSocket's per-address backoff."""
+        from http import HTTPStatus
+
+        peer = self.client_key(connection)
+        self._prune_backoff()
+        if time.monotonic() < self._backoff.get(peer, 0.0):
+            return None, connection.respond(HTTPStatus.TOO_MANY_REQUESTS, "slow down\n")
+        device_id = request.headers.get("X-Jarvis-Device", "")
+        scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+        if scheme.lower() != "bearer" or self._authorise(
+            {"device_id": device_id, "token": token.strip()}
+        ):
+            self._refused(peer, device_id or "?")
+            return None, connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
+        self._backoff.pop(peer, None)
+        self._failures.pop(peer, None)
+        return device_id, None
+
+    async def _http_notify(self, connection, request, device_id: str):
+        """``GET /notify?text=...``: a notification for that device's edge
+        (``python -m jarvis notify``). A GET, because this port speaks the
+        WebSocket handshake and nothing with a body."""
+        from http import HTTPStatus
+
+        query = parse_qs(urlsplit(request.path).query)
+        text = " ".join((query.get("text") or [""])[0].split())[:MAX_NOTIFY_TEXT]
+        if not text:
+            return connection.respond(HTTPStatus.BAD_REQUEST, "text= is empty\n")
+        status = await self.notify(text, device_id)
+        log.info("notify for %s: %s", device_id, status)
+        return connection.respond(HTTPStatus.OK, f"{status}\n")
+
+    # -- edge tools ----------------------------------------------------
+
+    async def call_tool(
+        self, tool: str, args: dict, *, timeout_s: float = CALL_TIMEOUT_S
+    ) -> ToolResult:
+        """Send ``call`` to the connected edge and wait for its ``result``."""
+        session = next(iter(self.sessions.values()), None)  # one edge per brain
+        if session is None:
+            return ToolResult("offline")
+        device_id = session.connection.device_id
+        if tool not in {t["name"] for t in self.tools.tools(device_id)}:
+            return ToolResult("unsupported")
+        call_id = f"c{next(self._call_ids)}"
+        future = asyncio.get_running_loop().create_future()
+        session.calls[call_id] = future
+        try:
+            if not await session.connection.send(P.call(call_id, tool, args)):
+                return ToolResult("offline")
+            log.info("call %s %s(%s) on %s", call_id, tool, args, device_id)
+            return await asyncio.wait_for(future, timeout_s)
+        except asyncio.TimeoutError:
+            log.warning("call %s %s: %s did not answer", call_id, tool, device_id)
+            return ToolResult("timeout")
+        finally:
+            session.calls.pop(call_id, None)
+
+    def _result(self, session: DeviceSession, msg: dict) -> None:
+        future = session.calls.get(msg["id"])
+        if future is None or future.done():
+            log.debug("result %s: nobody is waiting for it", msg["id"])
+            return
+        future.set_result(ToolResult("ok" if msg["ok"] else "failed", say=msg.get("say", "")))
+
+    def _notify_device(self) -> str | None:
+        """The device a notification is for when nobody said: the one that
+        declared ``notify``, else the only one there is."""
+        for device_id in self.tools.devices():
+            if any(t["name"] == NOTIFY_TOOL for t in self.tools.tools(device_id)):
+                return device_id
+        return next(iter(self.tokens), None)
+
+    async def notify(self, text: str, device_id: str | None = None) -> str:
+        """Show ``text`` on the edge: ``sent``, ``queued`` (it is away; it
+        gets it when it connects), or ``unsupported`` (it has no ``notify``)."""
+        device_id = device_id or next(iter(self.sessions), None) or self._notify_device()
+        if device_id is None:
+            return "unsupported"
+        if device_id in self.sessions:
+            result = await self.call_tool(NOTIFY_TOOL, {"text": text})
+            if result.status in ("ok", "failed"):
+                return "sent"
+            if result.status == "unsupported":
+                return "unsupported"
+        self.outbox.setdefault(device_id, deque(maxlen=NOTIFY_QUEUE)).append(text)
+        return "queued"
+
+    async def _deliver_outbox(self, session: DeviceSession) -> None:
+        """What was notified while the edge was away, oldest first."""
+        queue = self.outbox.get(session.connection.device_id)
+        while queue and self.sessions.get(session.connection.device_id) is session:
+            result = await self.call_tool(NOTIFY_TOOL, {"text": queue[0]})
+            if result.status not in ("ok", "failed"):
+                break  # gone again, or no notify: keep the rest
+            queue.popleft()
 
     # -- firmware, on request (the update_watch skill) --------------------
 
@@ -800,6 +939,9 @@ class RemoteServer:
             fw=msg.get("fw"),
         )
         self.sessions[device_id] = session
+        if msg.get("tools") is not None and self.tools.save(device_id, msg["tools"]):
+            if self.on_tools_changed is not None:
+                self.on_tools_changed(device_id)
         self.link.bind_loop()
         self.link.connect(connection)
         session.task = asyncio.ensure_future(self._hold_loop(session))
@@ -810,6 +952,9 @@ class RemoteServer:
         if image is not None:
             log.info("edge %s runs %s; offering firmware %s", device_id, msg["fw"], image.version)
             await connection.send(P.event("ota", image.announcement(P.FIRMWARE_PATH)))
+        if self.outbox.get(device_id):
+            # Not awaited here: the answers come in through the loop below.
+            asyncio.ensure_future(self._deliver_outbox(session))
 
         intake = AudioIntake(
             lambda pcm: asyncio.to_thread(self.transcriber.transcribe_full, pcm),
@@ -827,6 +972,9 @@ class RemoteServer:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
             session.window.clear()
+            for future in session.calls.values():
+                if not future.done():
+                    future.set_result(ToolResult("offline"))
             # A reconnect registers its new session before this (replaced)
             # socket's cleanup gets here: only remove our own.
             if self.sessions.get(device_id) is session:
@@ -869,6 +1017,9 @@ class RemoteServer:
             return
         if kind == P.C2S.CONTROL:
             await self._control(session, msg["action"], msg.get("args") or {})
+            return
+        if kind == P.C2S.RESULT:
+            self._result(session, msg)
             return
 
     async def _control(self, session: DeviceSession, action: str, args: dict) -> None:

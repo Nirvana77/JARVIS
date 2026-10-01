@@ -3,7 +3,8 @@
 Replaces the dynamic ``importlib.import_module(f'actions.{action}')`` in
 ``command_helper``. Each module under ``jarvis.skills.builtin`` (and, since M2,
 ``jarvis.skills.learned``) that exposes a ``MANIFEST`` and a ``run`` is
-registered under ``MANIFEST.name``; the intent label is that name. ``dispatch``
+registered under ``MANIFEST.name``; the intent label is that name. So is every
+tool an edge has declared (``jarvis.skills.edge``, origin ``edge``). ``dispatch``
 builds the :class:`Context` and calls ``run``.
 """
 
@@ -90,6 +91,13 @@ class Registry:
                 if manifest.name in reg._skills:
                     log.warning("duplicate skill name %r (%s)", manifest.name, info.name)
                 reg._skills[manifest.name] = mod
+        # What the edges said they can do (jarvis/skills/edge.py), kept on
+        # disk, so they are skills — and trained — even while the edge is away.
+        from jarvis.skills.edge import EdgeTools, edge_skills
+
+        store = EdgeTools(config.remote_dir)
+        for skill in edge_skills(store, reserved=frozenset(reg._skills)):
+            reg._skills[skill.MANIFEST.name] = skill
         log.info("registered skills: %s", ", ".join(sorted(reg._skills)))
         return reg
 

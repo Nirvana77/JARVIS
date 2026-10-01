@@ -259,6 +259,36 @@ firmware", or "isn't connected"). The `ota` event goes out once that answer has
 finished playing, so the download does not start while JARVIS is still
 speaking.
 
+### Edge tools: things the edge can do
+
+An edge can list its own tools in `hello` (`tools`: name, description, example
+phrases, typed params). The watch has `find_watch`, `set_timer`,
+`cancel_timers` and `notify`. The brain keeps the list in
+`data/remote/tools/<device_id>.json` and registers each tool as a skill
+(origin `edge`, `jarvis/skills/edge.py`). The classifier learns a tool from its
+examples. A new list, after new firmware, is learned in the background and
+swapped in at the next safe point, as a learned skill is. A tool's params are
+pulled out by type (`jarvis/nlu/slots.py` `extract_typed`): `duration` ("an
+hour and a half" → 5400 s), `number`, `text` (what follows "to" / "that" …).
+
+When one is said, the brain sends `call` {id, tool, args} and speaks the
+`say` of the edge's `result`. "Remind me in 20 minutes to take the pizza
+out" → `set_timer(seconds=1200, label="take the pizza out")` → "I'll remind
+you in 20 minutes to take the pizza out." A tool cannot take the name of a
+builtin or learned skill. While the edge is away its tools still exist and
+answer "The watch isn't connected."
+
+**Notifications** come from outside a conversation:
+
+```bash
+python -m jarvis notify "The build is done"        # on the brain's machine
+make && python -m jarvis notify "Build done"       # at the end of a long job
+```
+
+This is `GET /notify?text=...` on the brain's port, with the device's token
+(the same auth and backoff as `/firmware`). The edge's `notify` tool shows it.
+If the edge is away it is queued (the last 20) and delivered when it connects.
+
 ### Over the internet, with a Cloudflare Tunnel
 
 The recommended shape: no certificate, no open port, no port-forwarding.
