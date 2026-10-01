@@ -10,6 +10,11 @@ each mode, the restarts and their reasons, and the drops.
 Drain is the battery voltage's fall per hour between consecutive rows on
 battery (not charging, no USB) in the same mode: a voltage, not a current, but
 comparable between modes and days, and it needs no meter.
+
+Current is an estimate too: the watch's PMU (AXP2101) measures no current, so
+it is the fuel gauge's fall on battery times the cell's capacity (BATTERY_MAH).
+One percent is 4 mAh, so it needs a while in a mode to mean anything: under
+10 minutes or under 1 % it is not given at all.
 """
 
 from __future__ import annotations
@@ -29,6 +34,12 @@ MODES = ("awake", "watch", "offline")
 _MODE_NAME = {"awake": "awake", "watch": "watch mode", "offline": "offline"}
 #: two rows further apart than this are not one stretch (a reboot, a gap)
 _MAX_STEP_S = 60
+#: the watch's cell (3.7 V LiPo); what turns the gauge's % into mAh
+BATTERY_MAH = 400
+#: a current estimate needs at least this much on battery in the mode...
+_MIN_CURRENT_S = 600
+#: ...and the gauge to have moved this many percent
+_MIN_CURRENT_PCT = 1
 _BOOT_RE = re.compile(r"^boot \(([^)]*)\)")
 
 
@@ -53,6 +64,8 @@ class ModeStats:
     asleep_s: float = 0.0     # sleep_pct-weighted
     drop_mv: float = 0.0      # battery voltage lost while on battery
     battery_s: float = 0.0    # and over how long
+    drop_pct: float = 0.0     # the gauge's fall while on battery
+    gauge_s: float = 0.0      # and over how long
 
     @property
     def sleep_pct(self) -> float | None:
@@ -61,6 +74,13 @@ class ModeStats:
     @property
     def mv_per_h(self) -> float | None:
         return 3600.0 * self.drop_mv / self.battery_s if self.battery_s >= 60 else None
+
+    def ma(self, capacity_mah: float = BATTERY_MAH) -> float | None:
+        """Average current in this mode, estimated from the gauge; None when
+        there is too little to go on."""
+        if self.gauge_s < _MIN_CURRENT_S or self.drop_pct < _MIN_CURRENT_PCT:
+            return None
+        return self.drop_pct / 100.0 * capacity_mah / (self.gauge_s / 3600.0)
 
 
 @dataclass(frozen=True)
@@ -167,6 +187,10 @@ def summarize(rows: list[Row]) -> Summary:
             if on_battery and prev.mode == row.mode and row.batt_mv and prev.batt_mv:
                 stats.drop_mv += prev.batt_mv - row.batt_mv
                 stats.battery_s += step
+            if (on_battery and prev.mode == row.mode and row.batt_pct is not None
+                    and prev.batt_pct is not None and row.batt_pct >= 0 and prev.batt_pct >= 0):
+                stats.drop_pct += prev.batt_pct - row.batt_pct
+                stats.gauge_s += step
         prev = row
     return s
 
@@ -183,7 +207,7 @@ def report(s: Summary, title: str = "") -> str:
     lines = []
     if title:
         lines.append(f"{title} ({_duration(total)} logged)")
-    lines.append(f"{'mode':<9}{'time':>9}{'share':>7}{'asleep':>8}{'drain':>12}")
+    lines.append(f"{'mode':<9}{'time':>9}{'share':>7}{'asleep':>8}{'drain':>12}{'~current':>10}")
     for mode in MODES:
         m = s.modes[mode]
         if not m.seconds:
@@ -192,7 +216,9 @@ def report(s: Summary, title: str = "") -> str:
         share = 100.0 * m.seconds / total
         sleep = f"{m.sleep_pct:.0f}%"
         drain = f"{m.mv_per_h:.0f} mV/h" if m.mv_per_h is not None else "-"
-        lines.append(f"{mode:<9}{_duration(m.seconds):>9}{share:>6.0f}%{sleep:>8}{drain:>12}")
+        ma = m.ma()
+        current = f"{ma:.0f} mA" if ma is not None else "-"
+        lines.append(f"{mode:<9}{_duration(m.seconds):>9}{share:>6.0f}%{sleep:>8}{drain:>12}{current:>10}")
     battery = "battery: "
     if s.first_pct is not None:
         battery += f"{s.first_pct}% -> {s.last_pct}%"
@@ -203,6 +229,8 @@ def report(s: Summary, title: str = "") -> str:
     if s.boots:
         lines.append("restarts: " + ", ".join(f"{b.time.split(' ')[-1]} {b.reason}" for b in s.boots))
     lines.append(f"Wi-Fi drops: {s.wifi_drops}, link drops: {s.link_drops}")
+    lines.append(f"~current: from the gauge's fall on battery ({BATTERY_MAH} mAh cell), "
+                 f"once a mode has {_MIN_CURRENT_S // 60} min and {_MIN_CURRENT_PCT}% of it")
     return "\n".join(lines)
 
 
@@ -219,7 +247,9 @@ def spoken(s: Summary) -> str:
     lines = ["Today the watch was " + (", ".join(parts[:-1]) + " and " + parts[-1] if len(parts) > 1 else parts[0]) + " of the time."]
     watch = s.modes["watch"]
     if watch.seconds and watch.sleep_pct is not None:
-        lines.append(f"In watch mode it slept {watch.sleep_pct:.0f}% of the time.")
+        ma = watch.ma()
+        drawing = f", drawing about {ma:.0f} mA" if ma is not None else ""
+        lines.append(f"In watch mode it slept {watch.sleep_pct:.0f}% of the time{drawing}.")
     if s.last_pct is not None:
         lines.append(
             f"The battery is at {s.last_pct}%" + (" and charging." if s.charging_now else ".")
