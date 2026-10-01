@@ -137,6 +137,34 @@ class FactoryConfig:
 
 
 @dataclass(frozen=True)
+class KnowledgeConfig:
+    """M5: the local knowledge base — documents in ``docs_dir`` and spoken
+    facts, embedded into ``data/knowledge/kb.sqlite``. Claude is never involved
+    in answering from it."""
+
+    enabled: bool = True
+    #: `.txt` / `.md` / `.pdf` files here are indexed at startup and re-scanned
+    #: every `scan_interval_s`. Not created until something is written to it.
+    docs_dir: str = "~/jarvis/knowledge"
+    scan_interval_s: float = 60.0
+    #: chunks handed to the reasoner to compose an answer from
+    top_k: int = 4
+    #: cosine similarity below which a chunk is not an answer at all
+    min_score: float = 0.3
+    #: the higher bar a chunk must clear to answer a "what is ..." that would
+    #: otherwise go to Wikipedia — a loosely related note must not win there
+    search_min_score: float = 0.6
+    #: chunk size and the overlap carried between neighbours, in characters
+    chunk_chars: int = 800
+    chunk_overlap: int = 100
+
+    @property
+    def docs_path(self) -> Path:
+        path = Path(self.docs_dir).expanduser()
+        return path if path.is_absolute() else (_REPO_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
 class ServerConfig:
     """M3: ``python -m jarvis serve`` — the brain's WebSocket listener.
 
@@ -298,6 +326,7 @@ class Config:
     nlu: NLUConfig = field(default_factory=NLUConfig)
     reasoner: ReasonerConfig = field(default_factory=ReasonerConfig)
     factory: FactoryConfig = field(default_factory=FactoryConfig)
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     # M3: the remote-edge split. Unused by the all-in-one path.
     server: ServerConfig = field(default_factory=ServerConfig)
     whisper: WhisperConfig = field(default_factory=WhisperConfig)
@@ -333,6 +362,11 @@ class Config:
     @property
     def corpus_path(self) -> Path:
         return self.data_dir / "nlu" / "corpus.sqlite"
+
+    @property
+    def knowledge_db_path(self) -> Path:
+        """M5: chunks, their embeddings and the vector index, in one file."""
+        return self.data_dir / "knowledge" / "kb.sqlite"
 
     def skill_data_dir(self, name: str) -> Path:
         return self.data_dir / "skills" / name
@@ -422,6 +456,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     nlu = _section(raw, "nlu")
     reasoner = _section(raw, "reasoner")
     factory = _section(raw, "factory")
+    knowledge = _section(raw, "knowledge")
     paths = _section(raw, "paths")
     # M3
     server = _section(raw, "server")
@@ -496,6 +531,16 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             sandbox_mem_mb=int(factory.get("sandbox_mem_mb", 512)),
             sandbox_cpu_s=int(factory.get("sandbox_cpu_s", 5)),
             max_generate_attempts=int(factory.get("max_generate_attempts", 5)),
+        ),
+        knowledge=KnowledgeConfig(
+            enabled=bool(knowledge.get("enabled", True)),
+            docs_dir=str(knowledge.get("docs_dir", "~/jarvis/knowledge")),
+            scan_interval_s=float(knowledge.get("scan_interval_s", 60.0)),
+            top_k=int(knowledge.get("top_k", 4)),
+            min_score=float(knowledge.get("min_score", 0.3)),
+            search_min_score=float(knowledge.get("search_min_score", 0.6)),
+            chunk_chars=int(knowledge.get("chunk_chars", 800)),
+            chunk_overlap=int(knowledge.get("chunk_overlap", 100)),
         ),
         server=ServerConfig(
             host=str(server.get("host", "0.0.0.0")),

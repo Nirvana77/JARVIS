@@ -108,10 +108,19 @@ enabled = true
 docs_dir = "~/jarvis/knowledge"
 scan_interval_s = 60
 top_k = 4
-min_score = 0.35
+min_score = 0.3
+search_min_score = 0.6
 chunk_chars = 800
 chunk_overlap = 100
 ```
+
+The two bars are measured, not guessed (MiniLM, a nine-chunk store): a real
+recall question scores 0.60–0.84 against its note and 0.33–0.37 when only the
+topic matches ("what does the manual say about descaling"); an unrelated
+question tops out at 0.27. So `min_score = 0.3` for `recall`, where the user
+asked for their notes. `search` uses the stricter `search_min_score = 0.6`
+before it takes a "what is …" away from Wikipedia, because a one-word topic
+that merely appears in a note ("python", "coffee") scores 0.47–0.55.
 
 `[knowledge] enabled = false` leaves `ctx.knowledge` as `None`; the skills say
 so instead of failing.
