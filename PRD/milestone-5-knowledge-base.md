@@ -1,6 +1,6 @@
 # Milestone 5 — knowledge base (RAG): plan
 
-**Status:** In progress
+**Status:** Implemented — see `PRD/milestone-5-knowledge-base-outcome.md`
 **Date:** 2026-10-01
 **Owner:** Kevin Lundell
 **Builds on:** Milestones 1–3. Milestone 4 (misheard-command reasoning) is not
@@ -68,8 +68,17 @@ files are re-chunked, removed files are dropped, spoken facts are never
 touched by a scan. Cancelling the task stops the scan at the next file and
 waits for the worker, so no thread outlives the orchestrator.
 
-Nothing is created at startup: a missing `docs_dir` scans as empty and
-`kb.sqlite` is only created by the first write.
+The **startup** scan is not the task's: the builders in `jarvis/app.py` run it
+before JARVIS says it is ready, so the first question is asked of a current
+index and a first-run embedding of a large folder is visible. The task then
+waits one interval before its first scan.
+
+Nothing is created at startup: `kb.sqlite` is only created by the first
+write, and the docs folder by the first dictated note. A docs folder that is
+missing or cannot be listed is **not** an empty folder — what was indexed from
+it is kept (a drive that dropped out must not cost a full re-embed). A file
+that cannot be read keeps what was last indexed from it and is retried when it
+changes.
 
 ### 5. Skills reach the knowledge base through `ctx.knowledge`
 
@@ -92,7 +101,9 @@ the `intents.json` seed pattern), as the PRD specifies.
 
 - **Ollama up** → one `ctx.llm.generate` call over the top-k chunks, told to
   answer only from the excerpts and name the source. An error or an empty reply
-  falls through to the next tier.
+  falls through to the next tier. If the excerpts do not hold the answer it
+  replies `NO_ANSWER`, which is "nothing on that" — so `search` goes on to
+  Wikipedia.
 - **Otherwise** → `From your notes, sir: <best snippet> — from <source>.` The
   source is the file name, or "what you told me on <date>" for a spoken fact.
 
@@ -108,19 +119,28 @@ enabled = true
 docs_dir = "~/jarvis/knowledge"
 scan_interval_s = 60
 top_k = 4
-min_score = 0.3
+min_score = 0.48
 search_min_score = 0.6
 chunk_chars = 800
 chunk_overlap = 100
 ```
 
-The two bars are measured, not guessed (MiniLM, a nine-chunk store): a real
-recall question scores 0.60–0.84 against its note and 0.33–0.37 when only the
-topic matches ("what does the manual say about descaling"); an unrelated
-question tops out at 0.27. So `min_score = 0.3` for `recall`, where the user
-asked for their notes. `search` uses the stricter `search_min_score = 0.6`
-before it takes a "what is …" away from Wikipedia, because a one-word topic
-that merely appears in a note ("python", "coffee") scores 0.47–0.55.
+The two bars are measured, not guessed (MiniLM, the dry-run store: a manual,
+a note file, a few spoken facts — 24 questions):
+
+| Question | Best chunk | Score |
+|---|---|---|
+| answered by the notes ("how big is the water tank", "where did i park", "when do the bins go out") | the right one | 0.50 – 0.85 |
+| a bare topic word that is in the notes ("descaling") | the right one | 0.37 |
+| not in the notes, but shaped like something that is ("what's my locker number" against a note of the door code) | a wrong one | 0.40 – 0.45 |
+| not in the notes at all ("photosynthesis", "the router") | a wrong one | 0.11 – 0.31 |
+
+So `min_score = 0.48` for `recall`: a wrong answer read out with a source is
+worse than "I have nothing on that", and the first value tried (0.3) did answer
+the locker question with the door code in the dry run. `search` uses the
+stricter `search_min_score = 0.6` before it takes a "what is …" away from
+Wikipedia, because a one-word topic that merely appears in a note ("python",
+"coffee") scores 0.47 – 0.55.
 
 `[knowledge] enabled = false` leaves `ctx.knowledge` as `None`; the skills say
 so instead of failing.

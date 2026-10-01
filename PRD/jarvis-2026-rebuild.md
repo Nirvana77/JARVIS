@@ -586,7 +586,9 @@ skill name is likely to be misheard, verify the "did you mean" confirm fires
 and a "yes" correctly dispatches; without Ollama running, verify the exact
 same misheard command falls back to the current plain response.
 
-### Milestone 5 — knowledge base (RAG)
+### Milestone 5 — knowledge base (RAG) — ✅ DONE (2026-10-01)
+Plan: `PRD/milestone-5-knowledge-base.md`; outcome:
+`PRD/milestone-5-knowledge-base-outcome.md`. Taken before Milestone 4.
 - `knowledge/{store,ingest}.py`; recall intent → retrieve → compose (Ollama) or
   verbatim-snippet fallback; no Claude.
 - Ingestion: startup + interval scan of `knowledge.docs_dir`

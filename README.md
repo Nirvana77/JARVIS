@@ -119,10 +119,33 @@ python -m jarvis --selftest      # load NLU + persona, list skills, exit 0
 python -m jarvis mic             # live microphone meter, for tuning the VAD
 python -m jarvis serve           # the brain, waiting for an audio edge
 python -m jarvis edge            # the audio satellite
+python -m jarvis knowledge scan  # index the knowledge docs folder now
+python -m jarvis knowledge status  # what is indexed, and which search backend
 ```
 
 `./jarvis-run <args>` does the same thing using the repo's own virtualenv, from
 any directory.
+
+## Knowledge base: your own notes
+
+JARVIS answers from your own documents, locally. Put `.txt`, `.md` or `.pdf`
+files in `[knowledge] docs_dir` (default `~/jarvis/knowledge`); they are
+indexed at startup and re-scanned every `scan_interval_s`. Facts you say are
+kept too:
+
+- *"Remember that I parked on level three"* — stored as a remembered fact.
+- *"Where did I park?"*, *"What do my notes say about the boiler?"* — answered
+  from the notes and facts.
+- *"Note that the wifi code is 1234"* — also lands in
+  `<docs_dir>/dictated-notes.md`, so it is answerable on the next turn.
+- *"What is …"* checks your notes first (with a stricter match,
+  `search_min_score`), then Wikipedia.
+
+With a local Ollama reasoner the answer is composed from the best excerpts;
+without one, JARVIS reads the best excerpt and names its source (*"From your
+notes, sir: … — from boiler manual."*). Claude is never asked. The index is
+`data/knowledge/kb.sqlite`, searched with `sqlite-vec` when the extension loads
+and by brute force otherwise. `[knowledge] enabled = false` turns it all off.
 
 ## Remote edge: brain here, ears there
 

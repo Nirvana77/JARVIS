@@ -150,7 +150,7 @@ class KnowledgeConfig:
     #: chunks handed to the reasoner to compose an answer from
     top_k: int = 4
     #: cosine similarity below which a chunk is not an answer at all
-    min_score: float = 0.3
+    min_score: float = 0.48
     #: the higher bar a chunk must clear to answer a "what is ..." that would
     #: otherwise go to Wikipedia — a loosely related note must not win there
     search_min_score: float = 0.6
