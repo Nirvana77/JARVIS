@@ -27,8 +27,8 @@ log = logging.getLogger(__name__)
 Ask = Callable[[str], Awaitable[str]]
 Say = Callable[[str], Awaitable[None]]
 
-_YES = {"yes", "yeah", "yep", "sure", "confirm", "affirmative", "correct", "please do"}
-_NO = {"no", "nope", "don't", "do not", "negative", "cancel", "never mind", "stop"}
+_YES = {"yes", "yeah", "yep", "sure", "confirm", "affirmative", "correct", "please do", "keep"}
+_NO = {"no", "nope", "don't", "do not", "negative", "cancel", "never mind", "stop", "discard"}
 
 
 Versioning = Literal["new", "edit", "revert", "remove"]

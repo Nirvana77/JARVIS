@@ -659,3 +659,21 @@ def test_the_edge_is_told_about_standby_before_the_standby_line(tmp_path):
             await brain.stop()
 
     run(scenario())
+
+
+def test_the_link_names_the_edge_listening_now(tmp_path):
+    # The orchestrator sends a background job's lines to the device it was
+    # asked from; this is how it knows which one is there.
+    async def scenario():
+        brain = Brain(make_config(tmp_path), transcriber=FakeTranscriber())
+        await brain.start()
+        try:
+            assert brain.link.device_id is None
+            async with connected(brain):
+                assert brain.link.device_id == DEVICE
+            await asyncio.sleep(0.3)
+            assert brain.link.device_id is None
+        finally:
+            await brain.stop()
+
+    run(scenario())

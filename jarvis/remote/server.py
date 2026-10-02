@@ -323,6 +323,13 @@ class RemoteLink:
     def connection(self) -> EdgeConnection | None:
         return self._connection
 
+    @property
+    def device_id(self) -> str | None:
+        """The edge listening now: a background job's lines go to the one it
+        was asked from (the orchestrator's ``_device``)."""
+        connection = self._connection
+        return connection.device_id if connection is not None else None
+
     def connect(self, connection: EdgeConnection) -> None:
         self._connection = connection
         self._disconnected.clear()

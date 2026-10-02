@@ -291,6 +291,10 @@ def test_remove_skill_flow_refuses_a_skill_already_being_learned():
         ("no", False),
         ("no thanks", False),
         ("never mind", False),
+        # "Shall I keep it?" is answered in its own words, too
+        ("Keep it.", True),
+        ("don't keep it", False),
+        ("discard it", False),
         ("", None),
         ("what time is it", None),
         ("search black holes", None),
