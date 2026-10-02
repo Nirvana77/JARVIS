@@ -39,6 +39,59 @@ There **is** now a test suite (`python -m pytest`, `tests/`) covering
 `jarvis/` — the "There is no test suite" note further down is about the
 legacy code only.
 
+## One worktree and branch per conversation
+
+Every agent or Claude Code conversation that changes files does so in **its
+own git worktree, on its own branch** — never directly in the main checkout.
+Two conversations editing one tree overwrite each other's uncommitted work and
+leave a `git status` nobody can attribute; a worktree each keeps them apart,
+and keeps the main checkout runnable while the work is in progress. Do this
+first, before the first edit:
+
+```bash
+git worktree add ../JARVIS-<branch> -b <branch> develop   # short kebab-case: timer-names, ma-est
+cd ../JARVIS-<branch>
+```
+
+Claude Code's own worktree support (`claude --worktree <name>`, the
+`EnterWorktree` tool, `isolation: "worktree"` on a subagent) is the same thing
+and fine to use, provided the branch starts from `develop`. A conversation that
+only reads — a question, a review — needs neither.
+
+What does not come along, and will bite:
+
+- **Uncommitted work in the main checkout.** The branch starts from `develop`'s
+  last commit. If the task builds on changes that are not committed yet, say so
+  and ask, rather than copying files across by hand.
+- **The gitignored per-machine files**: `.env`, `config.toml`, `data/`, `.venv`.
+  `jarvis.config` resolves them from the checkout it runs in, so a bare
+  worktree has no secrets, no config, and re-downloads every model. Link them
+  from the main checkout:
+
+  ```bash
+  main=$(git worktree list --porcelain | head -1 | cut -d' ' -f2-)
+  ln -s "$main"/{.env,config.toml,data,.venv} .
+  echo /data >> "$(git rev-parse --git-common-dir)/info/exclude"   # once per clone
+  ```
+
+  The second line is there because `.gitignore`'s `data/` matches a directory
+  and a symlink is not one — without it the link shows up as untracked and a
+  `git add -A` commits it.
+
+  `data/` is then *shared*: a dry-run that teaches or learns writes to the real
+  install's corpus and skills. Copy it instead of linking when the work touches
+  what is stored there.
+
+What does come along is the repo-local git identity — worktrees share
+`.git/config` — so the authorship rule above holds unchanged; still check it
+before the first commit.
+
+When the work is done, commit it on the branch and report the branch name.
+Merging into `develop` is the owner's call (history uses
+`Merge branch '<branch>': <summary>`); once merged, `git worktree remove
+../JARVIS-<branch>`. Never remove a worktree that still has uncommitted changes
+without asking.
+
 ## Implementing PRD work
 
 Follow this order for any PRD/milestone item — don't skip or reorder steps:
