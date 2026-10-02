@@ -291,6 +291,10 @@ def test_remove_skill_flow_refuses_a_skill_already_being_learned():
         ("no", False),
         ("no thanks", False),
         ("never mind", False),
+        # "Shall I keep it?" is answered in its own words, too
+        ("Keep it.", True),
+        ("don't keep it", False),
+        ("discard it", False),
         ("", None),
         ("what time is it", None),
         ("search black holes", None),
@@ -319,6 +323,35 @@ def test_remove_skill_flow_refuses_a_skill_already_being_learned():
 def test_ask_yes_no_or_none(reply, expected):
     script = Script([reply])
     assert asyncio.run(ask_yes_no_or_none(script.ask, "Shall I keep it, sir?")) is expected
+
+
+@pytest.mark.parametrize(
+    "prompt, reply, expected",
+    [
+        # Dry run, 2026-10-02: "Forget 'I parked on level 2', sir?" ->
+        # "keep it" forgot it. Keep/discard words answer by what was asked.
+        ("Forget 'I parked on level 2', sir?", "keep it", False),
+        ("Forget 'I parked on level 2', sir?", "keep", False),
+        ("Forget 'I parked on level 2', sir?", "forget it", True),
+        ("Forget 'I parked on level 2', sir?", "discard it", True),
+        ("Forget everything you have asked me to remember, sir?", "keep it", False),
+        ("Remove the 'timer' skill for good, sir?", "get rid of it", True),
+        ("Remove the 'timer' skill for good, sir?", "keep it", False),
+        ("I've finished 'x', sir. Shall I keep it?", "keep it", True),
+        ("I've finished 'x', sir. Shall I keep it?", "discard it", False),
+        ("I've finished 'x', sir. Shall I keep it?", "forget it", False),
+        # a question about neither: keep/discard are no answer at all
+        ("Did you mean 'flip a coin', sir?", "keep it", None),
+        ("Did you mean 'flip a coin', sir?", "discard it", None),
+        # plain yes/no mean what they always meant
+        ("Forget 'I parked on level 2', sir?", "yes", True),
+        ("Forget 'I parked on level 2', sir?", "no", False),
+        ("Forget 'I parked on level 2', sir?", "don't", False),
+    ],
+)
+def test_keep_and_discard_answer_by_what_was_asked(prompt, reply, expected):
+    script = Script([reply])
+    assert asyncio.run(ask_yes_no_or_none(script.ask, prompt)) is expected
 
 
 def test_the_loose_check_did_not_gain_the_short_words():

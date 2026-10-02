@@ -666,3 +666,155 @@ def test_remove_declined_leaves_the_skill_in_place(rig):
     assert rig.o.learning_names() == set()  # declining never even starts a job
     assert "coin_flip" in rig.o.registry
     assert "i'll keep it" in spoken(rig).lower()
+
+
+# -- 13. feedback goes to the device that asked for the skill ----------------
+#
+# On a remote brain the speaker is an edge (`tts.connected_device_id`). A job's notices,
+# its "shall I keep it?" and the "I've learned it" announcement belong to the
+# device it was asked from: they wait while another device (or none) is
+# connected, and in standby that device is asked unprompted — once — rather
+# than at its next wake.
+
+class NeverWake:
+    def reset(self):
+        pass
+
+    def triggered(self, frame):
+        return False
+
+
+def on_device(rig, device_id):
+    rig.voice.connected_device_id = device_id
+
+
+async def run_in_standby(rig, until_pred):
+    """`run()` with nobody waking it: only an unprompted offer can speak."""
+    rig.o.wake = NeverWake()
+    rig.o.standby = True
+    task = asyncio.ensure_future(rig.o.run())
+    try:
+        await until(until_pred)
+    finally:
+        rig.o.stop()
+        await asyncio.wait_for(task, timeout=5)
+
+
+def test_a_jobs_question_waits_for_the_device_that_asked(rig):
+    on_device(rig, "watch")
+
+    async def scenario():
+        await teach(rig)
+        await until(lambda: rig.o.pending_questions())
+        on_device(rig, None)  # the watch went offline
+        await rig.o._safe_point()
+        on_device(rig, "kitchen")  # another edge took the brain
+        await rig.o._safe_point()
+        assert keep_questions(rig) == []
+        on_device(rig, "watch")
+        rig.voice.feed("yes")
+        await rig.o._safe_point()
+        assert len(keep_questions(rig)) == 1
+        assert "learned 'coin_flip'" in spoken(rig)
+
+    asyncio.run(scenario())
+
+
+def test_a_jobs_notice_waits_for_the_device_that_asked(rig):
+    rig.claude = rig.o.claude_client = FakeClaude(raises=RuntimeError("API down"))
+    on_device(rig, "watch")
+
+    async def scenario():
+        await teach(rig)
+        await until(lambda: not rig.o.learning_names())
+        on_device(rig, "kitchen")
+        await rig.o._safe_point()
+        await rig.o._idle_tick()
+        assert "couldn't get it working" not in spoken(rig)
+        on_device(rig, "watch")
+        await rig.o._idle_tick()
+        assert "couldn't get it working" in spoken(rig)
+
+    asyncio.run(scenario())
+
+
+def test_in_standby_the_device_that_asked_is_asked_unprompted(rig):
+    on_device(rig, "watch")
+
+    async def scenario():
+        await teach(rig)
+        await until(lambda: rig.o.pending_questions())
+        rig.voice.feed("Keep it.")
+        await run_in_standby(rig, lambda: "<standby>" in rig.voice.spoken)
+
+    asyncio.run(scenario())
+    said = rig.voice.spoken
+    assert len(keep_questions(rig)) == 1
+    learned = next(i for i, s in enumerate(said) if "learned 'coin_flip'" in s)
+    assert learned < said.index("<standby>")  # answered, merged, said, then back to standby
+    assert rig.o.standby is True
+    assert "coin_flip" in rig.o.registry
+
+
+def test_an_unanswered_unprompted_question_is_asked_once_and_not_counted(rig):
+    on_device(rig, "watch")
+
+    async def scenario():
+        await teach(rig)
+        await until(lambda: rig.o.pending_questions())
+        # silence: the watch was in a pocket
+        rig.o.wake = NeverWake()
+        rig.o.standby = True
+        task = asyncio.ensure_future(rig.o.run())
+        try:
+            await until(lambda: "<standby>" in rig.voice.spoken)
+            await asyncio.sleep(1.5)
+            assert len(keep_questions(rig)) == 1  # not nagged again while standing by
+            assert "take that as a no" not in spoken(rig)
+            assert rig.o.pending_questions()
+            # the next conversation asks it again, as it always did
+            rig.voice.feed("yes")
+            await rig.o._safe_point()
+            assert len(keep_questions(rig)) == 2
+            assert "learned 'coin_flip'" in spoken(rig)
+        finally:
+            rig.o.stop()
+            await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(scenario())
+
+
+def test_in_standby_another_device_is_not_asked(rig):
+    on_device(rig, "watch")
+
+    async def scenario():
+        await teach(rig)
+        await until(lambda: rig.o.pending_questions())
+        on_device(rig, "kitchen")
+        rig.o.wake = NeverWake()
+        rig.o.standby = True
+        task = asyncio.ensure_future(rig.o.run())
+        await asyncio.sleep(1.5)
+        rig.o.stop()
+        await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(scenario())
+    assert keep_questions(rig) == []
+    assert "<standby>" not in rig.voice.spoken
+
+
+def test_a_local_job_is_never_asked_unprompted(rig):
+    # No device (the local mic and speaker): the M2.5 rule stands — a question
+    # waits for the next wake, nobody is talked at out of the blue.
+    async def scenario():
+        await teach(rig)
+        await until(lambda: rig.o.pending_questions())
+        rig.o.wake = NeverWake()
+        rig.o.standby = True
+        task = asyncio.ensure_future(rig.o.run())
+        await asyncio.sleep(1.5)
+        rig.o.stop()
+        await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(scenario())
+    assert keep_questions(rig) == []

@@ -31,19 +31,20 @@ _YES = {"yes", "yeah", "yep", "sure", "confirm", "affirmative", "correct", "plea
 _NO = {"no", "nope", "don't", "do not", "negative", "cancel", "never mind", "stop"}
 
 #: Only for the whole-word check (`ask_yes_no_or_none`): the loose one matches
-#: anywhere in the reply, where "ok" would be found in "took". "Shall I keep
-#: it?" -> "Keep it." is the answer people actually give (the watch,
-#: 2026-10-02), so the question's own words count. The no-words are checked
-#: first, so "don't keep it" is a no.
-_YES_WORDS = _YES | {
-    "keep it", "keep that", "keep them", "save it", "save that",
-    "ok", "okay", "go ahead", "do it", "of course", "absolutely", "definitely",
-}
-_NO_WORDS = _NO | {
-    "nah", "discard", "discard it", "throw it away", "scrap it", "bin it", "get rid of it",
-}
-#: a reply that is only this word: "Keep." — but not "keep in mind that …"
-_YES_ALONE = {"keep", "save"}
+#: anywhere in the reply, where "ok" would be found in "took". The no-words
+#: are checked first, so "don't keep it" is a no.
+_YES_WORDS = _YES | {"ok", "okay", "go ahead", "do it", "of course", "absolutely", "definitely"}
+_NO_WORDS = _NO | {"nah"}
+
+#: People answer in the question's own words: "Shall I keep it?" -> "Keep
+#: it." (the watch, 2026-10-02). But "keep it" said to "Forget 'I parked on
+#: level 2'?" means *no* — so these count by what was asked, and to a
+#: question about neither they are no answer at all.
+_KEEP = {"keep it", "keep that", "keep them", "keep", "save it", "save that", "save"}
+_DROP = {"discard", "discard it", "throw it away", "scrap it", "bin it", "get rid of it",
+         "forget it", "forget that", "delete it", "remove it", "drop it"}
+_ASKS_TO_KEEP = re.compile(r"\bkeep\b", re.IGNORECASE)
+_ASKS_TO_DROP = re.compile(r"\b(forget|remove|delete|discard|erase)\b", re.IGNORECASE)
 
 
 Versioning = Literal["new", "edit", "revert", "remove"]
@@ -96,9 +97,17 @@ async def ask_yes_no_or_none(ask: Ask, prompt: str) -> bool | None:
     may be thinking about something else, so silence or an unrelated reply
     must not count as "no". Whole-word matching, so "know"/"now" aren't "no"."""
     words = _words(await ask(prompt))
-    if any(f" {w} " in words for w in _NO_WORDS):
+    keep = any(f" {w} " in words for w in _KEEP - {"keep", "save"}) or words.strip() in {"keep", "save"}
+    drop = any(f" {w} " in words for w in _DROP)
+    if _ASKS_TO_DROP.search(prompt):
+        yes, no = drop, keep
+    elif _ASKS_TO_KEEP.search(prompt):
+        yes, no = keep, drop
+    else:
+        yes = no = False
+    if no or any(f" {w} " in words for w in _NO_WORDS):
         return False
-    if any(f" {w} " in words for w in _YES_WORDS) or words.strip() in _YES_ALONE:
+    if yes or any(f" {w} " in words for w in _YES_WORDS):
         return True
     return None
 

@@ -26,6 +26,7 @@ it came from (``_turn``, ``jarvis/core/memory.py``).
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import datetime as _dt
 import logging
 import queue
@@ -117,6 +118,12 @@ _SELF_CHECK_SEED_PROBES = (
 _MAX_UNCLEAR_ANSWERS = 3
 
 
+#: The edge a background job was asked from (``tts.connected_device_id``), set in the
+#: job's own task: its notices, questions and announcement go to that device.
+#: None for a job asked on the local mic — or anywhere, when nothing tells.
+_ORIGIN: contextvars.ContextVar[str | None] = contextvars.ContextVar("job_origin", default=None)
+
+
 @dataclass
 class _Decision:
     """A background job's yes/no question, waiting for a safe point."""
@@ -124,6 +131,9 @@ class _Decision:
     prompt: str
     future: asyncio.Future
     unclear: int = 0
+    origin: str | None = None
+    #: asked unprompted in standby already: not again until the next session
+    offered: bool = False
 
 
 class Orchestrator:
@@ -192,11 +202,12 @@ class Orchestrator:
         self.running = False
         self._staged = None  # M2: a gate-passed replacement (nlu, registry)
         self._pending_announcement: str | None = None
+        self._announcement_origin: str | None = None
         # M2.5: background learning. `_jobs` is name -> task in queue order;
         # jobs run one at a time (each waits for `_last_job`).
         self._jobs: dict[str, asyncio.Task] = {}
         self._last_job: asyncio.Task | None = None
-        self._notices: list[str] = []
+        self._notices: list[tuple[str, str | None]] = []  # (text, origin)
         self._decisions: list[_Decision] = []
         self._in_session = False
         self._idle_task: asyncio.Task | None = None
@@ -256,18 +267,22 @@ class Orchestrator:
 
     # -- wake -----------------------------------------------------------------
 
-    async def _await_wake(self) -> bool:
-        """Block until the wake word fires. False if the loop was stopped."""
+    async def _await_wake(self) -> str:
+        """Block until the wake word fires (``"wake"``) or a background
+        question is due for the connected edge (``"offer"``). ``""`` if the
+        loop was stopped."""
         await asyncio.to_thread(self.wake.reset)
         self._drain_mic()
         while self.running:
+            if self._offer_due():
+                return "offer"
             try:
                 frame = await asyncio.to_thread(self.mic.read, 1.0)
             except queue.Empty:
                 continue
             if await asyncio.to_thread(self.wake.triggered, frame):
-                return True
-        return False
+                return "wake"
+        return ""
 
     # -- one wake session --------------------------------------------------
 
@@ -1002,7 +1017,7 @@ class Orchestrator:
 
     async def _start_learning(self, request: LearningRequest) -> None:
         ahead = list(self._jobs)[-1] if self._jobs else None
-        task = asyncio.ensure_future(self._learn(request, self._last_job))
+        task = asyncio.ensure_future(self._learn(request, self._last_job, self._listening_device()))
         # registered before any await, so a dialog started right after this
         # already sees the name as busy
         self._jobs[request.name] = task
@@ -1020,10 +1035,14 @@ class Orchestrator:
         """Background questions waiting for the next safe point."""
         return [d.prompt for d in self._decisions if not d.future.done()]
 
-    async def _learn(self, request: LearningRequest, previous: asyncio.Task | None) -> None:
+    async def _learn(
+        self, request: LearningRequest, previous: asyncio.Task | None, origin: str | None = None
+    ) -> None:
         """One background job: wait for the one ahead of it, then build →
         validate → sandbox (`LearningJob`) → retrain → self-check → keep
-        decision → stage. Never raises into the loop."""
+        decision → stage. Never raises into the loop. What it says goes to
+        ``origin``, the edge it was asked from."""
+        _ORIGIN.set(origin)  # this task's own context: only this job's lines
         name = request.name
         outcome: FlowOutcome | None = None
         try:
@@ -1172,13 +1191,29 @@ class Orchestrator:
 
     # -- M2.5: background notices + questions, spoken at safe points --------
 
+    def _listening_device(self) -> str | None:
+        """The edge the speaker is connected to now
+        (``RemoteLink.connected_device_id``); None for the local speaker, or
+        with no edge connected. (Not :meth:`_device`, which names whose turn
+        it is, for memory, and falls back to ``local``.)"""
+        return getattr(self.tts, "connected_device_id", None)
+
+    def _here(self, origin: str | None) -> bool:
+        """Can a line for ``origin`` be said now? Only to the device that
+        asked; anything without an origin, to whoever is listening."""
+        return origin is None or origin == self._listening_device()
+
     def _queue_announcement(self, text: str) -> None:
-        if self._pending_announcement:
+        origin = _ORIGIN.get()
+        if self._pending_announcement and self._announcement_origin == origin:
             text = f"{self._pending_announcement} {text}"
+        elif self._pending_announcement:
+            self._notices.append((self._pending_announcement, self._announcement_origin))
         self._pending_announcement = text
+        self._announcement_origin = origin
 
     def _queue_notice(self, text: str) -> None:
-        self._notices.append(text)
+        self._notices.append((text, _ORIGIN.get()))
 
     async def _notify(self, text: str) -> None:
         """`LearningJob`'s `notify` — never speaks directly."""
@@ -1187,7 +1222,9 @@ class Orchestrator:
     async def _decide(self, prompt: str) -> bool:
         """`LearningJob`'s `decide` — queue a yes/no question and wait until a
         safe point has asked it and got a clear answer."""
-        decision = _Decision(prompt, asyncio.get_running_loop().create_future())
+        decision = _Decision(
+            prompt, asyncio.get_running_loop().create_future(), origin=_ORIGIN.get()
+        )
         self._decisions.append(decision)
         try:
             return await decision.future
@@ -1196,24 +1233,40 @@ class Orchestrator:
                 self._decisions.remove(decision)
 
     async def _speak_notices(self) -> None:
-        while self._notices:
-            await self._speak(self._notices.pop(0))
+        """The queued notices for whoever is listening, oldest first; those
+        for a device that is not connected wait for it."""
+        while True:
+            entry = next((n for n in self._notices if self._here(n[1])), None)
+            if entry is None:
+                return
+            self._notices.remove(entry)
+            await self._speak(entry[0])
 
-    async def _safe_point(self) -> None:
+    async def _safe_point(self, unprompted: bool = False) -> None:
         """No turn in flight and the user is present (between turns, or just
         before the drop to standby): merge a staged model, speak queued
-        notices, and ask pending background questions."""
+        notices, and ask pending background questions.
+
+        ``unprompted``: in standby, for the edge that asked (:meth:`_offer`).
+        Each question is asked once that way, and no answer is not an unclear
+        one — the watch may be in a pocket; the next session asks again."""
         self.state = "idle"
         await self._merge_gate()
         await self._speak_notices()
         for decision in list(self._decisions):
-            if decision.future.done():
+            if decision.future.done() or not self._here(decision.origin):
                 continue
+            if unprompted:
+                if decision.offered:
+                    continue
+                decision.offered = True
             try:
                 answer = await ask_yes_no_or_none(self._ask, decision.prompt)
             except _Cancelled:
                 answer = None
             self.state = "idle"
+            if answer is None and unprompted:
+                continue
             if answer is None:
                 decision.unclear += 1
                 if decision.unclear < _MAX_UNCLEAR_ANSWERS:
@@ -1228,6 +1281,24 @@ class Orchestrator:
                 await asyncio.sleep(0)
         await self._merge_gate()
         await self._speak_notices()
+
+    def _offer_due(self) -> bool:
+        """A background question for the connected edge, not yet offered."""
+        device = self._listening_device()
+        return device is not None and any(
+            d.origin == device and not d.offered and not d.future.done()
+            for d in self._decisions
+        )
+
+    async def _offer(self) -> None:
+        """Standby, and the edge a job was asked from is connected with its
+        question waiting ("I've finished it — shall I keep it?"): ask now
+        rather than at its next wake, then stand by again. A job asked on the
+        local mic still waits for the wake word: nobody in the room is talked
+        at out of the blue."""
+        await self._safe_point(unprompted=True)
+        if self.running:
+            await self._enter_standby()
 
     async def _idle_tick(self) -> None:
         """Outside a wake session (standby): merge and speak notices, but never
@@ -1366,7 +1437,9 @@ class Orchestrator:
                 close()
             if self._pending_announcement:
                 announcement, self._pending_announcement = self._pending_announcement, None
-                await self._speak(announcement)
+                # for the device that asked; another, or none, gets it later
+                self._notices.insert(0, (announcement, self._announcement_origin))
+                await self._speak_notices()
 
     # -- main loop --------------------------------------------------------
 
@@ -1381,12 +1454,16 @@ class Orchestrator:
             while self.running:
                 self.state = "idle"
                 await self._merge_gate()
-                if not await self._await_wake():
+                woke = await self._await_wake()
+                if not woke:
                     break
                 self.standby = False
                 self._in_session = True
                 try:
-                    await self._session()
+                    if woke == "offer":
+                        await self._offer()
+                    else:
+                        await self._session()
                 finally:
                     self._in_session = False
                     self.state = "idle"
