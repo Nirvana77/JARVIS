@@ -216,6 +216,70 @@ def _duration(seconds: float) -> str:
     return f"{h}h {m:02d}m" if h else f"{m}m {seconds % 60:02d}s"
 
 
+# -- the mode stretches: YYYY-MM-DD-modes.csv ----------------------------------
+#
+# Newer firmware writes, beside the day's rows, a line per stretch in one mode:
+# when it began and ended, the battery at both ends, how much of it asleep, and
+# the current from the gauge's fall (on battery, 10 min or more). A stretch
+# ends when the mode changes, USB comes or goes, or the log is sent up.
+
+
+@dataclass(frozen=True)
+class Stretch:
+    start: str
+    end: str
+    mode: str
+    minutes: float
+    pct_from: int | None
+    pct_to: int | None
+    mv_from: int | None
+    mv_to: int | None
+    usb: bool
+    sleep_pct: float | None
+    ma_est: float | None
+
+
+def read_stretches(path: str | Path) -> list[Stretch]:
+    """The lines of a ``-modes.csv``; anything that does not read is skipped."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    out = []
+    for fields in csv.reader(text.splitlines()):
+        if len(fields) < 11 or fields[0] == "start" or fields[2] not in MODES:
+            continue
+        minutes = _float(fields[3])
+        if minutes is None:
+            continue
+        out.append(Stretch(
+            start=fields[0], end=fields[1], mode=fields[2], minutes=minutes,
+            pct_from=_int(fields[4]), pct_to=_int(fields[5]),
+            mv_from=_int(fields[6]), mv_to=_int(fields[7]),
+            usb=fields[8] == "1", sleep_pct=_float(fields[9]), ma_est=_float(fields[10]),
+        ))
+    return out
+
+
+def stretches_report(stretches: list[Stretch]) -> str:
+    """One line a stretch: "08:10-08:52  offline  42m  78% -> 77%  ...  5.6 mA"."""
+    lines = ["stretches:"]
+    for st in stretches:
+        when = f"{st.start.split(' ')[-1][:5]}-{st.end.split(' ')[-1][:5]}"
+        length = _duration(st.minutes * 60)
+        pct = f"{st.pct_from}% -> {st.pct_to}%" if st.pct_from is not None and st.pct_to is not None else "-"
+        mv = f"{st.mv_from} -> {st.mv_to} mV" if st.mv_from and st.mv_to else ""
+        asleep = f"{st.sleep_pct:.0f}% asleep" if st.sleep_pct is not None else ""
+        if st.usb:
+            current = "on USB"
+        elif st.ma_est is not None:
+            current = f"{st.ma_est:.1f} mA"
+        else:
+            current = ""
+        lines.append(f"  {when}  {st.mode:<8}{length:>8}  {pct:<12} {mv:<20} {asleep:<11} {current}".rstrip())
+    return "\n".join(lines)
+
+
 def report(s: Summary, title: str = "") -> str:
     """The long form, for ``python -m jarvis power``."""
     total = s.seconds

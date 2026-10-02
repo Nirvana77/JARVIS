@@ -357,3 +357,79 @@ def test_the_watchs_estimate_stands_in_for_the_brains(tmp_path):
     s = PL.summarize(PL.read_rows([path]))
     assert s.modes["watch"].ma() is None
     assert "9 mA" in PL.report(s)
+
+
+# -- the mode stretches (YYYY-MM-DD-modes.csv) -------------------------------
+#
+# Newer firmware also writes a line per stretch in one mode: when it began and
+# ended, the battery at both ends, and the gauge's current over it. The brain
+# takes the file with the day's and shows the stretches under its report.
+
+MODES_HEADER = "start,end,mode,minutes,pct_from,pct_to,mv_from,mv_to,usb,sleep_pct,ma_est\n"
+
+
+def modes_csv():
+    return MODES_HEADER + (
+        "2026-10-01 08:00:00,2026-10-01 08:10:00,awake,10.0,80,78,4000,3940,0,5,48.0\n"
+        "2026-10-01 08:10:00,2026-10-01 08:52:30,offline,42.5,78,77,3940,3925,0,94,5.6\n"
+        "2026-10-01 08:52:30,2026-10-01 08:54:00,awake,1.5,77,77,3925,3920,0,3,\n"
+        "2026-10-01 08:54:00,2026-10-01 09:20:00,watch,26.0,77,85,3920,4100,1,0,\n"
+        "garbage line\n"
+    )
+
+
+@pytest.mark.parametrize("name", ["2026-10-01-modes.csv", "nodate-modes.csv"])
+def test_the_modes_file_may_be_sent(name):
+    ok, msg = P.validate_c2s(P.file_chunk("power", name, 0, "a,b\n", eof=True))
+    assert ok, msg
+
+
+def test_other_names_still_may_not():
+    ok, _ = P.validate_c2s(P.file_chunk("power", "2026-10-01-x.csv", 0, "a\n"))
+    assert not ok
+
+
+def test_the_stretches_are_read_and_shown(tmp_path):
+    path = tmp_path / "2026-10-01-modes.csv"
+    path.write_text(modes_csv(), encoding="utf-8")
+    stretches = PL.read_stretches(path)
+    assert [s.mode for s in stretches] == ["awake", "offline", "awake", "watch"]
+    offline = stretches[1]
+    assert offline.minutes == pytest.approx(42.5)
+    assert (offline.pct_from, offline.pct_to) == (78, 77)
+    assert offline.ma_est == pytest.approx(5.6)
+    assert stretches[3].usb is True and stretches[3].ma_est is None
+    text = PL.stretches_report(stretches)
+    lines = text.splitlines()
+    assert any("offline" in l and "78% -> 77%" in l and "5.6 mA" in l and "94%" in l for l in lines)
+    assert any("watch" in l and "USB" in l for l in lines)
+
+
+def test_the_report_carries_the_stretches(tmp_path):
+    import urllib.request
+
+    async def scenario():
+        config = make_config(tmp_path)
+        brain = await Brain(config).start(run_orchestrator=False)
+        try:
+            ws, edge = await connected(brain)
+            files = {"2026-10-01.csv": day_csv(), "2026-10-01-modes.csv": modes_csv()}
+            sender = asyncio.ensure_future(watch_sends(edge, files))
+
+            def get():
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{brain.port}/power?day=2026-10-01",
+                    headers={"Authorization": f"Bearer {TOKEN}", "X-Jarvis-Device": DEVICE},
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return resp.read().decode()
+
+            body = await asyncio.to_thread(get)
+            await sender
+            assert "fetched 2 file" in body
+            assert "78% -> 77%" in body
+            await ws.close()
+        finally:
+            await brain.stop()
+
+    run(scenario())
