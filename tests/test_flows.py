@@ -294,8 +294,36 @@ def test_remove_skill_flow_refuses_a_skill_already_being_learned():
         ("", None),
         ("what time is it", None),
         ("search black holes", None),
+        # From the watch, 2026-10-02: "Shall I keep it?" -> "Keep it." was
+        # unclear, asked again, and three of those would have discarded it.
+        ("Keep it.", True),
+        ("keep", True),
+        ("save it", True),
+        ("go ahead", True),
+        ("okay", True),
+        ("ok", True),
+        ("of course", True),
+        ("do it", True),
+        ("absolutely", True),
+        ("don't keep it", False),
+        ("do not keep it", False),
+        ("discard it", False),
+        ("throw it away", False),
+        ("scrap it", False),
+        ("nah", False),
+        # still not answers
+        ("I took the book", None),
+        ("keep in mind that the bins go out", None),
     ],
 )
 def test_ask_yes_no_or_none(reply, expected):
     script = Script([reply])
     assert asyncio.run(ask_yes_no_or_none(script.ask, "Shall I keep it, sir?")) is expected
+
+
+def test_the_loose_check_did_not_gain_the_short_words():
+    """`ask_yes_no` matches anywhere in the reply (known issue #13): "ok" in
+    "took" must not make it a yes there."""
+    from jarvis.factory.flows import ask_yes_no
+
+    assert asyncio.run(ask_yes_no(Script(["I took the book"]).ask, "Right, sir?")) is False
