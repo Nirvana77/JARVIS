@@ -328,8 +328,16 @@ class RemoteLink:
 
     @property
     def device_id(self) -> str | None:
-        """The edge the orchestrator is hearing — what its memory is kept under."""
+        """The edge whose turn it is — what its memory is kept under (M4.5).
+        Still that edge after it disconnects: the turn in flight is its."""
         return self._device_id
+
+    @property
+    def connected_device_id(self) -> str | None:
+        """The edge listening now, or None: a background job's lines go to the
+        one it was asked from (the orchestrator's ``_listening_device``)."""
+        connection = self._connection
+        return connection.device_id if connection is not None else None
 
     def connect(self, connection: EdgeConnection) -> None:
         if self._device_id is not None and connection.device_id != self._device_id:
