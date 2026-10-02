@@ -396,6 +396,23 @@ class KnowledgeStore:
 
     # -- reading --------------------------------------------------------------
 
+    def fact_texts(self, paths) -> dict[str, str]:
+        """``{path: text}`` for those of ``paths`` that are remembered facts."""
+        paths = list(paths)
+        if not paths:
+            return {}
+        with self._lock:
+            conn = self._open(create=False)
+            if conn is None:
+                return {}
+            marks = ",".join("?" * len(paths))
+            rows = conn.execute(
+                f"SELECT s.path, c.text FROM sources s JOIN chunks c ON c.source_id = s.id "
+                f"WHERE s.kind = ? AND s.path IN ({marks})",
+                (FACT, *paths),
+            ).fetchall()
+        return {path: text for path, text in rows}
+
     def file_digests(self) -> dict[str, str]:
         """``path -> digest`` for every ingested *file* — what a folder scan
         compares against. Spoken facts are not in it, so a scan never drops them."""

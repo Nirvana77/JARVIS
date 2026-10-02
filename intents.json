@@ -243,7 +243,15 @@
 				"what have I told you to remember",
 				"what did I ask you to remember",
 				"tell me what you remember",
-				"list what you remember"
+				"list what you remember",
+				"what should I remember today",
+				"is there anything I should remember",
+				"is there anything I should remember today",
+				"anything I need to remember today",
+				"what are the to-dos for today",
+				"what are my to-dos",
+				"what's on my list today",
+				"what do I need to do today"
 			],
 			"responses": [],
 			"action": "recall_memory"
@@ -257,10 +265,30 @@
 				"forget all my notes",
 				"clear your memory",
 				"wipe your memory",
-				"erase everything you remember about me"
+				"erase everything you remember about me",
+				"forget everything",
+				"forget it all"
 			],
 			"responses": [],
 			"action": "forget_memory"
+		},
+		{
+			"tag": "forget_fact",
+			"patterns": [
+				"forget about {intent}",
+				"forget that {intent}",
+				"forget what I told you about {intent}",
+				"forget everything about {intent}",
+				"you can forget about {intent}",
+				"stop remembering {intent}",
+				"remove the {intent} note",
+				"delete the {intent} note",
+				"remove my note about {intent}",
+				"delete the note about {intent}",
+				"erase the note about {intent}"
+			],
+			"responses": [],
+			"action": "forget_fact"
 		}
 	]
 }

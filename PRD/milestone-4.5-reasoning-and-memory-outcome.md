@@ -168,6 +168,37 @@ remember" → `recall_memory` 0.77, "where did I park" → `recall` 0.81, "forge
 everything I told you" → `forget_memory` 0.80, "forget the coin skill" →
 `remove_skill` 0.90.
 
+## After live testing on the watch (2026-10-02)
+
+The owner's first session on the watch found that a *question* or a
+*forget* could be stored as a fact:
+
+| Said | Was | Now |
+|---|---|---|
+| "Forget about the park", "Forget everything about the parking" | `remember` → stored | `forget_fact` (0.96–0.97) → this device's matching facts are named in one question and, on a yes, taken out of its memory, the knowledge base (its own facts, by id) and both notes files |
+| "Remove the park note", "delete the wifi note" | `note` → stored | `forget_fact` (0.96–0.97) |
+| "Forget everything." | `forget_memory` 0.42, tied with `remove_skill` → refused | `forget_memory` 0.61 |
+| "What should I remember today?", "Is there anything that I should remember today?" | `remember` → stored | `recall_memory` (0.89–0.93); with "today", what was remembered today, or everything with "Nothing from today" |
+| "What are the to-dos for today?" | `unknown` | `recall_memory` 0.80 |
+
+The root cause of the storing: the slot filler keeps the whole sentence when
+it finds no lead-in to strip. So `note` and `remember` now act only on an
+utterance that has one of their own lead-ins (`slots.has_lead_in`; the lists
+were also completed to cover every seed pattern — "add a note that", "jot
+down", …). Without one the turn is unclear. `forget_fact` likewise needs a
+"forget …" / "remove …" lead-in rather than the meta-action confidence bar:
+it always names what would go and asks, and "forget that I parked on level 2"
+(0.50) should be asked about, not refused, while "stop" (0.39 as
+`forget_fact`) should not start a search.
+
+Matching a "forget about …" (`jarvis/core/forgetting.py`): the share of the
+query's words found in the fact, on crude stems (MiniLM puts "the park" at
+0.37 from "I parked on level 2"; the stems match), or cosine similarity when
+the classifier's embedder is there — whichever is higher, ≥ 0.5, at most 3
+offered at once.
+
+Tests: `tests/test_forget_one_thing.py`, `tests/test_recall_today.py` (47).
+
 ## Found along the way
 
 - **Known issue #5 is fixed here** (decision 11) and has left

@@ -30,6 +30,7 @@ import datetime as _dt
 import logging
 import queue
 import random
+import re
 import shutil
 import sys
 import threading
@@ -37,11 +38,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from jarvis.core import forgetting as _forgetting
 from jarvis.core import mishear as _mishear
 from jarvis.core import reasoning as _reasoning
 from jarvis.core.interrupt import Cancelled as _Cancelled
 from jarvis.core.interrupt import Interrupter
-from jarvis.core.memory import LOCAL, Memory, is_device_id
+from jarvis.core.memory import LOCAL, Memory, is_device_id, same_text
 from jarvis.factory import flows as _flows
 from jarvis.factory.flows import (
     EditSkillFlow,
@@ -59,6 +61,7 @@ from jarvis.nlu import slots as _slots
 from jarvis.nlu.classifier import UNKNOWN, Classifier
 from jarvis.nlu.corpus import build_corpus
 from jarvis.nlu.retrain_worker import RetrainWorker
+from jarvis.skills.builtin import note as _note_skill
 from jarvis.skills.registry import LEARNED_PACKAGE
 
 #: a retrain normally takes seconds; past this the worker is presumed stuck
@@ -81,15 +84,18 @@ _META_ACTIONS = {
     "remove_skill": "remove_skill",
     "recall_memory": "recall_memory",
     "forget_memory": "forget_memory",
+    "forget_fact": "forget_fact",
 }
 
 #: A wrong guess at one of these costs a dialog, a skill's code or a device's
 #: memory, so they need `nlu.meta_action_threshold`, not just "not unknown".
+#: (`forget_fact` is not here: it always names what it would forget and asks,
+#: and needs its own "forget …" lead-in instead — see `_forget_fact`.)
 _GUARDED_ACTIONS = ("teach", "edit_skill", "revert_skill", "remove_skill", "forget_memory")
 
 #: Skills whose argument is whatever was said: never one step of a chain
 #: ("note that buy milk and call mum" is one note).
-_DICTATION = frozenset({"note"})
+_DICTATION = frozenset({"note", "remember"})
 
 #: how many facts "what do you remember?" reads out, newest last
 _RECALL_SPOKEN = 5
@@ -169,6 +175,8 @@ class Orchestrator:
         )
         #: what has been said back in the turn in flight (None between turns)
         self._turn_said: list[str] | None = None
+        #: the `note` skill's own log, which "forget about …" also edits
+        self._notes_file = config.skill_data_dir(_note_skill.MANIFEST.name) / _note_skill.NOTES_FILE
         # M2: the skill factory. Both are best-effort — a missing Anthropic key
         # or sandbox degrades `teach`/`edit_skill` to a spoken "can't do that
         # right now", never a hard crash (same pattern as the reasoner).
@@ -533,10 +541,20 @@ class Orchestrator:
             return
 
         if action == "recall_memory":
-            await self._recall()
+            await self._recall(text)
             return
         if action == "forget_memory":
             await self._forget()
+            return
+        if action == "forget_fact":
+            await self._forget_fact(text)
+            return
+
+        if label in _slots.STORING and not _slots.has_lead_in(label, text):
+            # "Forget about the park", heard as `remember`: with no "remember
+            # that …" to strip, the whole sentence would be stored as a fact.
+            log.info("%s without its lead-in (%r): treating it as unclear", label, text)
+            await self._unclear(text)
             return
 
         # a skill
@@ -804,18 +822,79 @@ class Orchestrator:
 
     # -- M4.5: what this device was asked to remember -----------------------------
 
-    async def _recall(self) -> None:
-        facts = self.memory.device().facts()
-        if not facts:
+    async def _recall(self, text: str = "") -> None:
+        """"What do you remember?" — and "what should I remember today?",
+        "what are the to-dos for today?": with "today" in it, what was
+        remembered today; everything when nothing was."""
+        entries = self.memory.device().entries()
+        if not entries:
             await self._speak(self.persona.line(
                 "nothing_remembered", "You haven't asked me to remember anything."))
             return
+        facts = [t for t, _when in entries]
+        lead = "You asked me to remember: "
+        if re.search(r"\btoday\b", text, re.IGNORECASE):
+            today = _dt.date.today().isoformat()
+            todays = [t for t, when in entries if when.startswith(today)]
+            if todays:
+                facts, lead = todays, "Today you asked me to remember: "
+            else:
+                lead = "Nothing from today. Before that you asked me to remember: "
         shown = facts[-_RECALL_SPOKEN:]
-        line = "You asked me to remember: " + "; ".join(f.rstrip(" .") for f in shown) + "."
+        line = lead + "; ".join(f.rstrip(" .") for f in shown) + "."
         if len(facts) > len(shown):
             line += f" And {len(facts) - len(shown)} more before that."
         # spoken as it is, not rephrased: these are the speaker's own words
         await self._speak(line)
+
+    async def _forget_fact(self, text: str) -> None:
+        """"Forget about the park": this device's facts that match, offered in
+        one question, and on a clear yes taken out of everything that holds
+        them — the device's memory, the knowledge base (its own facts only,
+        by id) and, for a note, both notes files."""
+        if not _slots.has_lead_in("forget_fact", text):
+            # "stop", heard as forget_fact: there is nothing to look for
+            await self._unclear(text)
+            return
+        query = _slots.extract("forget_fact", text).get("query", "")
+        memory = self.memory.device()
+        embed = getattr(self.nlu, "embed", None)
+        found = await asyncio.to_thread(
+            _forgetting.matching, query, memory.facts(), embed=embed if callable(embed) else None
+        )
+        if not found:
+            await self._speak(self.persona.line(
+                "nothing_to_forget", "I have nothing like that to forget."))
+            return
+        prompt = self.persona.line("forget_fact_confirm", "Forget '{facts}'?")
+        if not await self._confirmed(prompt.replace("{facts}", "; ".join(found))):
+            await self._speak(self.persona.line("forget_kept", "I'll keep it."))
+            return
+        try:
+            refs = await asyncio.to_thread(self._forget_found, memory, found)
+            memory.forget_facts(found, refs)
+        except Exception as exc:  # noqa: BLE001 — part of it may remain: say so
+            log.error("could not forget %r for %s: %s", found, memory.device, exc)
+            await self._speak(self.persona.line("error"))
+            return
+        await self._speak(self.persona.line("forgotten", "Forgotten."))
+
+    def _forget_found(self, memory, found: list[str]) -> list[str]:
+        """Blocking half of :meth:`_forget_fact`: out of the knowledge base and
+        the notes files. Returns the knowledge refs that went."""
+        gone: list[str] = []
+        if self.knowledge is not None:
+            texts = self.knowledge.store.fact_texts(memory.knowledge_refs())
+            for ref, fact in texts.items():
+                if any(same_text(fact, f) for f in found):
+                    self.knowledge.store.remove_source(ref)
+                    gone.append(ref)
+            mirror = self.knowledge.docs_dir / _note_skill.MIRROR_FILE
+            if mirror.is_file() and _drop_paragraphs(mirror, found):
+                self.knowledge.index_file(mirror)
+        if self._notes_file.is_file():
+            _drop_note_lines(self._notes_file, found)
+        return gone
 
     def _forget_in_knowledge(self, refs: list[str]) -> None:
         for ref in refs:
@@ -1330,3 +1409,29 @@ class Orchestrator:
 
     def stop(self) -> None:
         self.running = False
+
+
+# -- the notes files, for "forget about …" ---------------------------------------
+
+_NOTED = re.compile(r"\s*\(noted [^)]*\)\s*$")
+
+
+def _drop_paragraphs(path: Path, found: list[str]) -> bool:
+    """Take the dictated notes that are one of ``found`` out of the knowledge
+    base's mirror (one paragraph each). True if anything went."""
+    paragraphs = path.read_text(encoding="utf-8").split("\n\n")
+    kept = [p for p in paragraphs
+            if not any(same_text(_NOTED.sub("", p), f) for f in found)]
+    if len(kept) == len(paragraphs):
+        return False
+    path.write_text("\n\n".join(kept), encoding="utf-8")
+    return True
+
+
+def _drop_note_lines(path: Path, found: list[str]) -> None:
+    """The same, from the `note` skill's own log ("<timestamp>  <text>")."""
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    kept = [l for l in lines
+            if not any(same_text(l.split("  ", 1)[-1], f) for f in found)]
+    if len(kept) != len(lines):
+        path.write_text("".join(kept), encoding="utf-8")

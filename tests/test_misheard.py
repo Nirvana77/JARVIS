@@ -84,6 +84,8 @@ class DidYouMeanPersona(FakePersona):
     def line(self, event, default=""):
         if event == "did_you_mean":
             return "<did_you_mean {guess}>"
+        if event == "forget_fact_confirm":
+            return "<forget_fact_confirm {facts}>"
         return super().line(event, default)
 
 

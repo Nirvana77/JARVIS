@@ -53,6 +53,11 @@ def _key(text: str) -> str:
     return "".join(c for c in text.lower() if c.isalnum())
 
 
+def same_text(a: str, b: str) -> bool:
+    """The same fact, give or take case, spacing and punctuation."""
+    return _key(a) == _key(b)
+
+
 class Memory:
     def __init__(
         self,
@@ -193,9 +198,34 @@ class DeviceMemory:
             self._m._load(self.device)
             return list(self._m._refs.get(self.device, []))
 
+    def entries(self) -> list[tuple[str, str]]:
+        """``(text, when)`` per fact, oldest first; ``when`` is ISO 8601."""
+        with self._m._lock:
+            return [(f["text"], f.get("at", "")) for f in self._m._load(self.device)]
+
     def facts(self) -> list[str]:
         with self._m._lock:
             return [f["text"] for f in self._m._load(self.device)]
+
+    def forget_facts(self, texts, knowledge_refs=()) -> list[str]:
+        """Drop the facts whose text is one of ``texts`` and the knowledge
+        refs in ``knowledge_refs``; the conversation stays. Returns what was
+        dropped. Raises ``OSError`` (and drops nothing) if it cannot be
+        written."""
+        drop = {_key(t) for t in texts}
+        gone_refs = set(knowledge_refs)
+        m = self._m
+        with m._lock:
+            kept = m._load(self.device)
+            kept_refs = m._refs.get(self.device, [])
+            m._facts[self.device] = [f for f in kept if _key(f["text"]) not in drop]
+            m._refs[self.device] = [r for r in kept_refs if r not in gone_refs]
+            try:
+                m._save(self.device, strict=True)
+            except OSError:
+                m._facts[self.device], m._refs[self.device] = kept, kept_refs
+                raise
+            return [f["text"] for f in kept if _key(f["text"]) in drop]
 
     def forget(self) -> int:
         """Drop this device's facts and its conversation. Returns how many
