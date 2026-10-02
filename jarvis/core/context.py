@@ -12,6 +12,9 @@ reasoner, or ``None``). ``schedule``/``http`` land with the M2 sandbox.
 ``memory`` (M4.5) is what the device this turn came from has been asked to
 remember (``jarvis.core.memory.DeviceMemory``): ``remember(text)``,
 ``facts()``. ``None`` when the registry was built without one.
+
+``knowledge`` is the local knowledge base (M5, ``jarvis.knowledge.Knowledge``),
+or ``None`` when ``[knowledge] enabled = false``.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ if TYPE_CHECKING:
     from jarvis.config import Config
     from jarvis.core.memory import DeviceMemory
     from jarvis.core.reasoner import Reasoner
+    from jarvis.knowledge import Knowledge
     from jarvis.remote.server import EdgeControl
 
 
@@ -35,6 +39,7 @@ class Context:
     llm: "Reasoner | None" = None
     edges: "EdgeControl | None" = None
     memory: "DeviceMemory | None" = None
+    knowledge: "Knowledge | None" = None
 
     @property
     def data_dir(self) -> Path:

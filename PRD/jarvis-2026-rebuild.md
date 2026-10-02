@@ -611,7 +611,9 @@ right after M4. Like M4, not yet checked against a real Ollama model.
   no LLM.
 - This is not M5: a short list handed to the model whole, no retrieval.
 
-### Milestone 5 — knowledge base (RAG)
+### Milestone 5 — knowledge base (RAG) — ✅ DONE (2026-10-01)
+Plan: `PRD/milestone-5-knowledge-base.md`; outcome:
+`PRD/milestone-5-knowledge-base-outcome.md`. Taken before Milestone 4.
 - `knowledge/{store,ingest}.py`; recall intent → retrieve → compose (Ollama) or
   verbatim-snippet fallback; no Claude.
 - Ingestion: startup + interval scan of `knowledge.docs_dir`

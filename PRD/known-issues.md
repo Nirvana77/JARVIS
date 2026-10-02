@@ -361,3 +361,91 @@ It is what confirms *"Remove the 'x' skill for good, sir?"* (`RemoveSkillFlow`)
 and *"… Is that right, sir?"* (`TeachFlow`). `ask_yes_no_or_none`, next to it,
 matches whole words and is what background questions already use. Fix: make
 the two flows use it (and decide what an unclear reply should do there).
+
+---
+
+## 14. A question about the documents that does not sound like one is "unknown"
+
+**Reported:** 2026-10-01, M5 dry run (`PRD/milestone-5-knowledge-base-outcome.md`).
+**Status:** open — a limit of routing by intent, not a regression.
+**Severity:** the knowledge base has the answer and is never asked.
+
+"How big is the water tank" is in the manual and scores 0.50 against the right
+chunk — but the NLU has no recall-shaped frame to hang it on, so it is
+`unknown` (the out-of-domain guard: similarity 0.22 to any training phrase) and
+nothing is retrieved. "What
+does the manual say about the water tank" works. Relatedly, "note that …" with
+a subject the classifier has not seen can be heard as `remember` (measured:
+"note that the bins go out on thursday" → remember 0.46, note 0.24); both end up in the
+knowledge base, but the line is missing from `notes.txt`.
+
+### Fix, when someone takes it
+
+Ask the knowledge base before giving up on an `unknown`: if a chunk clears
+`search_min_score`, answer from it; otherwise say the usual line. That belongs
+with Milestone 4 (misheard-command reasoning), which already owns what happens
+to an utterance the NLU could not place — on the voice path a garbled
+transcription must not be answered from a note it happens to resemble.
+
+---
+
+## 15. Changing `intents.json` or a skill's examples does not retrain the NLU
+
+**Reported:** 2026-10-01, M5 dry run.
+**Status:** open.
+**Severity:** silent — the old model keeps answering, and nothing says so.
+
+`ensure_nlu` (`jarvis/app.py`) retrains only when a registered skill is missing
+from the model's labels. Editing patterns or examples for intents the model
+already knows changes nothing until `python -m jarvis nlu rebuild`. It showed
+up as a dry run still classifying with the examples from an hour earlier. The
+legacy code watched `intents.json`'s mtime; the rebuild has no equivalent.
+
+### Fix, when someone takes it
+
+Store a hash of the corpus in the model's `meta.json` and have `ensure_nlu`
+compare it.
+
+---
+
+## 16. `Persona.phrase` — a model per call, on the event loop, and after the answer
+
+**Reported:** 2026-10-01, reading the answer path for M5.
+**Status:** open. Not reproduced live: there is no Ollama on the dev machine.
+**Severity:** latency, and possibly a lost source, only when a reasoner is up.
+
+- `Persona._nearest_style_lines` (`jarvis/core/persona.py:165-181`) builds a
+  new `fastembed.TextEmbedding` on every call (twice on the first).
+- `handle()` calls `persona.phrase(...)` synchronously, so the Ollama request
+  (30 s timeout) blocks the event loop.
+- A knowledge answer composed by Ollama is then rewritten by Ollama again, by
+  `persona.phrase`: two generations per recall, and the rewrite is free to
+  drop the source the first one was made to name.
+
+### Fix, when someone takes it
+
+Give the persona one embedder, run `phrase` in `asyncio.to_thread`, and let a
+skill mark its line as already in voice (or pass the persona's system prompt
+to the knowledge compose step and skip the rewrite).
+
+---
+
+## 17. Knowledge base: small things the M5 review found and left
+
+**Reported:** 2026-10-01, independent review of `jarvis/knowledge/`.
+**Status:** open, each judged not worth fixing yet.
+
+- **"Did the model name its source?" is a substring check.** A file called
+  `notes.md` is "named" by any reply containing the word "notes", so its
+  source is not appended. And the source that is appended is the best hit's,
+  which need not be the excerpt the model used.
+- **One file reached through two symlinks is indexed twice** — paths are not
+  resolved.
+- **Two processes with different backends on one database.** If one process
+  cannot load sqlite-vec and writes between another's read and write of the
+  same source, the index can be marked in step when it is not. Both normally
+  share a venv, so both have it or neither does.
+- **Document text goes into the local model's prompt as it is.** A document
+  can steer the spoken answer. It stays on this machine, and Claude is never
+  involved, but the docs folder is trusted input.
+

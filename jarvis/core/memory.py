@@ -7,6 +7,10 @@ Two kinds, kept apart because they live differently:
   lasting facts             what a device was asked to note or remember —
                             ``data/memory/<device>.json``, until forgotten
 
+What was said to ``remember`` also goes into the M5 knowledge base, which is
+shared by every device; the device keeps the ids of the facts it put there
+(``knowledge_refs``), so that forgetting takes them out again.
+
 Both are handed to the reasoner when a turn needs thinking about
 (``Orchestrator._think``). A device is an edge's ``device_id`` (``watch``,
 ``livingroom``) or ``local`` for the all-in-one and text modes. The
@@ -72,6 +76,8 @@ class Memory:
         self._turns: dict[str, deque[tuple[str, str]]] = {}
         self._last_turn: dict[str, float] = {}
         self._facts: dict[str, list[dict]] = {}
+        #: the knowledge-base facts each device put there, until forgotten
+        self._refs: dict[str, list[str]] = {}
 
     @classmethod
     def from_config(cls, config) -> "Memory":
@@ -104,6 +110,7 @@ class Memory:
         if device in self._facts:
             return self._facts[device]
         facts: list[dict] = []
+        refs: list[str] = []
         path = self._path(device)
         if path is not None and path.is_file():
             try:
@@ -113,6 +120,7 @@ class Memory:
                     for f in raw.get("facts", [])
                     if isinstance(f, dict) and isinstance(f.get("text"), str) and f["text"].strip()
                 ]
+                refs = [r for r in raw.get("knowledge_refs", []) if isinstance(r, str)]
             except OSError as exc:
                 log.warning("memory for %s cannot be read (%s); starting it empty", device, exc)
             except (ValueError, AttributeError) as exc:
@@ -125,6 +133,7 @@ class Memory:
                 except OSError as move_exc:
                     log.warning("could not set it aside: %s", move_exc)
         self._facts[device] = facts
+        self._refs[device] = refs
         return facts
 
     def _save(self, device: str, *, strict: bool = False) -> None:
@@ -134,13 +143,15 @@ class Memory:
         if path is None:
             return
         facts = self._facts.get(device, [])
+        refs = self._refs.get(device, [])
         try:
-            if not facts:
+            if not facts and not refs:
                 path.unlink(missing_ok=True)
                 return
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps({"facts": facts}, indent=1, ensure_ascii=False), encoding="utf-8")
+            body = {"facts": facts, "knowledge_refs": refs} if refs else {"facts": facts}
+            tmp.write_text(json.dumps(body, indent=1, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, path)  # never a half-written file
         except OSError as exc:
             if strict:
@@ -157,19 +168,30 @@ class DeviceMemory:
 
     # -- lasting facts -----------------------------------------------------
 
-    def remember(self, text: str) -> bool:
+    def remember(self, text: str, knowledge_ref: str | None = None) -> bool:
+        """Keep ``text``. ``knowledge_ref``: the id of the same fact in the
+        knowledge base, kept until :meth:`forget` — even when the fact itself
+        is later said again or pushed out by newer ones, since the knowledge
+        base still has it."""
         text = " ".join((text or "").split())[:MAX_FACT_CHARS].strip()
         if not text:
             return False
         m = self._m
         with m._lock:
             facts = m._load(self.device)
+            if knowledge_ref:
+                m._refs.setdefault(self.device, []).append(knowledge_ref)
             # said again: one fact, and the newest
             facts[:] = [f for f in facts if _key(f["text"]) != _key(text)]
             facts.append({"text": text, "at": datetime.now().isoformat(timespec="seconds")})
             del facts[: max(0, len(facts) - m.max_facts)]
             m._save(self.device)
         return True
+
+    def knowledge_refs(self) -> list[str]:
+        with self._m._lock:
+            self._m._load(self.device)
+            return list(self._m._refs.get(self.device, []))
 
     def facts(self) -> list[str]:
         with self._m._lock:
@@ -183,12 +205,15 @@ class DeviceMemory:
         m = self._m
         with m._lock:
             kept = m._load(self.device)
+            kept_refs = m._refs.get(self.device, [])
             count = len(kept)
             m._facts[self.device] = []
+            m._refs[self.device] = []
             try:
                 m._save(self.device, strict=True)
             except OSError:
                 m._facts[self.device] = kept
+                m._refs[self.device] = kept_refs
                 raise
             m._turns.pop(self.device, None)
             m._last_turn.pop(self.device, None)

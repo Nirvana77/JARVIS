@@ -184,6 +184,6 @@ def test_check_setup_does_not_fail_on_the_legacy_stack():
 def test_the_name_map_is_not_stale(module):
     """Every rename in the map should still be a module something imports —
     otherwise the map is quietly hiding a missing requirement."""
-    if module in ("yaml", "sqlite_vec"):
+    if module == "yaml":
         pytest.skip("listed for the phase-0 stack, not imported by jarvis/ yet")
     assert module in _imports(ROOT / "jarvis") | _imports(ROOT / "tests")

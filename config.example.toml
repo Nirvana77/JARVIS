@@ -103,6 +103,20 @@ sandbox_cpu_s = 5           # RLIMIT_CPU for a sandboxed subprocess
 max_generate_attempts = 5  # generate -> validate -> sandbox retries, feeding
                             # back the previous attempt's error, before giving up
 
+[knowledge]
+# The local knowledge base: files in docs_dir and facts you say aloud
+# ("remember that ...") are embedded into data/knowledge/kb.sqlite and answered
+# from locally. Claude is never called for these answers.
+enabled = true
+docs_dir = "~/jarvis/knowledge"  # .txt / .md / .pdf; scanned at startup and then
+scan_interval_s = 60             # every this many seconds (changed files only)
+top_k = 4                # chunks the reasoner composes an answer from
+min_score = 0.48         # cosine similarity below this is "nothing on that"
+search_min_score = 0.6   # the higher bar for answering "what is ..." from your
+                         # notes instead of Wikipedia
+chunk_chars = 800        # chunk size, and the overlap carried between
+chunk_overlap = 100      # neighbouring chunks, in characters
+
 [paths]
 data_dir = "data"        # models, nlu artifacts, per-skill scratch (git-ignored)
 

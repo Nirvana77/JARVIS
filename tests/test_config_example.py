@@ -29,6 +29,7 @@ _SECTIONS = {
     "reasoner": "reasoner",
     "memory": "memory",
     "factory": "factory",
+    "knowledge": "knowledge",
     "server": "server",
     "whisper": "whisper",
     "voder": "voder",

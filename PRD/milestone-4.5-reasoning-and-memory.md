@@ -75,6 +75,10 @@ the rest of the turn the NLU could not place, and gives it something to reason
    as `note` and `tests/test_nlu.py` pins it, so that stays: the `note` skill
    also files the text under the device it was said to (`ctx.memory`), and
    still appends to `notes.txt` as before. No new "remember" intent.
+   *(Superseded when merged with M5: "remember that …" is M5's `remember`
+   skill, which now also files the fact with the device, with the id of the
+   knowledge-base fact, so forgetting removes it from both. `note` still
+   files with the device too. See "Merged with M5" in the outcome.)*
 8. **Reading back and forgetting are inline**, like greeting and goodbye:
    two new seed intents, `recall_memory` and `forget_memory`, no LLM needed —
    they work with Ollama off. Forgetting asks first and sits behind

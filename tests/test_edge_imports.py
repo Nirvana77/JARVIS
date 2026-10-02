@@ -27,6 +27,9 @@ FORBIDDEN = (
     "torch",
     "transformers",
     "huggingface_hub",
+    # M5: the knowledge base lives on the brain
+    "sqlite_vec",
+    "pypdf",
 )
 
 

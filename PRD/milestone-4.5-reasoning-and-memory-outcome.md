@@ -143,6 +143,31 @@ fixed here has a test that failed first.
 | `"watch\n"` passed as a device id. | `fullmatch` in `memory.py`. The same pattern in `protocol.py` pre-dates this: known issue #12. |
 | **"Forget everything" leaves the notes in `notes.txt`.** | Not changed — it is a decision. The plan, the README and this document now say so plainly. See "Open questions". |
 
+## Merged with M5 (the knowledge base)
+
+M5 was built in parallel on `knowledge-base`, from the same `develop`, and
+the two were merged on `reasoning-memory-knowledge`. Both kept what the
+speaker said, in different places, so the merge had to decide who owns what:
+
+| | Owner after the merge |
+|---|---|
+| *"Remember that I parked on level two"* | M5's `remember` skill → a fact in the knowledge base (shared by every device) **and** the device's memory, which keeps the fact's knowledge-base id. With the knowledge base off, the device's memory alone. |
+| *"Note that …"* | `note` → `notes.txt`, M5's `dictated-notes.md` mirror, and the device's memory. |
+| *"Where did I park?"*, *"what do my notes say about …"* | M5's `recall` — the NLU is sure of these, so the reasoner is never asked. |
+| *"What do you remember?"* | M4.5's `recall_memory`: this device's list, read back. ("Read back my notes" moved to M5's `recall`; on the merged model it was `recall` 0.55 against `recall_memory` 0.34.) |
+| *"Forget everything I told you"* | M4.5's `forget_memory`: the device's memory **and** the knowledge-base facts it put there (by id), or neither — a knowledge base that cannot remove one is the error line, not "Forgotten". Another device's facts stay. |
+
+Tests: `tests/test_memory_knowledge.py` (6). The merged suite passes in full
+(see the merge commit). Still not removed by "forget": the notes in
+`notes.txt` and in `dictated-notes.md`, both files shared by every device —
+the open question below now covers both.
+
+The NLU, trained on the merged seed in isolation, keeps the new intents apart:
+"remember that I parked on level two" → `remember` 0.92, "what do you
+remember" → `recall_memory` 0.77, "where did I park" → `recall` 0.81, "forget
+everything I told you" → `forget_memory` 0.80, "forget the coin skill" →
+`remove_skill` 0.90.
+
 ## Found along the way
 
 - **Known issue #5 is fixed here** (decision 11) and has left
@@ -193,7 +218,8 @@ fixed here has a test that failed first.
 
 ## Open questions
 
-- **Should `note` keep writing `notes.txt`?** Today a note goes to the
+- **Should `note` keep writing `notes.txt`** (and, since M5, mirror into
+  `dictated-notes.md`)? Today a note goes to the
   device's memory *and* to the skill's shared log, and "forget everything"
   clears only the first, so JARVIS says "Forgotten" while the text is still
   on disk. Recommended: stop writing `notes.txt` when a memory is present
@@ -208,4 +234,7 @@ fixed here has a test that failed first.
   decision.
 - A confident whole that is secretly two commands of the *same* skill
   ("flip a coin and then flip three coins") stays one command (decision 4).
-- M5: `data/memory/` is an obvious thing for the knowledge base to ingest.
+- M5's known issue #14 ("a question about the documents that does not sound
+  like one is `unknown`") says its fix belongs with M4: ask the knowledge base
+  before giving up on an `unknown`. `_think` is that place — the excerpts
+  could go into the reasoning prompt. Not done in the merge.

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from jarvis.nlu import slots
 from jarvis.nlu.classifier import UNKNOWN, Classifier
 from jarvis.nlu.corpus import build_corpus, expand_pattern, read_corpus_db, write_corpus_db
 from jarvis.nlu.train import latest_version, train
+from jarvis.skills.registry import BUILTIN_PACKAGE, Registry
 
 
 # -- corpus -------------------------------------------------------------------
@@ -82,12 +85,52 @@ def test_seed_intents_classify_above_threshold(trained):
         "shut yourself down": "shutdown",
         "play some jazz": "play",
         "open spotify": "open_app",
-        "remember that i parked on level three": "note",
+        "make a note that the meeting moved to friday": "note",
     }
     for text, expected in cases.items():
         label, conf = clf.predict(text)
         assert label == expected, f"{text!r} -> {label} ({conf:.2f})"
         assert conf >= clf.threshold
+
+
+@pytest.fixture(scope="module")
+def trained_with_builtins(tmp_path_factory, config, embedder, embedding_model):
+    """What a real start trains on: the seed intents plus every builtin skill's
+    own examples (`app.rebuild_nlu`). The data dir is a tmp one, so no edge
+    tools or learned skills of this install are in it."""
+    scratch = tmp_path_factory.mktemp("nlu_builtins")
+    registry = Registry.discover(
+        dataclasses.replace(config, data_dir=scratch), packages=(BUILTIN_PACKAGE,)
+    )
+    train(build_corpus(manifests=registry.manifests()), embedding_model, scratch / "model")
+    return Classifier.load(scratch / "model", embedding_model, threshold=0.35)
+
+
+def test_knowledge_intents_classify_and_leave_search_alone(trained_with_builtins):
+    """M5. "Remember that ..." used to be a way to dictate a note; the PRD's
+    knowledge base gives it to the `remember` skill. `recall` must take the
+    questions about the user's own notes without taking the encyclopedia ones
+    from `search`."""
+    clf = trained_with_builtins
+    cases = {
+        "remember that i parked on level three": "remember",
+        "remember the gate code is 7731": "remember",
+        "what do my notes say about the wifi code": "recall",
+        "where did i park": "recall",
+        "what does the manual say about descaling": "recall",
+        "what did i tell you about the dentist": "recall",
+        "note that the wifi code is 1234": "note",
+        "what is photosynthesis": "search",
+        "who is ada lovelace": "search",
+        "search black holes": "search",
+    }
+    for text, expected in cases.items():
+        label, conf = clf.predict(text)
+        assert label == expected, f"{text!r} -> {label} ({conf:.2f})"
+        assert conf >= clf.threshold
+    # the new intents' frames must not be so loose that junk lands in them
+    for junk in ("asdf qwer zxcv", "blorp gnnn wibble frotz"):
+        assert clf.predict(junk)[0] == UNKNOWN
 
 
 def test_gibberish_is_unknown(trained):

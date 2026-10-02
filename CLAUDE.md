@@ -68,7 +68,10 @@ Follow this order for any PRD/milestone item — don't skip or reorder steps:
    M4.5), `jarvis/audio/stt.py`,
    plus sounddevice's audio callback threads — and, on the M3 remote path, every
    `asyncio.to_thread` the orchestrator makes through `RemoteLink`
-   (`jarvis/remote/server.py`) plus the services' `ThreadingHTTPServer`. A leaked or runaway thread doesn't fail a test on
+   (`jarvis/remote/server.py`) plus the services' `ThreadingHTTPServer` — and,
+   since M5, the knowledge scan (`jarvis/knowledge/__init__.py`:
+   `Knowledge.watch` runs each interval scan in an `asyncio.to_thread` worker;
+   cancelling the task waits for it). A leaked or runaway thread doesn't fail a test on
    its own, so check for one explicitly:
    - **Tests**: compare `threading.enumerate()` before and after the code
      under test. A test that starts a thread must leave none behind once it
@@ -120,11 +123,52 @@ python -m jarvis text            # the same brain, typed in and printed out
 python -m jarvis --selftest      # load NLU + persona, list skills, exit 0
 python -m jarvis serve           # M3: the brain, waiting for an audio edge
 python -m jarvis edge            # M3: the audio satellite (a mic, a speaker, a socket)
+python -m jarvis knowledge scan  # M5: index the docs folder now, print what changed
+python -m jarvis knowledge status  # M5: list indexed sources, counts, index backend
 ```
 
 **All-in-one is still the default.** `serve` / `edge` are the opt-in split
 from Milestone 3 (`PRD/milestone-3-remote-edge.md`): the brain runs where the
 GPU is, the edge runs in the room.
+
+#### The knowledge base (M5)
+
+`PRD/milestone-5-knowledge-base.md` is the plan; the code is `jarvis/knowledge/`.
+
+- **Where documents go**: `[knowledge] docs_dir` (default `~/jarvis/knowledge`,
+  not created until something is written there). `.txt`, `.md` and `.pdf`
+  (via `pypdf`) anywhere under it are indexed; dot-folders and other suffixes
+  are ignored. Spoken facts ("remember that …") are indexed too, with no file
+  behind them, and a folder scan never drops them.
+- **The index**: chunks embedded with the NLU's own MiniLM model into
+  `data/knowledge/kb.sqlite`. The float32 BLOBs in that file are the source of
+  truth; `sqlite-vec` indexes them when the extension loads, otherwise search is
+  brute-force cosine in numpy with the same ranking — either backend reads a
+  database the other wrote. `knowledge status` and `--selftest` say which one
+  you got.
+- **When it is scanned**: once at startup, *before* JARVIS says it is ready (so
+  a first-run embedding of a large folder is visible there, not hidden behind
+  the first turns), then every `scan_interval_s` by `Knowledge.watch` — only
+  files whose mtime+size changed are re-embedded, removed files are dropped.
+- **Skills**: two new — `recall` ("what do my notes say about …", "where did i
+  park") and `remember` ("remember that …"). Two changed — `note` also appends
+  each note to `<docs_dir>/dictated-notes.md` and indexes it at once, and
+  `search` ("what is …") asks the notes first and goes to Wikipedia only when
+  nothing clears the bar.
+- **Answers**: composed by the local Ollama reasoner from the top-k chunks when
+  it is up; otherwise the best snippet verbatim — "From your notes, sir: … —
+  from <source>." **Claude is never called for a knowledge answer**, by design
+  (PRD § "Knowledge base (RAG)") — don't add it as a fallback.
+- **Two score bars**: `min_score` (0.48) is what `recall` accepts; `search_min_score`
+  (0.6) is the stricter bar for answering "what is …" from the notes, because
+  there a note that merely mentions the subject must not beat Wikipedia.
+
+**Tests must never index the developer's own `~/jarvis/knowledge` or write to
+the repo's `data/`.** Point a real config at tmp directories with
+`with_knowledge_paths(config, tmp_path)` from `tests/knowledge_harness.py`
+(it also has `make_store` / `make_knowledge` and fake embedders/reasoners). A
+test that builds JARVIS from the real config without it scans whatever is in
+the developer's folder — slow, and nondeterministic.
 
 #### The remote edge (M3)
 

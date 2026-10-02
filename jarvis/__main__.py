@@ -59,6 +59,8 @@ def _build_parser() -> argparse.ArgumentParser:
     models.add_argument("op", choices=["pull"])
     nlu = sub.add_parser("nlu", help="NLU model management")
     nlu.add_argument("op", choices=["rebuild"])
+    knowledge = sub.add_parser("knowledge", help="the knowledge base: index the docs folder, or list it")
+    knowledge.add_argument("op", choices=["scan", "status"])
     sub.add_parser("mic", help="live microphone level meter")
     text = sub.add_parser(
         "text", help="real pipeline, text in/out — no mic/wake-word/STT/speaker"
@@ -124,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
         return app.models_pull(config)
     if args.command == "nlu":
         return app.nlu_rebuild(config)
+    if args.command == "knowledge":
+        return app.knowledge_command(config, args.op)
     if args.command == "mic":
         return app.mic_meter(config)
     if args.command == "text":

@@ -4,9 +4,9 @@
 
 **Required** means the 2026 rebuild (`python -m jarvis`, `requirements.txt`):
 if a row there is ✗, the assistant will not run. Everything else — the legacy
-`main.py` / `libs/` stack, the pieces later milestones will need, and the
-optional remote-edge services — is reported as ✓/– and never fails the run,
-because a rebuild-only install is the normal case and should exit 0.
+`main.py` / `libs/` stack, the optional remote-edge services, and the state of
+the knowledge base — is reported as ✓/– and never fails the run, because a
+rebuild-only install is the normal case and should exit 0.
 """
 
 import importlib
@@ -65,6 +65,8 @@ REQUIRED = [
     ("fastembed", "fastembed (NLU embeddings)"),
     ("sklearn", "scikit-learn (NLU classifier head)"),
     ("joblib", "joblib (persists that head)"),
+    ("sqlite_vec", "sqlite-vec (knowledge base vector index; brute-force numpy search without it)"),
+    ("pypdf", "pypdf (.pdf loader for the knowledge docs folder)"),
     ("anthropic", "anthropic (the skill factory)"),
     ("requests", "requests (reasoner + search skill)"),
     ("httpx", "httpx (the whisper/voder service clients)"),
@@ -92,20 +94,6 @@ for mod, name in [
         line(OK, name, getattr(m, "__version__", ""))
     except Exception as e:
         line(SKIP, name, f"{e!r} — installed with the packages above")
-
-
-# --------------------------------------------------------------------------
-# Approved in the Phase 0 spike and not imported yet: M5 is the knowledge base.
-section("Later milestones (not needed yet)")
-for mod, name in [
-    ("sqlite_vec", "sqlite-vec (M5 knowledge vector index)"),
-    ("pypdf", "pypdf (M5 .pdf loader)"),
-]:
-    try:
-        m = importlib.import_module(mod)
-        line(OK, name, getattr(m, "__version__", ""))
-    except Exception:
-        line(SKIP, name, "not installed — M5 will need it")
 
 
 # --------------------------------------------------------------------------
@@ -201,7 +189,9 @@ line(
 # --------------------------------------------------------------------------
 # The two rows above that depend on something outside pip: a system library,
 # and an extension that has to load into sqlite. Neither is fatal — a brain
-# behind a remote edge needs no sound card of its own.
+# behind a remote edge needs no sound card of its own, and the knowledge base
+# searches by brute force when the extension will not load (an sqlite3 built
+# without load_extension support, say).
 section("Functional probes")
 try:
     import sounddevice as _sd
@@ -227,7 +217,11 @@ try:
     _db.close()
     line(OK, "sqlite-vec extension loads", _vec_version)
 except Exception as e:
-    line(SKIP, "sqlite-vec extension loads", f"{e!r} — M5 will need it")
+    line(
+        SKIP,
+        "sqlite-vec extension loads",
+        f"{e!r} — the knowledge base falls back to brute-force numpy search",
+    )
 
 
 # --------------------------------------------------------------------------
@@ -302,6 +296,44 @@ if _config is not None:
             if _config.server.tls_enabled
             else ("allow_insecure = true (LAN/dev only!)" if _tls else "MISSING — `serve` will refuse to start"),
         )
+
+
+# --------------------------------------------------------------------------
+# M5 — the knowledge base (PRD/milestone-5-knowledge-base.md). What is already
+# in the index, read without scanning: a scan embeds every new file, which is
+# `python -m jarvis knowledge scan`'s job, not a setup check's. No model is
+# loaded and no database is created here.
+section("Knowledge base (M5)")
+if _config is None:
+    line(SKIP, "knowledge base", "config.toml did not load (see above)")
+else:
+    try:
+        from jarvis import knowledge as _knowledge_base
+
+        _knowledge = _knowledge_base.build(_config)
+        if _knowledge is None:
+            line(SKIP, "knowledge base", "off ([knowledge] enabled = false)")
+        else:
+            try:
+                _docs = _knowledge.docs_dir
+                line(
+                    OK if _docs.is_dir() else SKIP,
+                    "docs folder",
+                    str(_docs)
+                    if _docs.is_dir()
+                    else f"{_docs} does not exist yet — the first dictated note creates it",
+                )
+                _stats = _knowledge.store.stats()
+                line(
+                    OK,
+                    "index",
+                    f"{_stats['files']} file(s), {_stats['facts']} remembered fact(s), "
+                    f"{_stats['chunks']} chunk(s) · backend: {_stats['backend']}",
+                )
+            finally:
+                _knowledge.close()
+    except Exception as e:
+        line(SKIP, "knowledge base", repr(e))
 
 
 # --------------------------------------------------------------------------

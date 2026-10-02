@@ -44,6 +44,7 @@ class Registry:
         say: Callable[[str], None] | None = None,
         edges=None,
         memory=None,
+        knowledge=None,
     ) -> None:
         self.config = config
         self.reasoner = reasoner
@@ -53,6 +54,8 @@ class Registry:
         #: M4.5: the `Memory` the orchestrator keeps — a skill gets the view
         #: for the device whose turn it is, as ctx.memory
         self.memory = memory
+        #: M5: the knowledge base, or None when it is off — ctx.knowledge
+        self.knowledge = knowledge
         self._skills: dict[str, object] = {}
 
     # -- discovery ------------------------------------------------------------
@@ -66,8 +69,9 @@ class Registry:
         packages: tuple[str, ...] = DEFAULT_PACKAGES,
         edges=None,
         memory=None,
+        knowledge=None,
     ) -> "Registry":
-        reg = cls(config, reasoner, say, edges, memory)
+        reg = cls(config, reasoner, say, edges, memory, knowledge)
         for package in packages:
             try:
                 pkg = importlib.import_module(package)
@@ -110,7 +114,8 @@ class Registry:
         """M2: a fresh registry that also picks up newly-promoted
         skills/learned/* modules (re-imports everything from scratch)."""
         return Registry.discover(
-            self.config, self.reasoner, self.say, edges=self.edges, memory=self.memory
+            self.config, self.reasoner, self.say, edges=self.edges,
+            memory=self.memory, knowledge=self.knowledge,
         )
 
     # -- introspection -----------------------------------------------------
@@ -137,6 +142,7 @@ class Registry:
             llm=self.reasoner,
             edges=self.edges,
             memory=self.memory.device() if self.memory is not None else None,
+            knowledge=self.knowledge,
         )
 
     def dispatch(self, label: str, params: dict | None = None) -> str:

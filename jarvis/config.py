@@ -166,6 +166,34 @@ class FactoryConfig:
 
 
 @dataclass(frozen=True)
+class KnowledgeConfig:
+    """M5: the local knowledge base — documents in ``docs_dir`` and spoken
+    facts, embedded into ``data/knowledge/kb.sqlite``. Claude is never involved
+    in answering from it."""
+
+    enabled: bool = True
+    #: `.txt` / `.md` / `.pdf` files here are indexed at startup and re-scanned
+    #: every `scan_interval_s`. Not created until something is written to it.
+    docs_dir: str = "~/jarvis/knowledge"
+    scan_interval_s: float = 60.0
+    #: chunks handed to the reasoner to compose an answer from
+    top_k: int = 4
+    #: cosine similarity below which a chunk is not an answer at all
+    min_score: float = 0.48
+    #: the higher bar a chunk must clear to answer a "what is ..." that would
+    #: otherwise go to Wikipedia — a loosely related note must not win there
+    search_min_score: float = 0.6
+    #: chunk size and the overlap carried between neighbours, in characters
+    chunk_chars: int = 800
+    chunk_overlap: int = 100
+
+    @property
+    def docs_path(self) -> Path:
+        path = Path(self.docs_dir).expanduser()
+        return path if path.is_absolute() else (_REPO_ROOT / path).resolve()
+
+
+@dataclass(frozen=True)
 class ServerConfig:
     """M3: ``python -m jarvis serve`` — the brain's WebSocket listener.
 
@@ -328,6 +356,7 @@ class Config:
     reasoner: ReasonerConfig = field(default_factory=ReasonerConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     factory: FactoryConfig = field(default_factory=FactoryConfig)
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     # M3: the remote-edge split. Unused by the all-in-one path.
     server: ServerConfig = field(default_factory=ServerConfig)
     whisper: WhisperConfig = field(default_factory=WhisperConfig)
@@ -368,6 +397,11 @@ class Config:
     @property
     def corpus_path(self) -> Path:
         return self.data_dir / "nlu" / "corpus.sqlite"
+
+    @property
+    def knowledge_db_path(self) -> Path:
+        """M5: chunks, their embeddings and the vector index, in one file."""
+        return self.data_dir / "knowledge" / "kb.sqlite"
 
     def skill_data_dir(self, name: str) -> Path:
         return self.data_dir / "skills" / name
@@ -438,6 +472,28 @@ def _section(raw: dict, key: str) -> dict:
     return value
 
 
+def _knowledge_config(raw: dict) -> KnowledgeConfig:
+    """`[knowledge]`, with the values that would hang or break it clamped
+    rather than refused: this file is also the edge's, and a brain-only typo
+    should not stop a Pi from starting."""
+    defaults = KnowledgeConfig()
+    chunk_chars = max(100, int(raw.get("chunk_chars", defaults.chunk_chars)))
+    return KnowledgeConfig(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        docs_dir=str(raw.get("docs_dir", defaults.docs_dir)),
+        scan_interval_s=max(1.0, float(raw.get("scan_interval_s", defaults.scan_interval_s))),
+        # sqlite-vec refuses a k above 4096; far below that is already too many
+        # chunks to hand a small local model
+        top_k=min(max(1, int(raw.get("top_k", defaults.top_k))), 50),
+        min_score=float(raw.get("min_score", defaults.min_score)),
+        search_min_score=float(raw.get("search_min_score", defaults.search_min_score)),
+        chunk_chars=chunk_chars,
+        chunk_overlap=min(
+            max(0, int(raw.get("chunk_overlap", defaults.chunk_overlap))), chunk_chars - 1
+        ),
+    )
+
+
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     """Build a :class:`Config`. Missing file -> all defaults. Env overrides win."""
     load_dotenv()  # make secrets visible to os.getenv elsewhere; harmless if absent
@@ -458,6 +514,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     reasoner = _section(raw, "reasoner")
     memory = _section(raw, "memory")
     factory = _section(raw, "factory")
+    knowledge = _section(raw, "knowledge")
     paths = _section(raw, "paths")
     # M3
     server = _section(raw, "server")
@@ -544,6 +601,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             sandbox_cpu_s=int(factory.get("sandbox_cpu_s", 5)),
             max_generate_attempts=int(factory.get("max_generate_attempts", 5)),
         ),
+        knowledge=_knowledge_config(knowledge),
         server=ServerConfig(
             host=str(server.get("host", "0.0.0.0")),
             port=int(server.get("port", 8765)),

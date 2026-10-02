@@ -251,6 +251,7 @@ def test_serve_builds_an_orchestrator_that_cannot_be_shut_down(config, monkeypat
     monkeypatch.setattr(app.Reasoner, "from_config", lambda c: None)
     monkeypatch.setattr(app.Persona, "load", lambda *a, **k: Stub())
     monkeypatch.setattr(app.Registry, "discover", lambda *a, **k: Stub())
+    monkeypatch.setattr(app, "build_knowledge", lambda c: None)
     monkeypatch.setattr(app, "ensure_nlu", lambda c, r: 1)
     monkeypatch.setattr(app, "load_classifier", lambda c: type("N", (), {"version": 1})())
     monkeypatch.setattr(app.ClaudeClient, "from_config", lambda c: type("C", (), {"available": False})())

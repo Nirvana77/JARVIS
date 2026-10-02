@@ -33,6 +33,10 @@ fastembed>=0.8.0            # sentence embeddings for the NLU
 scikit-learn>=1.9.1         # the classifier head on top of them
 joblib>=1.6.0               # persists that head between runs
 
+# -- the knowledge base (M5) ------------------------------------------------
+sqlite-vec>=0.1.9           # vector index inside kb.sqlite (numpy fallback without it)
+pypdf>=6.19.0               # the .pdf loader for the docs folder
+
 # -- skills, reasoning, the factory ----------------------------------------
 anthropic>=1.7.0            # the Claude-backed skill factory (M2)
 requests>=2.34.2            # the Ollama reasoner, and the search skill
