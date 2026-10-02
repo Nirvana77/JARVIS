@@ -163,7 +163,11 @@ works. *"What do you remember?"* reads the list back and *"forget everything
 I told you"* clears it after a yes — neither needs the LLM. Forgetting clears
 that memory and the facts this device gave the knowledge base; it does not
 touch the notes files (`data/skills/note/notes.txt`, and the knowledge base's
-`dictated-notes.md`), which keep every note ever given. What the watch
+`dictated-notes.md`), which keep every note ever given. One thing at a time:
+*"forget about the park"*, *"remove the wifi note"* — JARVIS names what it
+found and asks first, then takes it out of everything, notes files included.
+*"What should I remember today?"* reads back what you asked it to remember
+today. What the watch
 was told, the living room does not know. `[memory]` in `config.toml` sets the
 sizes.
 

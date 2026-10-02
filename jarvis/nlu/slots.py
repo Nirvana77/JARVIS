@@ -30,11 +30,17 @@ _VERB_PREFIXES: dict[str, list[str]] = {
     "open_app": ["open up", "open", "launch", "start", "go to"],
     "note": [
         "make a note that",
+        "make a note of",
         "take a note that",
+        "add a note that",
+        "take note that",
+        "note down that",
         "note that",
+        "take a note",
         "note",
         "write down that",
         "write down",
+        "jot down",
         "write",
     ],
     # M5. A recall question with none of these lead-ins ("where did i park") is
@@ -58,8 +64,34 @@ _VERB_PREFIXES: dict[str, list[str]] = {
         "don't forget that",
         "do not forget that",
         "keep in mind that",
+        "i want you to remember",
+    ],
+    # What a "forget …" is about: "forget about the park" -> "the park",
+    # "remove the park note" -> "the park" (a trailing "note" is dropped too).
+    "forget_fact": [
+        "forget what i told you about",
+        "forget what i said about",
+        "forget everything about",
+        "you can forget about",
+        "forget about",
+        "forget that",
+        "forget",
+        "stop remembering",
+        "remove the note about",
+        "remove my note about",
+        "delete the note about",
+        "delete my note about",
+        "remove",
+        "delete",
+        "erase",
     ],
 }
+
+#: M4.5 + M5: skills that *store* what was said. They act only on an utterance
+#: that has one of their own lead-ins — without it the slot filler keeps the
+#: whole sentence, and "forget about the park", misheard as `remember`, would
+#: be remembered (`has_lead_in`).
+STORING = frozenset({"note", "remember"})
 
 #: intent label -> the slot key its value is stored under
 _SLOT_KEY: dict[str, str] = {
@@ -69,7 +101,10 @@ _SLOT_KEY: dict[str, str] = {
     "note": "text",
     "recall": "query",
     "remember": "text",
+    "forget_fact": "query",
 }
+
+_TRAILING_NOTE = re.compile(r"\s+notes?$", re.IGNORECASE)
 
 _TRAILING = re.compile(r"\b(please|jarvis|for me|now|thanks|thank you)\b", re.IGNORECASE)
 
@@ -80,23 +115,32 @@ def _strip_leading_fillers(tokens: list[str]) -> list[str]:
     return tokens
 
 
+def _lead_in(label: str, text: str) -> tuple[str | None, str]:
+    """The lead-in ``text`` starts with (longest first), and the rest."""
+    phrase = " ".join(_strip_leading_fillers(text.split())).strip().rstrip(" ,.!?")
+    lowered = phrase.lower()
+    for prefix in sorted(_VERB_PREFIXES.get(label, []), key=len, reverse=True):
+        if lowered == prefix:
+            return prefix, ""
+        if lowered.startswith(prefix + " "):
+            return prefix, phrase[len(prefix) + 1 :]
+    return None, phrase
+
+
+def has_lead_in(label: str, text: str) -> bool:
+    """Does ``text`` begin the way ``label`` is said ("remember that …")?"""
+    return _lead_in(label, text)[0] is not None
+
+
 def extract(label: str, text: str) -> dict[str, str]:
     if label not in _SLOT_KEY:
         return {}
 
-    phrase = " ".join(_strip_leading_fillers(text.split())).strip()
-    lowered = phrase.lower()
-
-    for prefix in sorted(_VERB_PREFIXES.get(label, []), key=len, reverse=True):
-        if lowered == prefix:
-            phrase = ""
-            break
-        if lowered.startswith(prefix + " "):
-            phrase = phrase[len(prefix) + 1 :]
-            break
-
+    _prefix, phrase = _lead_in(label, text)
     phrase = _TRAILING.sub("", phrase)
     phrase = " ".join(phrase.split()).strip(" ,.!?")
+    if label == "forget_fact":
+        phrase = _TRAILING_NOTE.sub("", phrase)
     return {_SLOT_KEY[label]: phrase}
 
 

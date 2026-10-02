@@ -19,6 +19,9 @@ nothing_remembered = ["You have not asked me to remember anything, sir."]
 forget_confirm     = ["Forget everything you have asked me to remember, sir?"]
 forgotten          = ["Forgotten, sir.", "Consider it forgotten, sir."]
 forget_kept        = ["Very well, sir. I shall keep it."]
+# one thing: {facts} is what will go, "; "-separated
+forget_fact_confirm = ["Forget '{facts}', sir?"]
+nothing_to_forget   = ["I have nothing like that to forget, sir."]
 skill_missing = [
   "I don't know how to do that yet, sir.",
   "That is beyond my current capabilities, sir.",
