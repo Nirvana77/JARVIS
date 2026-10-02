@@ -17,12 +17,16 @@ from typing import Callable, Sequence
 import numpy as np
 
 MIN_SCORE = 0.5
-MAX_OFFERED = 3
+#: the watch, 2026-10-02: four facts matched "the parking" and a cap of three
+#: left one behind — which "where did I park?" then answered with
+MAX_OFFERED = 5
 
 _STOP = frozenset(
     "a an the my me i you your to of on in at for about that this it is was what "
-    "all any every everything note notes thing things".split()
+    "all any every everything note notes thing things our us from told tell said "
+    "asked ask remembered".split()
 )
+_TODAY = re.compile(r"\btoday(?:'s)?\b", re.IGNORECASE)
 
 
 def _stem(word: str) -> str:
@@ -33,7 +37,8 @@ def _stem(word: str) -> str:
 
 
 def _words(text: str) -> set[str]:
-    return {_stem(w) for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in _STOP}
+    return {_stem(w) for w in re.findall(r"[a-z0-9]+", text.lower())
+            if w not in _STOP and (len(w) > 1 or w.isdigit())}
 
 
 def matching(
@@ -55,3 +60,23 @@ def matching(
         if score >= MIN_SCORE:
             scored.append((-score, order, fact))
     return [fact for _s, _o, fact in sorted(scored)[:MAX_OFFERED]]
+
+
+def select(
+    query: str,
+    entries: Sequence[tuple[str, str]],
+    *,
+    today: str,
+    embed: Callable[[str], np.ndarray] | None = None,
+) -> list[str]:
+    """What a "forget …" means, given ``(text, when)`` entries. "Today"
+    ("remove our notes from today", "forget everything about today") means
+    what was remembered today — ``today`` is the ISO date — narrowed by
+    whatever else the query names ("the milk note from today")."""
+    if not _TODAY.search(query):
+        return matching(query, [t for t, _w in entries], embed=embed)
+    todays = list(dict.fromkeys(t for t, when in entries if when.startswith(today)))
+    rest = _TODAY.sub(" ", query)
+    if _words(rest):
+        return matching(rest, todays, embed=embed)
+    return todays[:MAX_OFFERED]

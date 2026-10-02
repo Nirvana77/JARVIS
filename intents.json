@@ -157,7 +157,9 @@
 				"Do not forget that {intent}",
 				"Keep in mind that {intent}",
 				"Remember this",
-				"I want you to remember something"
+				"I want you to remember something",
+				"Remind me about {intent}",
+				"Remind me that {intent}"
 			],
 			"responses": ["I'll remember that"],
 			"action": "remember"
@@ -251,7 +253,14 @@
 				"what are the to-dos for today",
 				"what are my to-dos",
 				"what's on my list today",
-				"what do I need to do today"
+				"what do I need to do today",
+				"do you have any reminders for me today",
+				"do I have anything today",
+				"do I have anything on today",
+				"what is the note for today",
+				"is there any note for today",
+				"what are my notes for today",
+				"what did I tell you today"
 			],
 			"responses": [],
 			"action": "recall_memory"
@@ -285,7 +294,11 @@
 				"delete the {intent} note",
 				"remove my note about {intent}",
 				"delete the note about {intent}",
-				"erase the note about {intent}"
+				"erase the note about {intent}",
+				"remove our notes from today",
+				"forget everything about today",
+				"forget today's notes",
+				"delete what I told you today"
 			],
 			"responses": [],
 			"action": "forget_fact"
