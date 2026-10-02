@@ -860,7 +860,8 @@ class Orchestrator:
         memory = self.memory.device()
         embed = getattr(self.nlu, "embed", None)
         found = await asyncio.to_thread(
-            _forgetting.matching, query, memory.facts(), embed=embed if callable(embed) else None
+            _forgetting.select, query, memory.entries(),
+            today=_dt.date.today().isoformat(), embed=embed if callable(embed) else None,
         )
         if not found:
             await self._speak(self.persona.line(

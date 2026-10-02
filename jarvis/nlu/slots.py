@@ -65,6 +65,11 @@ _VERB_PREFIXES: dict[str, list[str]] = {
         "do not forget that",
         "keep in mind that",
         "i want you to remember",
+        # a reminder is kept like any fact; nothing alerts at a time (yet)
+        "remind me to",
+        "remind me about",
+        "remind me that",
+        "remind me",
     ],
     # What a "forget …" is about: "forget about the park" -> "the park",
     # "remove the park note" -> "the park" (a trailing "note" is dropped too).
