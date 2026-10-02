@@ -1,9 +1,11 @@
 """Optional local LLM client (Ollama HTTP), capability-probed at startup.
 
-Used only to style-rewrite dynamic lines into the active persona's voice. It is
-never on the hot path for understanding or dispatch, and JARVIS is fully
-functional without it — ``available`` is ``False`` and callers fall back to
-plain phrasing / canned lines.
+Used to style-rewrite dynamic lines into the active persona's voice and, for a
+transcript the NLU gave up on, to guess what was misheard (M4,
+``jarvis/core/mishear.py``) and then to plan or answer it (M4.5,
+``jarvis/core/reasoning.py``). It is never on the hot path for understanding or
+dispatch, and JARVIS is fully functional without it — ``available`` is
+``False`` and callers fall back to plain phrasing / canned lines.
 """
 
 from __future__ import annotations
@@ -58,17 +60,30 @@ class Reasoner:
         )
         return self.available
 
-    def generate(self, system: str, prompt: str) -> str:
+    def generate(
+        self,
+        system: str,
+        prompt: str,
+        *,
+        temperature: float = 0.7,
+        timeout: float | None = None,
+        format: str | None = None,
+    ) -> str:
+        """``format="json"`` holds the model to a JSON reply (Ollama's own
+        constraint, not a request in the prompt)."""
+        body = {
+            "model": self.model,
+            "system": system,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": temperature},
+        }
+        if format is not None:
+            body["format"] = format
         resp = requests.post(
             f"{self.base_url}/api/generate",
-            json={
-                "model": self.model,
-                "system": system,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.7},
-            },
-            timeout=self.timeout,
+            json=body,
+            timeout=self.timeout if timeout is None else timeout,
         )
         resp.raise_for_status()
         return resp.json().get("response", "").strip()

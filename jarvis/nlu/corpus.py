@@ -34,6 +34,11 @@ PLACEHOLDER_FILLERS = (
     "i parked on level two",
     "buy milk on the way home",
     "the wifi password is on the router",
+    # M5: `note`, `remember`, `recall` and `search` are told apart by their
+    # frame ("note that ..." / "what do my notes say about ..."), so the same
+    # everyday subjects have to turn up under all of them.
+    "the gate code",
+    "the door code is 4821",
 )
 
 

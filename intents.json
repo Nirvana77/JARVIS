@@ -132,13 +132,60 @@
 				"Note that {intent}",
 				"Make a note that {intent}",
 				"Take a note that {intent}",
-				"Remember that {intent}",
+				"Add a note that {intent}",
+				"Take note that {intent}",
+				"Note down that {intent}",
 				"Write down {intent}",
+				"Write down that {intent}",
+				"Make a note of {intent}",
+				"Jot down {intent}",
 				"Note this down",
 				"Take a note"
 			],
 			"responses": ["Noted"],
 			"action": "note"
+		},
+		{
+			"tag": "remember",
+			"patterns": [
+				"Remember that {intent}",
+				"Remember {intent}",
+				"Remember this {intent}",
+				"Remember to {intent}",
+				"Please remember that {intent}",
+				"Don't forget that {intent}",
+				"Do not forget that {intent}",
+				"Keep in mind that {intent}",
+				"Remember this",
+				"I want you to remember something"
+			],
+			"responses": ["I'll remember that"],
+			"action": "remember"
+		},
+		{
+			"tag": "recall",
+			"patterns": [
+				"What do my notes say about {intent}",
+				"What did I tell you about {intent}",
+				"What did I say about {intent}",
+				"What do you remember about {intent}",
+				"What do you know about my {intent}",
+				"What does the manual say about {intent}",
+				"What does the document say about {intent}",
+				"Check my notes for {intent}",
+				"Look in my notes for {intent}",
+				"Do I have any notes on {intent}",
+				"Do I have any notes about {intent}",
+				"What's my {intent}",
+				"What is my {intent}",
+				"Where is my {intent}",
+				"Where did I put {intent}",
+				"Where did I park",
+				"What did I tell you",
+				"What do my notes say"
+			],
+			"responses": ["Let me check your notes"],
+			"action": "recall"
 		},
 		{
 			"tag": "teach",
@@ -187,6 +234,33 @@
 			],
 			"responses": [],
 			"action": "remove_skill"
+		},
+		{
+			"tag": "recall_memory",
+			"patterns": [
+				"what do you remember",
+				"what do you remember about me",
+				"what have I told you to remember",
+				"what did I ask you to remember",
+				"tell me what you remember",
+				"list what you remember"
+			],
+			"responses": [],
+			"action": "recall_memory"
+		},
+		{
+			"tag": "forget_memory",
+			"patterns": [
+				"forget everything I told you",
+				"forget everything you remember",
+				"forget what I told you to remember",
+				"forget all my notes",
+				"clear your memory",
+				"wipe your memory",
+				"erase everything you remember about me"
+			],
+			"responses": [],
+			"action": "forget_memory"
 		}
 	]
 }

@@ -6,6 +6,7 @@ instead of a mic, for end-to-end scenario testing without audio hardware."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 
 import numpy as np
 import pytest
@@ -50,9 +51,20 @@ def test_text_tts_prints(capsys):
 
 # -- full pipeline, real NLU/registry/persona, scripted text -------------------
 
-def test_build_text_orchestrator_runs_a_scripted_conversation(config, capsys):
+def _without_the_users_knowledge(config, tmp_path):
+    """M5: the same config, with the knowledge base pointed at an empty tmp
+    docs dir — a test must not index (or wait on) the developer's own notes.
+    The data dir stays the real one, so the NLU model is not retrained."""
+    return dataclasses.replace(
+        config,
+        knowledge=dataclasses.replace(config.knowledge, docs_dir=str(tmp_path / "docs")),
+    )
+
+
+def test_build_text_orchestrator_runs_a_scripted_conversation(config, capsys, tmp_path):
     from jarvis.app import build_text_orchestrator
 
+    config = _without_the_users_knowledge(config, tmp_path)
     orch = build_text_orchestrator(config, lines=["search black holes", "shut down"])
     asyncio.run(orch.run())
 
@@ -63,9 +75,10 @@ def test_build_text_orchestrator_runs_a_scripted_conversation(config, capsys):
     assert orch.running is False
 
 
-def test_build_text_orchestrator_self_terminates_without_shutdown(config):
+def test_build_text_orchestrator_self_terminates_without_shutdown(config, tmp_path):
     from jarvis.app import build_text_orchestrator
 
+    config = _without_the_users_knowledge(config, tmp_path)
     orch = build_text_orchestrator(config, lines=["search cats"])
     # no "shut down" in the script — must still terminate via on_exhausted,
     # not hang forever re-waking (TextWake fires instantly every time)

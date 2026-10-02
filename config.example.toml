@@ -74,11 +74,25 @@ threshold = 0.35            # max class probability below this -> "unknown"
 similarity_floor = 0.30     # min cosine similarity to any training phrase, else "unknown"
 meta_action_threshold = 0.6 # teach/edit_skill/revert_skill need this confidence before
                             # JARVIS commits to a whole multi-turn dialog
+compound = true             # "…and…" / "…then…" run as separate commands when each
+                            # half is, on its own, a command JARVIS is sure of
 
 [reasoner]
 enabled = true           # still capability-probed; false disables Ollama entirely
 base_url = "http://localhost:11434"
 model = "qwen2.5:3b"
+correct_misheard = true  # before "didn't catch that": is it a mishearing of a known
+                         # command? Asks "Did you mean '…'?" and acts only on a yes
+guess_timeout_s = 8.0    # how long that guess may take before the plain line is said
+answer_questions = true  # no command fits and it was no mishearing: let it answer, in voice
+plan_commands = true     # ...or re-say the request as commands ("wake me in five and beep
+                         # the watch"), classified by the NLU and confirmed before they run
+reason_timeout_s = 15.0  # how long that may take
+
+[memory]                 # per device ("watch", "livingroom"; "local" without an edge)
+turns = 8                # exchanges kept in RAM, so a follow-up has the turn before it
+idle_forget_s = 900      # ...and dropped after this long without one
+max_facts = 200          # what it was asked to note or remember: <data>/memory/<device>.json
 
 [factory]
 model = "claude-opus-5"     # overridden by the ANTHROPIC_MODEL env var
@@ -88,6 +102,20 @@ sandbox_mem_mb = 512        # RLIMIT_AS for a sandboxed subprocess — pytest's 
 sandbox_cpu_s = 5           # RLIMIT_CPU for a sandboxed subprocess
 max_generate_attempts = 5  # generate -> validate -> sandbox retries, feeding
                             # back the previous attempt's error, before giving up
+
+[knowledge]
+# The local knowledge base: files in docs_dir and facts you say aloud
+# ("remember that ...") are embedded into data/knowledge/kb.sqlite and answered
+# from locally. Claude is never called for these answers.
+enabled = true
+docs_dir = "~/jarvis/knowledge"  # .txt / .md / .pdf; scanned at startup and then
+scan_interval_s = 60             # every this many seconds (changed files only)
+top_k = 4                # chunks the reasoner composes an answer from
+min_score = 0.48         # cosine similarity below this is "nothing on that"
+search_min_score = 0.6   # the higher bar for answering "what is ..." from your
+                         # notes instead of Wikipedia
+chunk_chars = 800        # chunk size, and the overlap carried between
+chunk_overlap = 100      # neighbouring chunks, in characters
 
 [paths]
 data_dir = "data"        # models, nlu artifacts, per-skill scratch (git-ignored)

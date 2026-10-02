@@ -33,11 +33,31 @@ _VERB_PREFIXES: dict[str, list[str]] = {
         "take a note that",
         "note that",
         "note",
-        "remember that",
-        "remember",
         "write down that",
         "write down",
         "write",
+    ],
+    # M5. A recall question with none of these lead-ins ("where did i park") is
+    # its own best query, so it is passed whole.
+    "recall": [
+        "what do my notes say about",
+        "what did i tell you about",
+        "what did i say about",
+        "what do you know about",
+        "what do you remember about",
+        "check my notes for",
+        "look in my notes for",
+        "do i have any notes on",
+        "do i have any notes about",
+        "recall",
+    ],
+    "remember": [
+        "remember that",
+        "remember this",
+        "remember",
+        "don't forget that",
+        "do not forget that",
+        "keep in mind that",
     ],
 }
 
@@ -47,6 +67,8 @@ _SLOT_KEY: dict[str, str] = {
     "play": "query",
     "open_app": "app",
     "note": "text",
+    "recall": "query",
+    "remember": "text",
 }
 
 _TRAILING = re.compile(r"\b(please|jarvis|for me|now|thanks|thank you)\b", re.IGNORECASE)

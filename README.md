@@ -119,10 +119,74 @@ python -m jarvis --selftest      # load NLU + persona, list skills, exit 0
 python -m jarvis mic             # live microphone meter, for tuning the VAD
 python -m jarvis serve           # the brain, waiting for an audio edge
 python -m jarvis edge            # the audio satellite
+python -m jarvis knowledge scan  # index the knowledge docs folder now
+python -m jarvis knowledge status  # what is indexed, and which search backend
 ```
 
 `./jarvis-run <args>` does the same thing using the repo's own virtualenv, from
 any directory.
+
+## When it isn't sure what you said
+
+A command is classified by a small local model and run by a skill; nothing
+else is needed for that. What happens when the classifier gives up depends on
+whether a local LLM is running (Ollama, `[reasoner]` in `config.toml` —
+optional, and never Claude):
+
+| you say | without Ollama | with Ollama |
+|---|---|---|
+| *"set a timer for five minutes and find my watch"* | both run, in order | the same — this needs no model |
+| *"flip a corn"* (a mishearing) | "I didn't catch that" | *"Did you mean 'flip a coin', sir?"* — runs on a yes |
+| *"wake me in five and beep the watch"* | "I didn't catch that" | *"Did you mean 'set a timer for 5 minutes, then find my watch'?"* — runs on a yes |
+| *"how many days are in a leap year?"* | "I didn't catch that" | it answers, in the persona's voice |
+
+Two rules hold throughout: the LLM never chooses a skill — it suggests
+*phrases*, and each one goes through the ordinary classifier — and nothing it
+suggests runs before you have said yes. Each step can be turned off on its own
+(`[nlu] compound`, `[reasoner] correct_misheard`, `plan_commands`,
+`answer_questions`).
+
+### Memory, per device
+
+Each device — an edge's id (`watch`, `livingroom`), or `local` without one —
+has its own memory:
+
+- **The conversation**: the last few turns, in RAM, so *"and a normal year?"*
+  has the question before it. Gone after 15 quiet minutes or a restart.
+- **What you asked it to keep**: *"remember that I parked on level two"*,
+  *"note that the wifi code is 1234"*. On disk, in
+  `data/memory/<device>.json`, as plain text — and in the knowledge base
+  below, which is shared by every device.
+
+Both are given to the local LLM when it answers, so *"where did I park?"*
+works. *"What do you remember?"* reads the list back and *"forget everything
+I told you"* clears it after a yes — neither needs the LLM. Forgetting clears
+that memory and the facts this device gave the knowledge base; it does not
+touch the notes files (`data/skills/note/notes.txt`, and the knowledge base's
+`dictated-notes.md`), which keep every note ever given. What the watch
+was told, the living room does not know. `[memory]` in `config.toml` sets the
+sizes.
+
+## Knowledge base: your own notes
+
+JARVIS answers from your own documents, locally. Put `.txt`, `.md` or `.pdf`
+files in `[knowledge] docs_dir` (default `~/jarvis/knowledge`); they are
+indexed at startup and re-scanned every `scan_interval_s`. Facts you say are
+kept too:
+
+- *"Remember that I parked on level three"* — stored as a remembered fact.
+- *"Where did I park?"*, *"What do my notes say about the boiler?"* — answered
+  from the notes and facts.
+- *"Note that the wifi code is 1234"* — also lands in
+  `<docs_dir>/dictated-notes.md`, so it is answerable on the next turn.
+- *"What is …"* checks your notes first (with a stricter match,
+  `search_min_score`), then Wikipedia.
+
+With a local Ollama reasoner the answer is composed from the best excerpts;
+without one, JARVIS reads the best excerpt and names its source (*"From your
+notes, sir: … — from boiler manual."*). Claude is never asked. The index is
+`data/knowledge/kb.sqlite`, searched with `sqlite-vec` when the extension loads
+and by brute force otherwise. `[knowledge] enabled = false` turns it all off.
 
 ## Remote edge: brain here, ears there
 

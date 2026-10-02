@@ -531,7 +531,11 @@ criteria on a real GPU brain and Pi edge over the internet, with per-stage
 latency logged against the budget: segment flush < 200 ms, transcription
 < 800 ms, first speech < 500 ms.
 
-### Milestone 4 — misheard-command reasoning
+### Milestone 4 — misheard-command reasoning — ✅ DONE (2026-10-01)
+
+Outcome, and the decisions this section left open:
+`PRD/milestone-4-misheard-command-outcome.md`. Not yet checked against a
+real Ollama model — the manual check below is still to do.
 
 **Motivation**: STT is never perfect, and it's at its worst on exactly the
 words JARVIS most needs right — a freshly-taught skill's name has no
@@ -586,7 +590,30 @@ skill name is likely to be misheard, verify the "did you mean" confirm fires
 and a "yes" correctly dispatches; without Ollama running, verify the exact
 same misheard command falls back to the current plain response.
 
-### Milestone 5 — knowledge base (RAG)
+### Milestone 4.5 — reasoning and per-device memory (addition to M4) — ✅ DONE (2026-10-01)
+
+Full plan: `PRD/milestone-4.5-reasoning-and-memory.md`; outcome:
+`PRD/milestone-4.5-reasoning-and-memory-outcome.md`. Asked for by the owner
+right after M4. Like M4, not yet checked against a real Ollama model.
+
+- **Compound commands, no model.** *"Set a timer for five minutes and find
+  my watch"* is split at "and" / "then" / a comma; when every clause is, on
+  its own, a different skill the classifier is sure of, they run in order.
+- **Planning and answering.** A turn that is `unknown` and no mishearing goes
+  to the reasoner, which re-says it as commands (each classified by the real
+  NLU, confirmed in one question, run in order) or answers it in the
+  persona's voice. The reasoner still never picks a skill and nothing it
+  suggests runs unconfirmed.
+- **Memory per device** (`watch`, `livingroom`, `local`): the recent
+  conversation in RAM, and what the device was asked to note or remember in
+  `data/memory/<device>.json`. Both go into the reasoner's prompt. *"What do
+  you remember?"* and *"forget everything I told you"* are inline and need
+  no LLM.
+- This is not M5: a short list handed to the model whole, no retrieval.
+
+### Milestone 5 — knowledge base (RAG) — ✅ DONE (2026-10-01)
+Plan: `PRD/milestone-5-knowledge-base.md`; outcome:
+`PRD/milestone-5-knowledge-base-outcome.md`. Taken before Milestone 4.
 - `knowledge/{store,ingest}.py`; recall intent → retrieve → compose (Ollama) or
   verbatim-snippet fallback; no Claude.
 - Ingestion: startup + interval scan of `knowledge.docs_dir`

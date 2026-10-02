@@ -110,6 +110,9 @@ class NLUConfig:
     #: higher bar than the general "unknown" cutoff above before JARVIS
     #: commits to one instead of just saying it didn't catch the command.
     meta_action_threshold: float = 0.6
+    #: M4.5: "set a timer for five minutes and find my watch" — run each half
+    #: when each half is, on its own, a confident command (nlu/compound.py)
+    compound: bool = True
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,32 @@ class ReasonerConfig:
     enabled: bool = True
     base_url: str = "http://localhost:11434"
     model: str = "qwen2.5:3b"
+    #: M4: before "didn't catch that", ask the reasoner whether the transcript
+    #: is a mishearing of a known command, and confirm its guess by voice
+    correct_misheard: bool = True
+    #: the user is waiting in silence while it guesses; past this, give up
+    #: and say the plain line (a reasoner that failed here is not asked to
+    #: plan or answer the same turn)
+    guess_timeout_s: float = 8.0
+    #: M4.5: when no command fits and it was not a mishearing, let the
+    #: reasoner answer in the persona's voice ...
+    answer_questions: bool = True
+    #: ... or re-say the request as commands, which are classified by the real
+    #: NLU and confirmed by voice before any of them runs
+    plan_commands: bool = True
+    reason_timeout_s: float = 15.0
+
+
+@dataclass(frozen=True)
+class MemoryConfig:
+    """M4.5: per-device memory (``jarvis/core/memory.py``)."""
+
+    #: exchanges kept per device, in RAM
+    turns: int = 8
+    #: ... and dropped after this long without one
+    idle_forget_s: float = 900.0
+    #: lasting facts kept per device, in ``<data>/memory/<device>.json``
+    max_facts: int = 200
 
 
 @dataclass(frozen=True)
@@ -134,6 +163,34 @@ class FactoryConfig:
     #: to Claude as feedback, before the job gives up and tells the user it's
     #: setting the skill aside.
     max_generate_attempts: int = 5
+
+
+@dataclass(frozen=True)
+class KnowledgeConfig:
+    """M5: the local knowledge base — documents in ``docs_dir`` and spoken
+    facts, embedded into ``data/knowledge/kb.sqlite``. Claude is never involved
+    in answering from it."""
+
+    enabled: bool = True
+    #: `.txt` / `.md` / `.pdf` files here are indexed at startup and re-scanned
+    #: every `scan_interval_s`. Not created until something is written to it.
+    docs_dir: str = "~/jarvis/knowledge"
+    scan_interval_s: float = 60.0
+    #: chunks handed to the reasoner to compose an answer from
+    top_k: int = 4
+    #: cosine similarity below which a chunk is not an answer at all
+    min_score: float = 0.48
+    #: the higher bar a chunk must clear to answer a "what is ..." that would
+    #: otherwise go to Wikipedia — a loosely related note must not win there
+    search_min_score: float = 0.6
+    #: chunk size and the overlap carried between neighbours, in characters
+    chunk_chars: int = 800
+    chunk_overlap: int = 100
+
+    @property
+    def docs_path(self) -> Path:
+        path = Path(self.docs_dir).expanduser()
+        return path if path.is_absolute() else (_REPO_ROOT / path).resolve()
 
 
 @dataclass(frozen=True)
@@ -297,7 +354,9 @@ class Config:
     tts: TTSConfig = field(default_factory=TTSConfig)
     nlu: NLUConfig = field(default_factory=NLUConfig)
     reasoner: ReasonerConfig = field(default_factory=ReasonerConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     factory: FactoryConfig = field(default_factory=FactoryConfig)
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     # M3: the remote-edge split. Unused by the all-in-one path.
     server: ServerConfig = field(default_factory=ServerConfig)
     whisper: WhisperConfig = field(default_factory=WhisperConfig)
@@ -319,6 +378,11 @@ class Config:
 
     # -- derived paths -------------------------------------------------------
     @property
+    def memory_dir(self) -> Path:
+        """M4.5: lasting facts, one ``<device_id>.json`` each."""
+        return self.data_dir / "memory"
+
+    @property
     def nlu_model_dir(self) -> Path:
         return self.data_dir / "models" / "nlu"
 
@@ -333,6 +397,11 @@ class Config:
     @property
     def corpus_path(self) -> Path:
         return self.data_dir / "nlu" / "corpus.sqlite"
+
+    @property
+    def knowledge_db_path(self) -> Path:
+        """M5: chunks, their embeddings and the vector index, in one file."""
+        return self.data_dir / "knowledge" / "kb.sqlite"
 
     def skill_data_dir(self, name: str) -> Path:
         return self.data_dir / "skills" / name
@@ -403,6 +472,28 @@ def _section(raw: dict, key: str) -> dict:
     return value
 
 
+def _knowledge_config(raw: dict) -> KnowledgeConfig:
+    """`[knowledge]`, with the values that would hang or break it clamped
+    rather than refused: this file is also the edge's, and a brain-only typo
+    should not stop a Pi from starting."""
+    defaults = KnowledgeConfig()
+    chunk_chars = max(100, int(raw.get("chunk_chars", defaults.chunk_chars)))
+    return KnowledgeConfig(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        docs_dir=str(raw.get("docs_dir", defaults.docs_dir)),
+        scan_interval_s=max(1.0, float(raw.get("scan_interval_s", defaults.scan_interval_s))),
+        # sqlite-vec refuses a k above 4096; far below that is already too many
+        # chunks to hand a small local model
+        top_k=min(max(1, int(raw.get("top_k", defaults.top_k))), 50),
+        min_score=float(raw.get("min_score", defaults.min_score)),
+        search_min_score=float(raw.get("search_min_score", defaults.search_min_score)),
+        chunk_chars=chunk_chars,
+        chunk_overlap=min(
+            max(0, int(raw.get("chunk_overlap", defaults.chunk_overlap))), chunk_chars - 1
+        ),
+    )
+
+
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     """Build a :class:`Config`. Missing file -> all defaults. Env overrides win."""
     load_dotenv()  # make secrets visible to os.getenv elsewhere; harmless if absent
@@ -421,7 +512,9 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     tts = _section(raw, "tts")
     nlu = _section(raw, "nlu")
     reasoner = _section(raw, "reasoner")
+    memory = _section(raw, "memory")
     factory = _section(raw, "factory")
+    knowledge = _section(raw, "knowledge")
     paths = _section(raw, "paths")
     # M3
     server = _section(raw, "server")
@@ -484,11 +577,22 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             threshold=float(nlu.get("threshold", 0.35)),
             similarity_floor=float(nlu.get("similarity_floor", 0.30)),
             meta_action_threshold=float(nlu.get("meta_action_threshold", 0.6)),
+            compound=bool(nlu.get("compound", True)),
         ),
         reasoner=ReasonerConfig(
             enabled=bool(reasoner.get("enabled", True)),
             base_url=reasoner.get("base_url", "http://localhost:11434"),
             model=reasoner.get("model", "qwen2.5:3b"),
+            correct_misheard=bool(reasoner.get("correct_misheard", True)),
+            guess_timeout_s=float(reasoner.get("guess_timeout_s", 8.0)),
+            answer_questions=bool(reasoner.get("answer_questions", True)),
+            plan_commands=bool(reasoner.get("plan_commands", True)),
+            reason_timeout_s=float(reasoner.get("reason_timeout_s", 15.0)),
+        ),
+        memory=MemoryConfig(
+            turns=int(memory.get("turns", 8)),
+            idle_forget_s=float(memory.get("idle_forget_s", 900.0)),
+            max_facts=int(memory.get("max_facts", 200)),
         ),
         factory=FactoryConfig(
             model=os.getenv("ANTHROPIC_MODEL") or factory.get("model", "claude-opus-5"),
@@ -497,6 +601,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             sandbox_cpu_s=int(factory.get("sandbox_cpu_s", 5)),
             max_generate_attempts=int(factory.get("max_generate_attempts", 5)),
         ),
+        knowledge=_knowledge_config(knowledge),
         server=ServerConfig(
             host=str(server.get("host", "0.0.0.0")),
             port=int(server.get("port", 8765)),

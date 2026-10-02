@@ -1,4 +1,10 @@
-"""Look something up on Wikipedia.
+"""Look something up — in your own notes first, then on Wikipedia.
+
+M5: the local knowledge base is the source for "what is ..." answers when it
+has one. It is asked first, with the stricter ``[knowledge] search_min_score``
+so a note that merely mentions the subject does not beat the encyclopedia;
+anything it cannot answer goes to Wikipedia as before.
+
 
 Ported from ``actions/search.py`` but no longer uses the abandoned ``wikipedia``
 package (2014, unmaintained) — it hits the MediaWiki API directly with ``requests``
@@ -25,7 +31,7 @@ _TIMEOUT = 8
 
 MANIFEST = SkillManifest(
     name="search",
-    description="Look something up on Wikipedia and read a short summary.",
+    description="Look something up in your notes, or on Wikipedia, and read a short answer.",
     examples=[
         "search black holes",
         "search for the speed of sound",
@@ -35,7 +41,7 @@ MANIFEST = SkillManifest(
         "who is ada lovelace",
     ],
     params={"query": {"type": "string", "required": True}},
-    permissions=frozenset({"pure", "net"}),
+    permissions=frozenset({"pure", "net", "fs_read"}),
 )
 
 
@@ -79,10 +85,29 @@ def _summary(sess: requests.Session, title: str) -> dict:
     return resp.json()
 
 
+def _from_notes(ctx, query: str) -> str | None:
+    """An answer from the knowledge base, or ``None`` — also when it is off or
+    broken: that must cost the user nothing but the Wikipedia answer instead."""
+    knowledge = ctx.knowledge
+    if knowledge is None:
+        return None
+    try:
+        return knowledge.answer(
+            query, ctx.llm, min_score=knowledge.settings.search_min_score
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("knowledge lookup for %r failed: %s", query, exc)
+        return None
+
+
 def run(ctx, query: str = "") -> str:
     query = (query or "").strip()
     if not query:
         return "What would you like me to look up?"
+
+    answer = _from_notes(ctx, query)
+    if answer:
+        return answer
 
     try:
         sess = _session()
