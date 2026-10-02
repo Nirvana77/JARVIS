@@ -990,10 +990,11 @@ class RemoteServer:
                 spoken="There's nothing in the watch's power log for today yet.",
             )
         summary = powerlog.summarize(powerlog.read_rows([path]))
-        return dataclasses.replace(
-            result, report=powerlog.report(summary, f"Power log {day}"),
-            spoken=powerlog.spoken(summary),
-        )
+        text = powerlog.report(summary, f"Power log {day}")
+        stretches = powerlog.read_stretches(path.with_name(f"{day}-modes.csv"))
+        if stretches:
+            text += "\n" + powerlog.stretches_report(stretches)
+        return dataclasses.replace(result, report=text, spoken=powerlog.spoken(summary))
 
     def _power_device(self) -> str | None:
         for device_id in self.tools.devices():

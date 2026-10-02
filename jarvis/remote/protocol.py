@@ -77,7 +77,8 @@ _TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 FILE_KINDS = ("power",)
 MAX_FILE_CHUNK = 65_536            # base64 chars in one message
 MAX_FILE_OFFSET = 64 * 1024 * 1024
-_FILE_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|nodate)\.csv$")
+#: the day's rows, and beside them a line per stretch in one mode (-modes)
+_FILE_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|nodate)(-modes)?\.csv$")
 
 
 class C2S:
@@ -443,7 +444,7 @@ def validate_c2s(raw: Any) -> tuple[bool, Any]:
         name = raw.get("name")
         if not _is_str(name) or not _FILE_NAME_RE.match(name):
             # It becomes a filename under data/remote/power/<device>/.
-            return False, "file name must be YYYY-MM-DD.csv or nodate.csv"
+            return False, "file name must be YYYY-MM-DD[-modes].csv or nodate[-modes].csv"
         offset = raw.get("offset")
         if not _is_int(offset) or not 0 <= offset <= MAX_FILE_OFFSET:
             return False, "file offset must be a byte offset"
