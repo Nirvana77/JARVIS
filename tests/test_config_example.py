@@ -27,6 +27,7 @@ _SECTIONS = {
     "tts": "tts",
     "nlu": "nlu",
     "reasoner": "reasoner",
+    "memory": "memory",
     "factory": "factory",
     "server": "server",
     "whisper": "whisper",

@@ -2,6 +2,10 @@
 its text from a slot and touches only ``ctx``, so the old
 ``write.py`` -> ``command_helper`` import cycle is gone.
 
+M4.5: a note is also what the device it was said to is asked to remember
+(``ctx.memory``), so "where did I park?" can be answered later. The notes file
+is written as before.
+
 M1 only handles an inline note ("note that the wifi code is 1234"). A spoken
 "what should I write?" dictation follow-up is a later polish (it needs the
 orchestrator to re-open the capture window).
@@ -37,4 +41,7 @@ def run(ctx, text: str = "") -> str:
     path = ctx.data_dir / NOTES_FILE
     with path.open("a", encoding="utf-8") as fh:
         fh.write(f"{datetime.now().isoformat(timespec='seconds')}  {text}\n")
+    memory = getattr(ctx, "memory", None)
+    if memory is not None:
+        memory.remember(text)
     return "Noted."

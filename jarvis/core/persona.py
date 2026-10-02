@@ -152,10 +152,17 @@ class Persona:
             log.warning("persona rewrite failed, using plain text: %s", exc)
             return text
 
-    def _system_prompt(self, shots: list[str]) -> str:
+    def character(self) -> str:
+        """Who is speaking and how: the style description and its rules. What
+        a caller puts in front of its own task so the reply comes back in
+        voice already (M4.5's answers), with no rewrite afterwards."""
         parts = [self.style_description or f"You are {self.display_name}."]
         if self.rules:
             parts.append("Rules:\n" + "\n".join(f"- {r}" for r in self.rules))
+        return "\n\n".join(parts)
+
+    def _system_prompt(self, shots: list[str]) -> str:
+        parts = [self.character()]
         if shots:
             parts.append(
                 "Lines in the right voice:\n" + "\n".join(f'"{s}"' for s in shots)

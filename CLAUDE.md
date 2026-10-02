@@ -62,8 +62,11 @@ Follow this order for any PRD/milestone item — don't skip or reorder steps:
 5. **Monitor thread spawning** during both the test run (step 3) and the
    dry-run (step 4). JARVIS starts threads in several places:
    `jarvis/factory/jobs.py` (background learning), `jarvis/core/interrupt.py`,
-   `jarvis/core/orchestrator.py`, `jarvis/audio/stt.py`, plus sounddevice's
-   audio callback threads — and, on the M3 remote path, every
+   `jarvis/core/orchestrator.py` (including short-lived threads that end with
+   the call they make: `compound` for a sentence with "and"/"then" in it, and
+   `mishear-guess` / `reason` per unclear command when Ollama is up — M4,
+   M4.5), `jarvis/audio/stt.py`,
+   plus sounddevice's audio callback threads — and, on the M3 remote path, every
    `asyncio.to_thread` the orchestrator makes through `RemoteLink`
    (`jarvis/remote/server.py`) plus the services' `ThreadingHTTPServer`. A leaked or runaway thread doesn't fail a test on
    its own, so check for one explicitly:

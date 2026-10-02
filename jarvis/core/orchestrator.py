@@ -12,6 +12,15 @@ The ``_staged`` slot and ``_merge_gate`` are M2's seamless hot-swap (retrain
 worker -> staged model -> swap only while idle). M2.5 moves everything after
 the teach/edit/revert dialog into background learning jobs; their questions
 and notices are spoken only at safe points (``_safe_point``) between turns.
+
+M4: a transcript the NLU gives up on gets one more move before "didn't catch
+that" — the local reasoner's guess at what was said, confirmed by voice and
+then classified like any other command (``_unclear``).
+
+M4.5: a sentence that is several commands is run as several (``_compound``,
+no model needed); a turn that is still unclear after M4 is planned or answered
+by the reasoner (``_think``); and every turn is remembered under the device
+it came from (``_turn``, ``jarvis/core/memory.py``).
 """
 
 from __future__ import annotations
@@ -28,8 +37,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from jarvis.core import mishear as _mishear
+from jarvis.core import reasoning as _reasoning
 from jarvis.core.interrupt import Cancelled as _Cancelled
 from jarvis.core.interrupt import Interrupter
+from jarvis.core.memory import LOCAL, Memory, is_device_id
 from jarvis.factory import flows as _flows
 from jarvis.factory.flows import (
     EditSkillFlow,
@@ -41,7 +53,8 @@ from jarvis.factory.flows import (
     ask_yes_no,
     ask_yes_no_or_none,
 )
-from jarvis.factory.jobs import LearningJob
+from jarvis.factory.jobs import LearningJob, run_detached
+from jarvis.nlu import compound as _compound
 from jarvis.nlu import slots as _slots
 from jarvis.nlu.classifier import UNKNOWN, Classifier
 from jarvis.nlu.corpus import build_corpus
@@ -66,7 +79,23 @@ _META_ACTIONS = {
     "edit_skill": "edit_skill",
     "revert_skill": "revert_skill",
     "remove_skill": "remove_skill",
+    "recall_memory": "recall_memory",
+    "forget_memory": "forget_memory",
 }
+
+#: A wrong guess at one of these costs a dialog, a skill's code or a device's
+#: memory, so they need `nlu.meta_action_threshold`, not just "not unknown".
+_GUARDED_ACTIONS = ("teach", "edit_skill", "revert_skill", "remove_skill", "forget_memory")
+
+#: Skills whose argument is whatever was said: never one step of a chain
+#: ("note that buy milk and call mum" is one note).
+_DICTATION = frozenset({"note"})
+
+#: how many facts "what do you remember?" reads out, newest last
+_RECALL_SPOKEN = 5
+
+#: `_reason_about_unclear`: the reasoner was asked and did not answer
+_FAILED = object()
 
 # NLU self-check probes run against a freshly-trained model before it's ever
 # staged — a handful of the seed intents plus the new/changed skill's own
@@ -105,6 +134,8 @@ class Orchestrator:
         registry,
         intent_meta: dict,
         slot_extract=_slots.extract,
+        reasoner=None,
+        memory: Memory | None = None,
         claude_client=None,
         sandbox=None,
         train_and_load=None,
@@ -123,6 +154,20 @@ class Orchestrator:
         self.registry = registry
         self.intent_meta = intent_meta
         self._slot_extract = slot_extract
+        # M4: the optional local LLM (Ollama). Only ever asked for a guess at
+        # a misheard command, which is then confirmed and re-classified —
+        # never for understanding or dispatch. None / unavailable: skipped.
+        self.reasoner = reasoner
+        # M4.5: per-device memory — the recent conversation and lasting
+        # facts. Without one handed in (tests), facts stay in RAM.
+        self.memory = memory if memory is not None else Memory(
+            None,
+            turns=config.memory.turns,
+            idle_forget_s=config.memory.idle_forget_s,
+            max_facts=config.memory.max_facts,
+        )
+        #: what has been said back in the turn in flight (None between turns)
+        self._turn_said: list[str] | None = None
         # M2: the skill factory. Both are best-effort — a missing Anthropic key
         # or sandbox degrades `teach`/`edit_skill` to a spoken "can't do that
         # right now", never a hard crash (same pattern as the reasoner).
@@ -166,11 +211,13 @@ class Orchestrator:
     async def _speak(self, text: str) -> None:
         if not text:
             return
+        if self._turn_said is not None:
+            self._turn_said.append(text)
         await asyncio.to_thread(self.tts.say, text)
         # Half-duplex: while JARVIS was speaking, the mic recorded its own
         # voice. Let the tail settle, then drop those frames so the wake word
         # and the VAD don't trigger on them. (Real echo cancellation / barge-in
-        # is M4.)
+        # is M6.)
         await asyncio.sleep(0.2)
         self._drain_mic()
 
@@ -273,6 +320,18 @@ class Orchestrator:
     async def _ask_yes_no(self, prompt: str) -> bool:
         return await ask_yes_no(self._ask, prompt)
 
+    async def _confirmed(self, prompt: str) -> bool:
+        """A clear, whole-word yes — nothing else. For anything that would
+        act on a guess or destroy something: "I'm unsure" has "sure" in it
+        and "incorrect" has "correct", and neither is consent."""
+        return await ask_yes_no_or_none(self._ask, prompt) is True
+
+    def _interrupted(self) -> bool:
+        """Enter, or the edge's button, since the last listen began (each
+        capture clears it). A turn that takes several steps checks between
+        them, because nothing else would."""
+        return self._interrupter.cancel_flag.is_set()
+
     async def _session(self) -> None:
         """One wake: the first command plus any follow-ups spoken within
         ``capture.follow_up_s``, then a spoken transition to standby.
@@ -305,7 +364,7 @@ class Orchestrator:
 
             acked = True
             label, confidence = await self._classify_and_report(text)
-            await self.handle(label, text, confidence)
+            await self._turn(label, text, confidence)
 
             if not self.running or self.standby:
                 return  # shutdown / explicit goodbye already handled the exit
@@ -351,11 +410,42 @@ class Orchestrator:
 
     # -- dispatch (also the unit-test entry point) --------------------------
 
+    def _device(self) -> str:
+        """Which device this turn came from: the edge's id under `serve`
+        (``RemoteLink.device_id``), else ``local``."""
+        device = getattr(self.mic, "device_id", None)
+        return device if is_device_id(device) else LOCAL
+
+    async def _turn(self, label: str, text: str, confidence: float) -> None:
+        """One turn of a session: handled, then remembered — what was heard
+        and what was said back — under the device it came from.
+
+        A cancel (Enter, the edge's button) during a question asked from
+        inside the turn ends the turn, not the loop."""
+        device = self._device()
+        self.memory.focus(device)
+        self._turn_said = []
+        try:
+            await self.handle(label, text, confidence)
+        except _Cancelled as exc:
+            print(f"  (cancelled {exc} — still listening)", flush=True)
+        finally:
+            said, self._turn_said = self._turn_said, None
+            if said is not None:  # None: the turn was "forget everything"
+                self.memory.device(device).add_turn(text, " ".join(said))
+
     async def handle(self, label: str, text: str, confidence: float = 1.0) -> None:
+        steps = await self._compound(text)
+        if steps:
+            await self._run_steps(steps)
+            return
+        await self._handle_one(label, text, confidence)
+
+    async def _handle_one(self, label: str, text: str, confidence: float = 1.0) -> None:
         action = _META_ACTIONS.get(label, self._action_for(label))
 
         if label == UNKNOWN:
-            await self._speak(self.persona.line("unknown"))
+            await self._unclear(text)
             return
 
         if action == "start":
@@ -387,10 +477,7 @@ class Orchestrator:
             await self._speak(self.persona.phrase(reply) if reply else "")
             return
 
-        if (
-            action in ("teach", "edit_skill", "revert_skill", "remove_skill")
-            and confidence < self.config.nlu.meta_action_threshold
-        ):
+        if self._too_unsure_for_meta(label, confidence):
             # A wrong guess here launches a whole multi-turn dialog (or, for
             # revert_skill/remove_skill, rewrites or tears down a skill's live
             # code) — costlier than a wrong guess on an ordinary skill, so a
@@ -399,7 +486,7 @@ class Orchestrator:
                 "treating low-confidence %s (%.2f < %.2f) as unknown",
                 label, confidence, self.config.nlu.meta_action_threshold,
             )
-            await self._speak(self.persona.line("unknown"))
+            await self._unclear(text)
             return
 
         if action in ("teach", "edit_skill"):
@@ -440,6 +527,13 @@ class Orchestrator:
             )
             return
 
+        if action == "recall_memory":
+            await self._recall()
+            return
+        if action == "forget_memory":
+            await self._forget()
+            return
+
         # a skill
         self.state = "acting"
         params = await self._fill_missing(label, self._params_for(label, text))
@@ -456,6 +550,286 @@ class Orchestrator:
             return
         self.state = "speaking"
         await self._speak(self.persona.phrase(line))
+
+    # -- M4: misheard-command reasoning ---------------------------------------
+
+    async def _unclear(self, text: str) -> None:
+        """The NLU gave up on ``text``. Before saying so:
+
+        1. M4 — is it a mishearing of something JARVIS knows? One guess, one
+           confirmation; a "no" gets the plain line, not a second guess.
+        2. M4.5 — otherwise, what does the speaker want? The reasoner may
+           re-say it as commands (confirmed, then run in order) or answer it.
+
+        Nothing the reasoner said is acted on before a spoken yes, and every
+        command goes through the normal path."""
+        confirm = self.persona.line("did_you_mean", "Did you mean '{guess}'?")
+
+        corrected = await self._reason_about_unclear(text)
+        if self._interrupted():
+            print("  (cancelled thinking — still listening)", flush=True)
+            return
+        if corrected is _FAILED:
+            # the reasoner did not answer in time: not a second, longer wait
+            await self._speak(self.persona.line("unknown"))
+            return
+        if corrected is not None:
+            guess, label, confidence = corrected
+            if await self._confirmed(confirm.replace("{guess}", guess)):
+                await self.handle(label, guess, confidence)
+            else:
+                await self._speak(self.persona.line("unknown"))
+            return
+
+        thought = await self._think(text)
+        if self._interrupted():
+            print("  (cancelled thinking — still listening)", flush=True)
+            return
+        if isinstance(thought, str):
+            # already in the persona's voice: its character was in the prompt
+            await self._speak(thought)
+            return
+        if thought:
+            said = ", then ".join(step for step, _label, _confidence in thought)
+            if await self._confirmed(confirm.replace("{guess}", said)):
+                await self._run_steps(thought)
+                return
+        await self._speak(self.persona.line("unknown"))
+
+    async def _reason_about_unclear(self, text: str):
+        """The reasoner's single best guess at the command that was actually
+        said, as ``(corrected text, label, confidence)`` — the label and
+        confidence being the real classifier's verdict on the corrected text,
+        not anything the reasoner said. ``None`` when there is no reasoner,
+        it finds nothing plausible, or its guess is not a command JARVIS
+        would act on anyway; ``_FAILED`` when it was asked and did not answer
+        (down, or past ``guess_timeout_s``)."""
+        reasoner = self.reasoner
+        if (
+            reasoner is None
+            or not reasoner.available
+            or not self.config.reasoner.correct_misheard
+            or not text.strip()
+        ):
+            return None
+        self.state = "thinking"
+        known = _mishear.vocabulary(self.registry.manifests(), self.intent_meta)
+        # Its own thread rather than `asyncio.to_thread`: it is gone when the
+        # guess is, so the thread count is back at its baseline after the
+        # turn, and a slow Ollama never holds up shutdown. (The loop's
+        # executor grows a worker whenever a call is followed at once by
+        # another, which is exactly what guess-then-speak is.)
+        try:
+            found = await run_detached(self._guess, text, known, name="mishear-guess")
+        except Exception as exc:  # noqa: BLE001 - degradation is the point
+            log.warning("mishearing guess failed, treating as unknown: %s", exc)
+            return _FAILED
+        if found is None:
+            return None
+        guess, label, confidence = found
+        print(f'  guess   : "{guess}"   -> {label} ({confidence:.2f})')
+        # Not worth a question unless the answer leads somewhere: the guess
+        # has to be something the classifier itself recognises.
+        if label == UNKNOWN or self._too_unsure_for_meta(label, confidence):
+            log.info("guess %r is no clearer to the NLU (%s %.2f)", guess, label, confidence)
+            return None
+        return found
+
+    def _guess(self, text: str, known: list[str]) -> tuple[str, str, float] | None:
+        """Blocking half of :meth:`_reason_about_unclear`: ask the reasoner,
+        keep only a reply that could be a mishearing of ``text``, and have
+        the classifier say what that corrected phrase is."""
+        reply = self.reasoner.generate(
+            _mishear.SYSTEM,
+            _mishear.build_prompt(text, known),
+            temperature=0.0,
+            timeout=self.config.reasoner.guess_timeout_s,
+        )
+        guess = _mishear.parse_guess(reply, text)
+        if guess is None:
+            log.info("no plausible mishearing for %r (reasoner said %r)", text, reply)
+            return None
+        if _mishear.soundalike(guess, text) < _mishear.MIN_SOUNDALIKE:
+            log.info("guess %r sounds too little like %r to be a mishearing", guess, text)
+            return None
+        label, confidence = self.nlu.predict(guess)
+        return guess, label, confidence
+
+    def _too_unsure_for_meta(self, label: str, confidence: float) -> bool:
+        action = _META_ACTIONS.get(label, self._action_for(label))
+        return (
+            action in _GUARDED_ACTIONS
+            and confidence < self.config.nlu.meta_action_threshold
+        )
+
+    # -- M4.5: planning and answering -------------------------------------------
+
+    async def _think(self, text: str) -> str | list[tuple[str, str, float]] | None:
+        """What the reasoner makes of a turn that is neither a command nor a
+        mishearing of one: an **answer** to speak (a ``str``), or the request
+        re-said as **commands** — ``(text, label, confidence)`` each, the
+        label and confidence being the real classifier's — or ``None``.
+
+        A plan is all or nothing: one step the NLU does not recognise, or a
+        chain with anything but skills in it, and there is no plan."""
+        reasoner, options = self.reasoner, self.config.reasoner
+        if (
+            reasoner is None
+            or not reasoner.available
+            or not (options.answer_questions or options.plan_commands)
+            or not text.strip()
+        ):
+            return None
+        self.state = "thinking"
+        memory = self.memory.device()
+        character = getattr(self.persona, "character", None)
+        system = _reasoning.system(character() if callable(character) else "")
+        prompt = _reasoning.build_prompt(
+            text,
+            _mishear.vocabulary(self.registry.manifests(), self.intent_meta),
+            memory.facts(),
+            memory.turns(),
+            _dt.datetime.now(),
+        )
+        try:  # its own thread, for the reasons `_reason_about_unclear` gives
+            found = await run_detached(self._reason, system, prompt, name="reason")
+        except Exception as exc:  # noqa: BLE001 - degradation is the point
+            log.warning("reasoning failed, treating as unknown: %s", exc)
+            return None
+        if found is None:
+            return None
+
+        if isinstance(found, str):
+            if not options.answer_questions:
+                return None
+            print("  answer  : (the reasoner's own)")
+            return found
+
+        print("  plan    : " + " · ".join(f'"{t}" -> {lbl} ({c:.2f})' for t, lbl, c in found))
+        if not options.plan_commands:
+            return None
+        for step, label, confidence in found:
+            if label == UNKNOWN or self._too_unsure_for_meta(label, confidence):
+                log.info("plan dropped: %r is no clearer to the NLU (%s %.2f)", step, label, confidence)
+                return None
+        if len(found) > 1 and not all(self._chainable(label) for _s, label, _c in found):
+            log.info("plan dropped: a chain may only contain skills")
+            return None
+        if len(found) == 1 and _mishear.same_words(found[0][0], text):
+            return None  # it only repeated what was heard
+        return found
+
+    def _reason(self, system: str, prompt: str) -> str | list[tuple[str, str, float]] | None:
+        """Blocking half of :meth:`_think`: ask, parse, and have the
+        classifier say what each planned command is."""
+        reply = self.reasoner.generate(
+            system,
+            prompt,
+            temperature=0.2,
+            timeout=self.config.reasoner.reason_timeout_s,
+            format="json",
+        )
+        thought = _reasoning.parse(reply)
+        if thought is None:
+            log.info("the reasoner had nothing for it (said %r)", reply)
+            return None
+        if thought.answer:
+            return thought.answer
+        return [(step, *self.nlu.predict(step)) for step in thought.commands]
+
+    # -- M4.5: several commands in one turn --------------------------------------
+
+    def _chainable(self, label: str) -> bool:
+        """May ``label`` be one step of several? Skills only — no dialog, no
+        session action, no dictation."""
+        if label in _META_ACTIONS or label in _DICTATION:
+            return False
+        try:
+            return label in self.registry.names()
+        except Exception:  # noqa: BLE001 — a fake without a roster
+            return False
+
+    async def _compound(self, text: str) -> list[tuple[str, str, float]] | None:
+        """``text`` as several commands — ``(clause, label, confidence)`` each
+        — when it is a sentence joined by "and" / "then" / a comma and every
+        clause is, on its own, a different skill the classifier is sure of.
+        These are the speaker's own words classified by the real NLU: nothing
+        is guessed, so nothing is asked."""
+        if self.standby or not self.config.nlu.compound:
+            return None
+        clauses = _compound.split(text)
+        if not clauses:
+            return None
+        # its own thread, not the loop's executor: classify-then-dispatch is
+        # the back-to-back pair that makes the executor grow a worker
+        verdicts = await run_detached(self._classify_clauses, clauses, name="compound")
+        previous = None
+        for _clause, label, confidence, similarity in verdicts:
+            if (
+                label == previous
+                or not self._chainable(label)
+                or confidence < _compound.MIN_CONFIDENCE
+                or similarity < _compound.MIN_SIMILARITY
+            ):
+                return None
+            previous = label
+        return [(clause, label, confidence) for clause, label, confidence, _sim in verdicts]
+
+    def _classify_clauses(self, clauses: list[str]) -> list[tuple[str, str, float, float]]:
+        explain = getattr(self.nlu, "explain", None)
+        out = []
+        for clause in clauses:
+            if callable(explain):
+                p = explain(clause)
+                out.append((clause, p.label, p.confidence, p.similarity))
+            else:
+                label, confidence = self.nlu.predict(clause)
+                out.append((clause, label, confidence, 1.0))
+        return out
+
+    async def _run_steps(self, steps: list[tuple[str, str, float]]) -> None:
+        """Run commands in order, each through the normal single-command
+        path, so each fills its own slots and speaks its own line."""
+        print("  steps   : " + " · ".join(f'"{t}" -> {lbl} ({c:.2f})' for t, lbl, c in steps))
+        for n, (step, label, confidence) in enumerate(steps):
+            if n and self._interrupted():
+                print("  (cancelled — the rest is dropped)", flush=True)
+                return
+            await self._handle_one(label, step, confidence)
+
+    # -- M4.5: what this device was asked to remember -----------------------------
+
+    async def _recall(self) -> None:
+        facts = self.memory.device().facts()
+        if not facts:
+            await self._speak(self.persona.line(
+                "nothing_remembered", "You haven't asked me to remember anything."))
+            return
+        shown = facts[-_RECALL_SPOKEN:]
+        line = "You asked me to remember: " + "; ".join(f.rstrip(" .") for f in shown) + "."
+        if len(facts) > len(shown):
+            line += f" And {len(facts) - len(shown)} more before that."
+        # spoken as it is, not rephrased: these are the speaker's own words
+        await self._speak(line)
+
+    async def _forget(self) -> None:
+        memory = self.memory.device()
+        if not memory.facts() and not memory.turns():
+            await self._speak(self.persona.line(
+                "nothing_remembered", "You haven't asked me to remember anything."))
+            return
+        prompt = self.persona.line("forget_confirm", "Forget everything you've asked me to remember?")
+        if await self._confirmed(prompt):
+            try:
+                memory.forget()
+            except OSError as exc:  # still on disk: do not say otherwise
+                log.error("could not forget for %s: %s", memory.device, exc)
+                await self._speak(self.persona.line("error"))
+                return
+            self._turn_said = None  # and this exchange is not remembered either
+            await self._speak(self.persona.line("forgotten", "Forgotten."))
+        else:
+            await self._speak(self.persona.line("forget_kept", "I'll keep it."))
 
     def _params_for(self, label: str, text: str) -> dict:
         """An edge tool declares typed params (``jarvis/skills/edge.py``) and

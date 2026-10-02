@@ -17,6 +17,7 @@ from pathlib import Path
 from jarvis.config import Config
 from jarvis.core.orchestrator import Orchestrator
 from jarvis.core.persona import Persona
+from jarvis.core.memory import Memory
 from jarvis.core.reasoner import Reasoner
 from jarvis.factory.claude_client import ClaudeClient
 from jarvis.factory.sandbox import SubprocessSandbox
@@ -96,7 +97,8 @@ def build_orchestrator(config: Config) -> Orchestrator:
             flush=True,
         )
 
-    registry = Registry.discover(config, reasoner, say=tts.say)
+    memory = Memory.from_config(config)
+    registry = Registry.discover(config, reasoner, say=tts.say, memory=memory)
     print("· NLU model", flush=True)
     ensure_nlu(config, registry)
     nlu = load_classifier(config)
@@ -153,6 +155,8 @@ def build_orchestrator(config: Config) -> Orchestrator:
         persona=persona,
         registry=registry,
         intent_meta=intent_meta(),
+        reasoner=reasoner,
+        memory=memory,
         claude_client=claude_client,
         sandbox=sandbox,
     )
@@ -172,7 +176,8 @@ def build_text_orchestrator(config: Config, lines: list[str] | None = None) -> O
     persona = Persona.load(config.persona.active, config, reasoner)
     tts = TextTTS()
 
-    registry = Registry.discover(config, reasoner, say=tts.say)
+    memory = Memory.from_config(config)
+    registry = Registry.discover(config, reasoner, say=tts.say, memory=memory)
     ensure_nlu(config, registry)
     nlu = load_classifier(config)
 
@@ -198,6 +203,8 @@ def build_text_orchestrator(config: Config, lines: list[str] | None = None) -> O
         persona=persona,
         registry=registry,
         intent_meta=intent_meta(),
+        reasoner=reasoner,
+        memory=memory,
         claude_client=claude_client,
         sandbox=sandbox,
     )
@@ -220,7 +227,8 @@ def build_server_orchestrator(config: Config, link, edges=None) -> Orchestrator:
     if getattr(link.voder, "voice", None) is None and persona.voice:
         link.voder.voice = persona.voice
 
-    registry = Registry.discover(config, reasoner, say=link.say, edges=edges)
+    memory = Memory.from_config(config)
+    registry = Registry.discover(config, reasoner, say=link.say, edges=edges, memory=memory)
     print("· NLU model", flush=True)
     ensure_nlu(config, registry)
     nlu = load_classifier(config)
@@ -247,6 +255,8 @@ def build_server_orchestrator(config: Config, link, edges=None) -> Orchestrator:
         persona=persona,
         registry=registry,
         intent_meta=intent_meta(),
+        reasoner=reasoner,
+        memory=memory,
         claude_client=claude_client,
         sandbox=sandbox,
         # A server: "shut down" from the watch stands by, it does not stop the

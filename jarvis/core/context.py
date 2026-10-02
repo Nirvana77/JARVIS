@@ -8,6 +8,10 @@ reasoner, or ``None``). ``schedule``/``http`` land with the M2 sandbox.
 ``edges`` is what a skill may ask of the connected edge devices
 (``jarvis.remote.server.EdgeControl``) — only under ``python -m jarvis serve``;
 ``None`` everywhere else.
+
+``memory`` (M4.5) is what the device this turn came from has been asked to
+remember (``jarvis.core.memory.DeviceMemory``): ``remember(text)``,
+``facts()``. ``None`` when the registry was built without one.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from jarvis.config import Config
+    from jarvis.core.memory import DeviceMemory
     from jarvis.core.reasoner import Reasoner
     from jarvis.remote.server import EdgeControl
 
@@ -29,6 +34,7 @@ class Context:
     _data_dir: Path
     llm: "Reasoner | None" = None
     edges: "EdgeControl | None" = None
+    memory: "DeviceMemory | None" = None
 
     @property
     def data_dir(self) -> Path:

@@ -43,13 +43,14 @@ _BASE_PERMISSIONS = frozenset({"pure", "notify"})
 DEFAULT_MAX_ATTEMPTS = 5
 
 
-async def run_detached(fn, *args):
+async def run_detached(fn, *args, name: str | None = None):
     """Run blocking ``fn(*args)`` on a daemon thread and await its result.
 
     Unlike ``asyncio.to_thread`` the thread isn't in the loop's default
     executor, so cancelling a job (shutdown) never has to wait for a
     minute-long Claude call to come back — the thread just finishes, or
-    dies with the process."""
+    dies with the process. ``name`` is the thread's name, for a caller that
+    isn't a learning job."""
     loop = asyncio.get_running_loop()
     future = loop.create_future()
 
@@ -71,7 +72,8 @@ async def run_detached(fn, *args):
         else:
             post(future.set_result, result)
 
-    threading.Thread(target=target, name=f"learn:{getattr(fn, '__name__', 'job')}", daemon=True).start()
+    name = name or f"learn:{getattr(fn, '__name__', 'job')}"
+    threading.Thread(target=target, name=name, daemon=True).start()
     return await future
 
 

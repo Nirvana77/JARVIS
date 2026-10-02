@@ -262,6 +262,9 @@ class RemoteLink:
         )
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connection: EdgeConnection | None = None
+        #: M4.5: whose turn it is — kept past a disconnect, because the turn in
+        #: flight is still that device's
+        self._device_id: str | None = None
         self._orchestrator = None
 
         #: finished utterances waiting for the orchestrator, oldest first
@@ -323,8 +326,23 @@ class RemoteLink:
     def connection(self) -> EdgeConnection | None:
         return self._connection
 
+    @property
+    def device_id(self) -> str | None:
+        """The edge the orchestrator is hearing — what its memory is kept under."""
+        return self._device_id
+
     def connect(self, connection: EdgeConnection) -> None:
+        if self._device_id is not None and connection.device_id != self._device_id:
+            # What the last device said and nobody took is not this device's
+            # to be answered — or remembered — for.
+            self._pending = None
+            while True:
+                try:
+                    self._utterances.get_nowait()
+                except queue.Empty:
+                    break
         self._connection = connection
+        self._device_id = connection.device_id
         self._disconnected.clear()
 
     def disconnect(self, connection: EdgeConnection) -> None:

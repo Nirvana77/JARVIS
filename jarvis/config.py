@@ -110,6 +110,9 @@ class NLUConfig:
     #: higher bar than the general "unknown" cutoff above before JARVIS
     #: commits to one instead of just saying it didn't catch the command.
     meta_action_threshold: float = 0.6
+    #: M4.5: "set a timer for five minutes and find my watch" — run each half
+    #: when each half is, on its own, a confident command (nlu/compound.py)
+    compound: bool = True
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,32 @@ class ReasonerConfig:
     enabled: bool = True
     base_url: str = "http://localhost:11434"
     model: str = "qwen2.5:3b"
+    #: M4: before "didn't catch that", ask the reasoner whether the transcript
+    #: is a mishearing of a known command, and confirm its guess by voice
+    correct_misheard: bool = True
+    #: the user is waiting in silence while it guesses; past this, give up
+    #: and say the plain line (a reasoner that failed here is not asked to
+    #: plan or answer the same turn)
+    guess_timeout_s: float = 8.0
+    #: M4.5: when no command fits and it was not a mishearing, let the
+    #: reasoner answer in the persona's voice ...
+    answer_questions: bool = True
+    #: ... or re-say the request as commands, which are classified by the real
+    #: NLU and confirmed by voice before any of them runs
+    plan_commands: bool = True
+    reason_timeout_s: float = 15.0
+
+
+@dataclass(frozen=True)
+class MemoryConfig:
+    """M4.5: per-device memory (``jarvis/core/memory.py``)."""
+
+    #: exchanges kept per device, in RAM
+    turns: int = 8
+    #: ... and dropped after this long without one
+    idle_forget_s: float = 900.0
+    #: lasting facts kept per device, in ``<data>/memory/<device>.json``
+    max_facts: int = 200
 
 
 @dataclass(frozen=True)
@@ -297,6 +326,7 @@ class Config:
     tts: TTSConfig = field(default_factory=TTSConfig)
     nlu: NLUConfig = field(default_factory=NLUConfig)
     reasoner: ReasonerConfig = field(default_factory=ReasonerConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     factory: FactoryConfig = field(default_factory=FactoryConfig)
     # M3: the remote-edge split. Unused by the all-in-one path.
     server: ServerConfig = field(default_factory=ServerConfig)
@@ -318,6 +348,11 @@ class Config:
     anthropic_workspace_id: str | None = None
 
     # -- derived paths -------------------------------------------------------
+    @property
+    def memory_dir(self) -> Path:
+        """M4.5: lasting facts, one ``<device_id>.json`` each."""
+        return self.data_dir / "memory"
+
     @property
     def nlu_model_dir(self) -> Path:
         return self.data_dir / "models" / "nlu"
@@ -421,6 +456,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     tts = _section(raw, "tts")
     nlu = _section(raw, "nlu")
     reasoner = _section(raw, "reasoner")
+    memory = _section(raw, "memory")
     factory = _section(raw, "factory")
     paths = _section(raw, "paths")
     # M3
@@ -484,11 +520,22 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             threshold=float(nlu.get("threshold", 0.35)),
             similarity_floor=float(nlu.get("similarity_floor", 0.30)),
             meta_action_threshold=float(nlu.get("meta_action_threshold", 0.6)),
+            compound=bool(nlu.get("compound", True)),
         ),
         reasoner=ReasonerConfig(
             enabled=bool(reasoner.get("enabled", True)),
             base_url=reasoner.get("base_url", "http://localhost:11434"),
             model=reasoner.get("model", "qwen2.5:3b"),
+            correct_misheard=bool(reasoner.get("correct_misheard", True)),
+            guess_timeout_s=float(reasoner.get("guess_timeout_s", 8.0)),
+            answer_questions=bool(reasoner.get("answer_questions", True)),
+            plan_commands=bool(reasoner.get("plan_commands", True)),
+            reason_timeout_s=float(reasoner.get("reason_timeout_s", 15.0)),
+        ),
+        memory=MemoryConfig(
+            turns=int(memory.get("turns", 8)),
+            idle_forget_s=float(memory.get("idle_forget_s", 900.0)),
+            max_facts=int(memory.get("max_facts", 200)),
         ),
         factory=FactoryConfig(
             model=os.getenv("ANTHROPIC_MODEL") or factory.get("model", "claude-opus-5"),
