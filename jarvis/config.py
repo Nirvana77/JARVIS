@@ -134,6 +134,9 @@ class ReasonerConfig:
     #: NLU and confirmed by voice before any of them runs
     plan_commands: bool = True
     reason_timeout_s: float = 15.0
+    #: M7: Ollama's ``think``. Off: a qwen3-class model would otherwise reason
+    #: before every reply and blow ``guess_timeout_s``
+    think: bool = False
 
 
 @dataclass(frozen=True)
@@ -588,6 +591,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             answer_questions=bool(reasoner.get("answer_questions", True)),
             plan_commands=bool(reasoner.get("plan_commands", True)),
             reason_timeout_s=float(reasoner.get("reason_timeout_s", 15.0)),
+            think=bool(reasoner.get("think", False)),
         ),
         memory=MemoryConfig(
             turns=int(memory.get("turns", 8)),

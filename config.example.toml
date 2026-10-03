@@ -79,8 +79,10 @@ compound = true             # "…and…" / "…then…" run as separate command
 
 [reasoner]
 enabled = true           # still capability-probed; false disables Ollama entirely
-base_url = "http://localhost:11434"
-model = "qwen2.5:3b"
+base_url = "http://localhost:11434"  # the k8s pod: http://ollama.ollama.svc.cluster.local:11434
+model = "qwen2.5:3b"     # any pulled model; the cluster's is qwen3:8b
+think = false            # Ollama's "think": a qwen3-class model reasons before every reply
+                         # otherwise — 12.5 s instead of 0.25 s for one guess
 correct_misheard = true  # before "didn't catch that": is it a mishearing of a known
                          # command? Asks "Did you mean '…'?" and acts only on a yes
 guess_timeout_s = 8.0    # how long that guess may take before the plain line is said
