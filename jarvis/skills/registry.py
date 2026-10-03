@@ -198,7 +198,7 @@ def migrate_learned_skills(old: Path, new: Path) -> list[str]:
         target = new / path.name
         if target.exists():
             if target.read_bytes() != path.read_bytes():
-                log.warning(
+                log.info(
                     "learned skill %s differs between %s and %s; keeping the shared one",
                     path.stem, old, new,
                 )

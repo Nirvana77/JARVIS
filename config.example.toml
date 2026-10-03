@@ -11,6 +11,9 @@
 
 [general]
 language = "en"           # also overridable with the `language` env var
+timezone = ""             # an IANA zone, e.g. "Europe/Stockholm": what "now" is for the clock
+                          # skill, the reasoner and skills (ctx.now()). "" = the machine's own,
+                          # which on a server or in a pod is usually UTC
 
 [persona]
 active = "jarvis"         # a directory under personas/; JARVIS_PERSONA overrides

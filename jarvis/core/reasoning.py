@@ -86,6 +86,7 @@ def build_prompt(
     facts: list[str],
     turns: list[tuple[str, str]],
     now: datetime,
+    retry: tuple[str, str] | None = None,
 ) -> str:
     parts = [
         "Known commands (name: ways of saying it):\n" + "\n".join(f"- {line}" for line in known)
@@ -101,6 +102,14 @@ def build_prompt(
             + "\n".join(f"Speaker: {heard_}\nYou: {said or '(nothing)'}" for heard_, said in turns)
         )
     parts.append(f"Now: {now.strftime('%A')} {now.day} {now.strftime('%B %Y, %H:%M')}")
+    if retry is not None:
+        before, said = retry
+        parts.append(
+            f'The speaker is asking again. They asked "{before.strip()}" and you '
+            f'answered "{said.strip()}", which was not what they wanted. Do not give '
+            "that answer again: answer the question itself, or say what you should "
+            "learn to do."
+        )
     parts.append(f'The recogniser heard: "{heard.strip()}"')
     return "\n\n".join(parts)
 

@@ -49,9 +49,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from jarvis.core import clock as _clock
 from jarvis.core import forgetting as _forgetting
 from jarvis.core import mishear as _mishear
 from jarvis.core import reasoning as _reasoning
+from jarvis.core import voice as _voice
 from jarvis.core.interrupt import Cancelled as _Cancelled
 from jarvis.core.interrupt import Interrupter
 from jarvis.core.memory import LOCAL, Memory, is_device_id, same_text
@@ -135,6 +137,16 @@ _SELF_CHECK_SEED_PROBES = (
 
 #: a background question answered unclearly this many times counts as "no"
 _MAX_UNCLEAR_ANSWERS = 3
+
+#: "No. What is the current date?": a leading no on a question asked again
+_NO_LEAD = re.compile(r"^\s*(?:no|nope|nah|not that|wrong)\b[\s,.!]*", re.IGNORECASE)
+_QUESTION = re.compile(
+    r"^\s*(?:what|what's|whats|when|where|who|whose|why|how|which|is|are|was|were|"
+    r"do|does|did|can|could|will|would|should|have|has)\b|\?\s*$",
+    re.IGNORECASE,
+)
+#: two questions this alike (content words, Jaccard) are the same question
+_SAME_QUESTION = 0.6
 
 #: M7: two build requests this similar (MiniLM cosine) are the same request
 _SAME_REQUEST = 0.85
@@ -296,6 +308,17 @@ class Orchestrator:
         self._provisional: dict | None = None
         self._phrasing_task: asyncio.Task | None = None
         self._phrasings_added_at = self._clock()
+        #: phrasings this brain learned since it started. Only these trigger
+        #: its retrain: another brain on the same data/ retrains its own, and
+        #: each picks up the other's at its next start (corpus digest)
+        self._own_phrasings: set[str] = set()
+        #: what "now" is before the time zone is applied (tests pin it)
+        self._clock_now = lambda: _dt.datetime.now(_dt.timezone.utc)
+        #: the last turn's log line (+ "at"), for "asked again" (`_retry_of`)
+        self._previous: dict | None = None
+        #: while a question asked again is being retried: the turn it repeats
+        #: and every label that already answered it wrongly
+        self._retry: dict | None = None
 
     @property
     def busy(self) -> bool:
@@ -549,12 +572,20 @@ class Orchestrator:
         inside the turn ends the turn, not the loop."""
         device = self._device()
         self.memory.focus(device)
-        if _META_ACTIONS.get(label) != "correction":
+        repeated = self._retry_of(device, label, text)
+        if repeated is not None:
+            # the answer it repeats was wrong: whatever that turn taught goes
+            if self._provisional is not None and self._provisional["turn"] == repeated["id"]:
+                self._provisional = None
+        elif _META_ACTIONS.get(label) != "correction":
             self._commit_provisional()
         self._record = self._new_record(device, label, text, confidence)
         self._turn_said = []
         try:
-            await self.handle(label, text, confidence)
+            if repeated is not None:
+                await self._retry_differently(text, repeated)
+            else:
+                await self.handle(label, text, confidence)
         except _Cancelled as exc:
             print(f"  (cancelled {exc} — still listening)", flush=True)
             self._note(outcome="cancelled")
@@ -568,6 +599,61 @@ class Orchestrator:
                 record.setdefault("outcome", "ok")
                 if self.learning.settings.log:
                     self.learning.log.append(record)
+                self._previous = dict(record, at=self._clock())
+
+    # -- asked again: the answer was wrong (the owner, 2026-10-03) ----------------------
+
+    def _retry_of(self, device: str, label: str, text: str) -> dict | None:
+        """The previous turn, when this one asks its question again: within
+        the correction window, from the same device, a question both times,
+        and either the same question in other words or led by a "no". A
+        command said twice ("flip a coin") is just done twice."""
+        prev = self._previous
+        if prev is None or self.standby:
+            return None
+        if prev.get("device") != device:
+            return None
+        if self._clock() - prev.get("at", 0.0) > self.learning.settings.correction_window_s:
+            return None
+        if prev.get("path") in ("unknown", "build") or prev.get("outcome") == "declined":
+            return None  # nothing was answered: asking again is just asking
+        body, said_no = _strip_no(text)
+        before, _ = _strip_no(prev.get("heard", ""))
+        if not (_QUESTION.search(body) and _QUESTION.search(before)):
+            return None
+        if said_no or _same_question(body, before):
+            return prev
+        return None
+
+    async def _retry_differently(self, text: str, prev: dict) -> None:
+        """Answer a question asked again some other way than last time: what
+        answered it then is ruled out, the reasoner is told the last answer
+        did not help, and whatever this finds is learned for both phrasings
+        — or, if nothing does, it is learned as a new skill."""
+        body, _ = _strip_no(text)
+        avoid = set(prev.get("avoid", [])) | {prev.get("label"), prev.get("skill")}
+        avoid.discard(None)
+        avoid.discard(UNKNOWN)
+        self._note(path="retry", retries=prev["id"], avoid=sorted(avoid))
+        if prev.get("learned"):
+            try:
+                self.learning.phrasings.remove(prev["learned"], reason="asked again")
+            except OSError as exc:
+                log.error("could not undo phrasing %s: %s", prev["learned"], exc)
+        print(f'  retry   : asked again — not {", ".join(sorted(avoid))} this time')
+        self._retry = {"prev": prev, "avoid": avoid}
+        try:
+            await self._unclear(body)
+        finally:
+            self._retry = None
+
+    def _avoided(self, label: str) -> bool:
+        return self._retry is not None and label in self._retry["avoid"]
+
+    def _learn_retried(self, label: str, why: str) -> None:
+        """A retry found what the first wording meant as well."""
+        if self._retry is not None:
+            self._learn_phrasing(self._retry["prev"]["heard"], label, why)
 
     # -- M7: the interaction log -------------------------------------------------
 
@@ -881,8 +967,14 @@ class Orchestrator:
         ``[learning] auto_permissions``)."""
         s = self.learning.settings
         self._note_path("build")
+        if not s.enabled:
+            # it understood: say why nothing happens, not "didn't catch that"
+            self._note(outcome="declined")
+            await self._speak(self.persona.line(
+                "learning_off", "Learning is switched off on this brain, sir."))
+            return
         if (
-            not (s.enabled and s.auto_build)
+            not s.auto_build
             or self.claude_client is None
             or not self.claude_client.available
             or self.sandbox is None
@@ -906,7 +998,8 @@ class Orchestrator:
             return
         name = self._new_skill_name(description)
         examples: list[str] = []
-        for example in (text, *thought.examples, description):
+        earlier = (self._retry["prev"].get("heard", ""),) if self._retry is not None else ()
+        for example in (text, *earlier, *thought.examples, description):
             if example and not any(same_text(example, e) for e in examples):
                 examples.append(example)
         self.learning.state.count_build()
@@ -981,6 +1074,7 @@ class Orchestrator:
             if await self._confirmed(confirm.replace("{guess}", guess)):
                 # M7: the words that were heard mean what was confirmed
                 self._learn_phrasing(text, label, "mishear")
+                self._learn_retried(label, "retry")
                 await self.handle(label, guess, confidence)
             else:
                 self._note(outcome="declined")
@@ -1006,12 +1100,20 @@ class Orchestrator:
                 if len(thought) == 1:
                     # one command: the heard words mean it. Several mean no one label.
                     self._learn_phrasing(text, thought[0][1], "plan")
+                    self._learn_retried(thought[0][1], "retry")
                 await self._run_steps(thought)
                 return
             self._note(outcome="declined")
             await self._speak(self.persona.line("unknown"))
             return
         if await self._offer_near_miss(text, confirm):
+            return
+        if self._retry is not None and self.learning.settings.enabled:
+            # asked twice, and nothing JARVIS has fits: that is a capability
+            # to learn, with both wordings as its examples
+            await self._learn_capability(
+                text, _reasoning.Thought(learn=f"answer: {text.strip(' ?.!')}")
+            )
             return
         self._note_path("unknown")
         await self._speak(self.persona.line("unknown"))
@@ -1028,7 +1130,10 @@ class Orchestrator:
         p = await asyncio.to_thread(explain, text)
         if not p.ranking or p.similarity < self.config.nlu.similarity_floor:
             return False
-        label, confidence = p.ranking[0]
+        ranking = [(l, c) for l, c in p.ranking if not self._avoided(l)]
+        if not ranking:
+            return False
+        label, confidence = ranking[0]
         if (
             confidence < self.config.nlu.threshold - margin
             or not self._chainable(label)
@@ -1046,6 +1151,7 @@ class Orchestrator:
             await self._speak(self.persona.line("unknown"))
             return True
         self._learn_phrasing(text, label, "confirmed")
+        self._learn_retried(label, "retry")
         await self._handle_one(label, text, confidence)
         return True
 
@@ -1079,6 +1185,7 @@ class Orchestrator:
             return None
         if phrasing is None:
             return None
+        self._own_phrasings.add(phrasing.id)
         self._note(learned=phrasing.id)
         if self._last_skill is not None and self._last_skill["id"] == turn:
             self._last_skill["learned"] = phrasing.id
@@ -1127,7 +1234,7 @@ class Orchestrator:
         ):
             return False
         try:
-            pending = len(self.learning.phrasings.pending())
+            pending = len(self._own_pending())
         except OSError:
             return False
         if not pending:
@@ -1135,6 +1242,10 @@ class Orchestrator:
         if pending >= s.retrain_after:
             return True
         return self._clock() - self._phrasings_added_at >= s.retrain_idle_s
+
+    def _own_pending(self):
+        """Phrasings this brain learned that are not in a swapped-in model yet."""
+        return [p for p in self.learning.phrasings.pending() if p.id in self._own_phrasings]
 
     def _maybe_retrain_phrasings(self) -> None:
         if self._phrasings_due():
@@ -1145,7 +1256,7 @@ class Orchestrator:
         only if it does no worse than the live one on the regression probes;
         stage it for the merge gate. Never raises into the loop."""
         try:
-            batch = self.learning.phrasings.pending()
+            batch = self._own_pending()
             registry = self._latest_registry()
             examples = self._corpus(registry.manifests())
             print(f"  (retraining with {len(batch)} learned phrasing(s))", flush=True)
@@ -1357,6 +1468,9 @@ class Orchestrator:
         if label == UNKNOWN or self._too_unsure_for_meta(label, confidence):
             log.info("guess %r is no clearer to the NLU (%s %.2f)", guess, label, confidence)
             return None
+        if self._avoided(label):
+            log.info("guess %r is what already answered wrongly (%s)", guess, label)
+            return None
         return found
 
     def _guess(self, text: str, known: list[str]) -> tuple[str, str, float] | None:
@@ -1413,7 +1527,11 @@ class Orchestrator:
             _mishear.vocabulary(self.registry.manifests(), self.intent_meta),
             memory.facts(),
             memory.turns(),
-            _dt.datetime.now(),
+            self._now(),
+            retry=(
+                (self._retry["prev"].get("heard", ""), self._retry["prev"].get("said", ""))
+                if self._retry is not None else None
+            ),
         )
         try:  # its own thread, for the reasons `_reason_about_unclear` gives
             found = await run_detached(self._reason, system, prompt, name="reason")
@@ -1436,6 +1554,15 @@ class Orchestrator:
         print("  plan    : " + " · ".join(f'"{t}" -> {lbl} ({c:.2f})' for t, lbl, c in found))
         if not options.plan_commands:
             return None
+        # the same command twice is one command ("fetch the power log, then
+        # get the power data from the watch" — the watch, 2026-10-03)
+        seen_labels: set[str] = set()
+        deduped = []
+        for step in found:
+            if step[1] == UNKNOWN or step[1] not in seen_labels:
+                deduped.append(step)
+                seen_labels.add(step[1])
+        found = deduped
         if len(found) == 1 and found[0][1] == UNKNOWN:
             # M7: a small model asked for something nothing does often re-says
             # it as a "command" instead of answering "learn" (qwen3:8b, "roll a
@@ -1443,6 +1570,9 @@ class Orchestrator:
             print(f'  learn   : "{found[0][0]}" (a plan nothing knows)')
             return _reasoning.Thought(learn=found[0][0])
         for step, label, confidence in found:
+            if self._avoided(label):
+                log.info("plan dropped: %r is what already answered wrongly (%s)", step, label)
+                return None
             if label == UNKNOWN or self._too_unsure_for_meta(label, confidence):
                 log.info("plan dropped: %r is no clearer to the NLU (%s %.2f)", step, label, confidence)
                 return None
@@ -1452,6 +1582,10 @@ class Orchestrator:
         if len(found) == 1 and _mishear.same_words(found[0][0], text):
             return None  # it only repeated what was heard
         return found
+
+    def _now(self) -> _dt.datetime:
+        """Now, where the speaker is (``[general] timezone``), not the server."""
+        return _clock.local(self.config, self._clock_now())
 
     def _reason(self, system: str, prompt: str) -> str | list[tuple[str, str, float]] | None:
         """Blocking half of :meth:`_think`: ask, parse, and have the
@@ -2282,3 +2416,21 @@ async def _granted(prompt: str) -> bool:
     yes without asking."""
     log.info("granted without asking (auto_permissions): %s", prompt)
     return True
+
+
+def _strip_no(text: str) -> tuple[str, bool]:
+    """("What is the current date?", True) for "No. What is the current date?"."""
+    found = _NO_LEAD.match(text)
+    if found and found.end() < len(text):
+        return text[found.end():], True
+    return text, False
+
+
+def _same_question(a: str, b: str) -> bool:
+    """The same question in other words: "what is today's date" / "what is
+    the date of today". Different subjects ("the weather in Paris" / "… in
+    London") are different questions."""
+    wa, wb = _voice.content_words(a), _voice.content_words(b)
+    if not wa or not wb:
+        return _mishear.same_words(a, b)
+    return len(wa & wb) / len(wa | wb) >= _SAME_QUESTION

@@ -210,9 +210,12 @@ def test_auto_build_off_builds_nothing(rig):
 
 
 def test_learning_off_builds_nothing(rig):
+    """Changed 2026-10-03 at the owner's report: with learning off JARVIS says
+    so ("<learning_off>") instead of "I didn't catch that", which sounded as
+    if it had not heard."""
     o = setup(rig, FakeReasoner(LEARN_DIE), enabled=False)
     asyncio.run(o.handle("unknown", "roll me a die", 0.1))
-    assert rig.voice.spoken[-1] == "<unknown>" and not o._jobs
+    assert rig.voice.spoken[-1] == "<learning_off>" and not o._jobs
 
 
 def test_a_new_name_never_collides(rig):

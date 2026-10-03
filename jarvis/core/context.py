@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from jarvis.config import Config
     from jarvis.core.memory import DeviceMemory
     from jarvis.core.reasoner import Reasoner
@@ -40,6 +42,15 @@ class Context:
     edges: "EdgeControl | None" = None
     memory: "DeviceMemory | None" = None
     knowledge: "Knowledge | None" = None
+    #: what "now" is before the time zone is applied (tests pin it)
+    clock: "Callable[[], datetime] | None" = None
+
+    def now(self) -> "datetime":
+        """The current time where the speaker is (``[general] timezone``), not
+        the server's. Skills use this, never ``datetime.now()``."""
+        from jarvis.core.clock import local
+
+        return local(self.config, self.clock() if self.clock else None)
 
     @property
     def data_dir(self) -> Path:

@@ -37,6 +37,7 @@ out_of_order       = ["That skill is switched off until you have looked at it, s
 learning_it        = ["I can't do that yet, sir. I shall learn it.", "Not yet, sir. Give me a moment to learn it."]
 already_learning   = ["I am already learning that, sir."]
 learn_failed_today = ["I could not learn that earlier today, sir."]
+learning_off       = ["Learning is switched off on this brain, sir, so I cannot pick that up here."]
 learn_limit        = ["I have done all the learning I may today, sir. Ask me again tomorrow."]
 skill_disabled     = ["'{name}' keeps failing, sir. I have switched it off until you look at it."]
 # Canned replies to an intent, in voice: "reply_<intent tag>". Spoken as written;

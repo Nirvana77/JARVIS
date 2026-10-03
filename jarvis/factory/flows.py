@@ -33,7 +33,12 @@ _NO = {"no", "nope", "don't", "do not", "negative", "cancel", "never mind", "sto
 #: Only for the whole-word check (`ask_yes_no_or_none`): the loose one matches
 #: anywhere in the reply, where "ok" would be found in "took". The no-words
 #: are checked first, so "don't keep it" is a no.
-_YES_WORDS = _YES | {"ok", "okay", "go ahead", "do it", "of course", "absolutely", "definitely"}
+_YES_WORDS = _YES | {
+    "ok", "okay", "go ahead", "do it", "of course", "absolutely", "definitely",
+    # the watch, 2026-10-03: "Exactly." to "Did you mean …?" was not a yes
+    "exactly", "precisely", "spot on", "that's right", "that is right", "right",
+    "indeed", "that's it",
+}
 _NO_WORDS = _NO | {"nah"}
 #: A yes-word next to one of these is not a yes ("not sure"); not a no either.
 _NEGATORS = {"not", "isn't", "wasn't", "can't", "won't", "doesn't", "didn't", "hardly"}
