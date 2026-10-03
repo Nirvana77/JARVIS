@@ -71,6 +71,7 @@ from jarvis.factory.flows import (
 from jarvis.factory.jobs import LearningJob, run_detached
 from jarvis.factory.spec import SkillSpec
 from jarvis.learning import Learning
+from jarvis.learning.publish import SelfPublisher
 from jarvis.nlu import compound as _compound
 from jarvis.nlu import slots as _slots
 from jarvis.nlu.classifier import UNKNOWN, Classifier
@@ -229,6 +230,7 @@ class Orchestrator:
         allow_shutdown: bool = True,
         knowledge=None,
         learning: Learning | None = None,
+        publisher=None,
     ) -> None:
         self.config = config
         #: False under `serve`: the brain is a server, and "shut down" said to
@@ -328,6 +330,9 @@ class Orchestrator:
         #: "override", "left" (probation uses to go)}. In RAM: a restart ends
         #: probation and forgets what "undo that" would undo
         self._self_changes: list[dict] = []
+        #: M8: commits JARVIS's kept rewrites to its own branch (no token: off)
+        self.publisher = publisher if publisher is not None else SelfPublisher("")
+        self._publishing: set[asyncio.Task] = set()
 
     @property
     def busy(self) -> bool:
@@ -1047,6 +1052,15 @@ class Orchestrator:
         nlu = self._staged[0] if self._staged is not None else self.nlu
         self._staged = (nlu, registry)
         log.warning("put back the previous %s (%s)", name, reason)
+        if change["override"]:
+            restored = change["previous"]
+            if restored is None:
+                try:
+                    restored = _flows.packaged_source_path(name).read_text(encoding="utf-8")
+                except OSError:
+                    restored = None
+            if restored is not None:
+                self._publish(name, restored, f"JARVIS put back the previous {name} ({reason})")
         try:
             self.learning.state.add_event("reverted", name.replace("_", " "))
         except OSError:
@@ -1056,6 +1070,28 @@ class Orchestrator:
                 f"My rewrite of '{name}' failed, sir, so I've put back the previous version."
             )
         return True
+
+    def _publish(self, name: str, source: str, message: str) -> None:
+        """M8: commit a builtin's source as JARVIS now runs it to its own
+        branch, in the background. Without a token it is only logged."""
+        if not self.publisher.available:
+            log.info("not publishing %s: no JARVIS_GITHUB_TOKEN", name)
+            return
+        path = f"jarvis/skills/builtin/{name}.py"
+
+        async def push() -> None:
+            sha = await run_detached(self.publisher.publish, path, source, message, name="publish")
+            if sha is None:
+                self.learning.state.add_event("unpublished", name.replace("_", " "))
+
+        task = asyncio.ensure_future(push())
+        self._publishing.add(task)
+        task.add_done_callback(self._publishing.discard)
+
+    async def _publishing_done(self) -> None:
+        """Wait for background publishes (tests, shutdown)."""
+        if self._publishing:
+            await asyncio.gather(*list(self._publishing), return_exceptions=True)
 
     async def _undo_change(self) -> None:
         """"Undo that": the most recent rewrite JARVIS made of its own skills."""
@@ -2144,6 +2180,11 @@ class Orchestrator:
                     "left": self.learning.settings.probation_calls,
                 })
                 if override:
+                    self._publish(
+                        name, outcome.module_source,
+                        f"JARVIS rewrote {name} after it failed\n\n"
+                        f"Asked {request.utterance!r}.\n{request.spec.description[:1500]}",
+                    )
                     self.learning.state.add_event("rewrite", name.replace("_", " "))
                     self._queue_announcement(
                         f"I've rewritten '{name}', sir, after it failed. "
@@ -2510,6 +2551,7 @@ class Orchestrator:
                     except (asyncio.CancelledError, Exception):  # noqa: BLE001
                         pass
             await self.cancel_learning()
+            await self._publishing_done()
             await self._interrupter.shutdown()
             self.mic.stop()
             close = getattr(self.tts, "close", None)

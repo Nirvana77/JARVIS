@@ -187,3 +187,45 @@ def test_what_was_rewritten_today_is_told(self_rig):
         await rig.o.handle("learned_today", "what have you learned today", 0.9)
     asyncio.run(go())
     assert "rewrote search" in rig.voice.spoken[-1]
+
+
+# -- every kept rewrite, and every revert, goes to jarvis/self --------------------------------
+
+class FakePublisher:
+    available = True
+
+    def __init__(self):
+        self.published = []
+
+    def publish(self, path, content, message):
+        self.published.append((path, content, message))
+        return "c0ffee"
+
+
+def test_a_kept_rewrite_is_published_to_its_branch(self_rig):
+    rig = self_rig
+    rig.o.publisher = FakePublisher()
+
+    async def go():
+        await fail_and_rewrite(rig)
+        await rig.o._publishing_done()
+    asyncio.run(go())
+    ((path, content, message),) = rig.o.publisher.published
+    assert path == "jarvis/skills/builtin/search.py"
+    assert content == (rig.overrides / "search.py").read_text(encoding="utf-8")
+    assert "search" in message and "wikipedia moved" in message
+
+
+def test_a_revert_is_published_too(self_rig):
+    rig = self_rig
+    rig.o.publisher = FakePublisher()
+
+    async def go():
+        await fail_and_rewrite(rig)
+        await rig.o.handle("undo_change", "undo that", 0.9)
+        await rig.o._publishing_done()
+    asyncio.run(go())
+    paths = [p for p, _c, _m in rig.o.publisher.published]
+    assert paths == ["jarvis/skills/builtin/search.py"] * 2
+    restored = rig.o.publisher.published[-1][1]
+    assert restored == flows_mod.packaged_source_path("search").read_text(encoding="utf-8")

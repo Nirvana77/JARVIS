@@ -212,6 +212,10 @@ class LearningConfig:
     #: M8: a rewrite JARVIS made of its own skill is watched for this many
     #: uses; a failure, or a correction, in them puts the previous version back
     probation_calls: int = 5
+    #: M8: where JARVIS commits the rewrites it keeps (needs JARVIS_GITHUB_TOKEN)
+    publish_repo: str = "Nirvana77/JARVIS"
+    publish_branch: str = "jarvis/self"
+    publish_base: str = "develop"
 
 
 @dataclass(frozen=True)
@@ -424,6 +428,8 @@ class Config:
     #: Anthropic credentials (.env only; never in config.toml) — used solely
     #: by the M2 skill factory, never on the hot path
     anthropic_api_key: str | None = None
+    #: M8: JARVIS_GITHUB_TOKEN — pushes its own rewrites to jarvis/self
+    github_token: str | None = None
     anthropic_workspace_id: str | None = None
 
     # -- derived paths -------------------------------------------------------
@@ -607,6 +613,9 @@ def _learning_config(raw: dict) -> LearningConfig:
             0, int(raw.get("max_repairs_per_skill_per_day", d.max_repairs_per_skill_per_day))
         ),
         probation_calls=max(0, int(raw.get("probation_calls", d.probation_calls))),
+        publish_repo=str(raw.get("publish_repo", d.publish_repo)),
+        publish_branch=str(raw.get("publish_branch", d.publish_branch)),
+        publish_base=str(raw.get("publish_base", d.publish_base)),
     )
 
 
@@ -771,6 +780,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         data_dir=data_dir,
         hf_token=hf_token,
         anthropic_api_key=anthropic_api_key,
+        github_token=os.getenv("JARVIS_GITHUB_TOKEN") or None,
         anthropic_workspace_id=anthropic_workspace_id,
         edge_token=edge_token,
         edge_tokens=edge_tokens,

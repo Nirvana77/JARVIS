@@ -150,6 +150,9 @@ auto_repair = true       # a learned skill that raises is rewritten in the backg
 max_repairs_per_skill_per_day = 2  # ... this often, then switched off until you look
 probation_calls = 5      # M8: a skill JARVIS rewrote itself is watched this many uses; a failure
                          # or a correction in them puts the previous version back
+publish_repo = "Nirvana77/JARVIS"   # M8: where JARVIS commits the builtin rewrites it keeps,
+publish_branch = "jarvis/self"      # through the GitHub API, with JARVIS_GITHUB_TOKEN from .env
+publish_base = "develop"            # (never develop/master; protect them with a ruleset too)
 
 [server]
 # TLS is required on a routable address. Three legitimate shapes:
