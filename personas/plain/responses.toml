@@ -30,3 +30,4 @@ learn_limit        = ["I've reached today's learning limit. Ask me again tomorro
 skill_disabled     = ["'{name}' keeps failing, so I've switched it off."]
 reply_thanks       = ["You're welcome.", "Any time."]
 nothing_to_undo    = ["There is nothing to undo."]
+undo_confirm       = ["Put back the previous '{name}'?"]

@@ -53,11 +53,12 @@ def self_rig(rig, tmp_path, monkeypatch):
     o.learning = Learning.in_memory(config)
     o.sandbox = rig.sandbox = GateSandbox()
     rig.overrides = overrides
-    state = {"raise": True}
+    state = {"raise": True, "calls": 0}
     registry = o.registry
 
     def dispatch(label, params):
         registry.calls.append((label, params))
+        state["calls"] += 1
         if state["raise"]:
             raise RuntimeError("wikipedia moved")
         return "According to Wikipedia, sir: fine."
@@ -229,3 +230,68 @@ def test_a_revert_is_published_too(self_rig):
     assert paths == ["jarvis/skills/builtin/search.py"] * 2
     restored = rig.o.publisher.published[-1][1]
     assert restored == flows_mod.packaged_source_path("search").read_text(encoding="utf-8")
+
+
+# -- found in the dry run (2026-10-03) ----------------------------------------------------
+
+def test_asking_again_after_the_skill_was_rewritten_uses_the_rewrite(self_rig):
+    """"What time is it?" failed, the clock was rewritten, "What time is it?"
+    again counted as asked-again and ruled the fresh rewrite out."""
+    rig = self_rig
+
+    async def go():
+        await rig.o._turn("search", "what is a black hole?", 0.9)       # fails
+        await until(lambda: not rig.o._jobs)
+        await rig.o._safe_point()                                        # rewrite in
+        rig.state["raise"] = False
+        calls = rig.state["calls"]
+        await rig.o._turn("search", "what is a black hole?", 0.9)       # asked again
+        assert rig.state["calls"] == calls + 1
+    asyncio.run(go())
+    assert rig.o.learning.log.records()[-1]["path"] != "retry"
+
+
+def test_an_unsure_undo_asks_before_it_puts_anything_back(self_rig):
+    rig = self_rig
+
+    async def go():
+        await fail_and_rewrite(rig)
+        rig.voice.feed("yes")
+        await rig.o.handle("undo_change", "Undo that.", 0.59)
+    asyncio.run(go())
+    assert any(s == "<undo_confirm>" for s in rig.voice.spoken)
+    assert not (rig.overrides / "search.py").exists()
+
+
+def test_an_unsure_undo_answered_no_keeps_the_rewrite(self_rig):
+    rig = self_rig
+
+    async def go():
+        await fail_and_rewrite(rig)
+        rig.voice.feed("no")
+        await rig.o.handle("undo_change", "Undo that.", 0.59)
+    asyncio.run(go())
+    assert (rig.overrides / "search.py").is_file()
+
+
+def test_after_undo_the_skill_is_not_rewritten_again_today(self_rig):
+    """The owner rejected that rewrite: its next failure must not start
+    another one on top of their undo."""
+    rig = self_rig
+
+    async def go():
+        await fail_and_rewrite(rig)
+        await rig.o.handle("undo_change", "undo that", 0.9)
+        await rig.o._safe_point()
+        claude_calls = len(rig.claude.calls)
+        await rig.o.handle("search", "search black holes", 0.9)   # the old version fails
+        assert not rig.o._jobs and len(rig.claude.calls) == claude_calls
+    asyncio.run(go())
+
+
+def test_a_name_is_told_once_however_often_it_was_rewritten(self_rig):
+    rig = self_rig
+    rig.o.learning.state.add_event("rewrite", "clock")
+    rig.o.learning.state.add_event("rewrite", "clock")
+    asyncio.run(rig.o.handle("learned_today", "what have you learned today", 0.9))
+    assert "rewrote clock." in rig.voice.spoken[-1] and "clock, clock" not in rig.voice.spoken[-1]

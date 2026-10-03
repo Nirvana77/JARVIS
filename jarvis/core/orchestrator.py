@@ -116,8 +116,6 @@ _GUARDED_ACTIONS = (
     "teach", "edit_skill", "revert_skill", "remove_skill", "forget_memory",
     # M7: undoes what the last turn taught
     "correction",
-    # M8: puts back the previous version of a skill
-    "undo_change",
 )
 
 #: Skills whose argument is whatever was said: never one step of a chain
@@ -631,6 +629,11 @@ class Orchestrator:
             return None
         if prev.get("path") in ("unknown", "build") or prev.get("outcome") == "declined":
             return None  # nothing was answered: asking again is just asking
+        if any(
+            c["name"] == prev.get("skill") and c.get("at", 0.0) > prev.get("at", 0.0)
+            for c in self._self_changes
+        ):
+            return None  # the skill was rewritten since: the new version gets its turn
         body, said_no = _strip_no(text)
         before, _ = _strip_no(prev.get("heard", ""))
         if not (_QUESTION.search(body) and _QUESTION.search(before)):
@@ -822,7 +825,7 @@ class Orchestrator:
             await self._learned_today()
             return
         if action == "undo_change":
-            await self._undo_change()
+            await self._undo_change(confidence)
             return
 
         if label in _slots.STORING and not _slots.has_lead_in(label, text):
@@ -1093,14 +1096,26 @@ class Orchestrator:
         if self._publishing:
             await asyncio.gather(*list(self._publishing), return_exceptions=True)
 
-    async def _undo_change(self) -> None:
-        """"Undo that": the most recent rewrite JARVIS made of its own skills."""
+    async def _undo_change(self, confidence: float = 1.0) -> None:
+        """"Undo that": the most recent rewrite JARVIS made of its own skills.
+        Not a guarded action — it only ever puts back a version that ran
+        before — but when the classifier is unsure it asks first ("Undo
+        that." scored 0.59 in the dry run, just under the guard)."""
         if not self._self_changes:
             await self._speak(self.persona.line(
                 "nothing_to_undo", "There is nothing of mine to undo, sir."))
             return
         name = self._self_changes[-1]["name"]
+        if confidence < self.config.nlu.meta_action_threshold:
+            ask = self.persona.line("undo_confirm", "Shall I put back the previous '{name}', sir?")
+            if not await self._confirmed(ask.replace("{name}", name)):
+                await self._speak(self.persona.line("forget_kept", "Very well, sir. I shall keep it."))
+                return
         if await self._revert_self_change(name, reason="the owner said undo", undo=True):
+            # the owner rejected that rewrite: none on top of it today
+            s = self.learning.settings
+            while self.learning.state.repairs_today(name) < s.max_repairs_per_skill_per_day:
+                self.learning.state.count_repair(name)
             await self._speak(f"Undone, sir: '{name}' is back as it was.")
         else:
             await self._speak(self.persona.line("error"))
@@ -1562,7 +1577,10 @@ class Orchestrator:
             return
         by_kind: dict[str, list[str]] = {}
         for e in events:
-            by_kind.setdefault(e["kind"], []).append(e["text"])
+            texts = by_kind.setdefault(e["kind"], [])
+            if e["kind"] in ("rewrite", "reverted", "repair", "skill") and e["text"] in texts:
+                continue  # a name once, however often
+            texts.append(e["text"])
         parts = []
         if by_kind.get("phrasing"):
             shown = by_kind["phrasing"][-3:]
@@ -2177,7 +2195,7 @@ class Orchestrator:
             else:
                 self._self_changes.append({
                     "name": name, "previous": previous, "override": override,
-                    "left": self.learning.settings.probation_calls,
+                    "left": self.learning.settings.probation_calls, "at": self._clock(),
                 })
                 if override:
                     self._publish(

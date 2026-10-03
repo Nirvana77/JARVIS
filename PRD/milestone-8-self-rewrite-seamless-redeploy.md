@@ -1,5 +1,8 @@
 # Milestone 8: JARVIS rewrites its own skills and redeploys without dropping the watch
 
+**Status:** Part A ✅ built 2026-10-03 (`PRD/milestone-8-part-a-outcome.md`).
+Part B not started.
+
 **Asked for:** 2026-10-03, by the owner: *"This is what I want JARVIS to do.
 Rewrite its own code and redeploy without breaking the connection to the
 clients."* The three choices put to them:
