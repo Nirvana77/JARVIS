@@ -14,7 +14,9 @@ import dataclasses
 import importlib
 import logging
 import pkgutil
+import shutil
 import sys
+from pathlib import Path
 from typing import Callable
 
 from jarvis.core.context import Context
@@ -60,6 +62,17 @@ class Registry:
 
     # -- discovery ------------------------------------------------------------
 
+    @staticmethod
+    def _point_learned_package(config) -> None:
+        """``jarvis.skills.learned`` is imported from the checkout, but its
+        modules are looked up in ``config.learned_skills_dir`` (known issue
+        #19). Module names stay ``jarvis.skills.learned.<name>``."""
+        try:
+            pkg = importlib.import_module(LEARNED_PACKAGE)
+        except ModuleNotFoundError:
+            return
+        pkg.__path__ = [str(config.learned_skills_dir)]
+
     @classmethod
     def discover(
         cls,
@@ -72,6 +85,8 @@ class Registry:
         knowledge=None,
     ) -> "Registry":
         reg = cls(config, reasoner, say, edges, memory, knowledge)
+        if LEARNED_PACKAGE in packages:
+            cls._point_learned_package(config)
         for package in packages:
             try:
                 pkg = importlib.import_module(package)
@@ -162,3 +177,35 @@ class Registry:
         if not isinstance(result, str):
             raise SkillError(f"{label}.run returned {type(result).__name__}, expected str")
         return result
+
+
+#: where learned skills were kept before known issue #19: the checkout (dev
+#: brain), or the PVC the pod mounts over it
+CHECKOUT_LEARNED_DIR = Path(__file__).resolve().parent / "learned"
+
+
+def migrate_learned_skills(old: Path, new: Path) -> list[str]:
+    """Copy the learned skills in ``old`` that ``new`` does not have yet.
+    Never overwrites (the shared copy wins), never deletes (a brain still on
+    older code may be reading ``old``). Returns the names copied."""
+    old, new = Path(old), Path(new)
+    if not old.is_dir() or old.resolve() == new.resolve():
+        return []
+    copied = []
+    for path in sorted(old.glob("*.py")):
+        if path.name.startswith("_"):
+            continue
+        target = new / path.name
+        if target.exists():
+            if target.read_bytes() != path.read_bytes():
+                log.warning(
+                    "learned skill %s differs between %s and %s; keeping the shared one",
+                    path.stem, old, new,
+                )
+            continue
+        new.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        copied.append(path.stem)
+    if copied:
+        log.info("moved learned skill(s) to %s: %s", new, ", ".join(copied))
+    return copied

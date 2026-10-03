@@ -90,10 +90,25 @@ cluster's Ollama by its ClusterIP, a deliberately broken learned skill
     no growth from turn to turn.
   - Run 1: 48 → 64–66 per turn → 80 while staged → 65 after the swap.
 
+## Known issue #19, fixed after the dry run (owner's request)
+
+The pod kept learned skills on its `jarvis-state` PVC and the dev brain in its
+checkout, so a skill one brain learned was unknown to the other. They now live
+in `data/skills/learned/` (`Config.learned_skills_dir`), which both brains
+share. `Registry.discover` points the `jarvis.skills.learned` package there
+(import names unchanged) and `flows.learned_source_path` follows it, so
+promotion, edit, revert and repair all write to the shared copy. At startup
+`app._discover` copies any skill still in the old place into the shared one
+(`migrate_learned_skills`): it never overwrites and never deletes, and when the
+two differ it logs which one it kept. Two `test_skills.py` discovery tests now
+put their skill under `<data_dir>/skills/learned/` instead of redirecting the
+package path by hand: the location was specified to change, not the test's
+intent. Both brains had a `flip_a_coin`, and they differed (same behaviour,
+different examples); the pod's, which the watch has been using, was put in the
+shared folder at the merge.
+
 ## Found, not fixed (in `known-issues.md`)
 
-- **#19.** The pod and the dev brain keep learned *skills* in different places
-  (PVC vs checkout); everything else learned is in the shared `data/`.
 - **#20.** A learned skill's number goes to the first number said: "roll a
   twenty sided die" once rolled twenty dice.
 - **#16 (rest).** Every reply rewritten by the LLM can lose content ("1 sheep, 2

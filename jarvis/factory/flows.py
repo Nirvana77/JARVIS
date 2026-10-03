@@ -132,7 +132,12 @@ def staging_dir() -> Path:
 
 
 def learned_source_path(name: str) -> Path:
-    return Path(__file__).resolve().parent.parent / "skills" / "learned" / f"{name}.py"
+    """Where a learned skill's source lives: wherever discovery pointed the
+    ``jarvis.skills.learned`` package (``config.learned_skills_dir``, known
+    issue #19)."""
+    import jarvis.skills.learned as learned_pkg
+
+    return Path(list(learned_pkg.__path__)[0]) / f"{name}.py"
 
 
 def _slugify(text: str) -> str:

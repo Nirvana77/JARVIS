@@ -473,6 +473,13 @@ class Config:
         return self.data_dir / "firmware"
 
     @property
+    def learned_skills_dir(self) -> Path:
+        """Skills the factory wrote (known issue #19): under ``data/`` so the
+        dev brain and the pod, which share it, share them too. The package
+        ``jarvis.skills.learned`` is pointed here at discovery."""
+        return self.data_dir / "skills" / "learned"
+
+    @property
     def skill_quarantine_dir(self) -> Path:
         """M2: self-check failures and skills displaced by `revert_skill` — kept
         for inspection, never imported."""

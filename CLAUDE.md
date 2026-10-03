@@ -394,7 +394,7 @@ same orchestrator runs with a real mic (`audio/`), typed text
 | `core/` | `orchestrator.py` (turns, standby, follow-up window, merge gate, safe points, the unclear-turn path), `context.py` (what a skill gets: `ctx.say/data_dir/llm/http/edges/knowledge/memory`), `persona.py`, `reasoner.py` (optional Ollama), `mishear.py` + `reasoning.py` (M4/M4.5 prompts and parsing), `memory.py` + `forgetting.py` (per-device memory), `interrupt.py`, `speech.py` |
 | `audio/` | `wake.py` (openwakeword 0.4.0), `capture.py`, `stt.py` (faster-whisper), `tts.py` + `player.py` (Piper), `segment.py` (the edge's VAD), the whisper/voder service clients, `text_io.py` |
 | `nlu/` | `corpus.py` (`intents.json` seed + every skill's `MANIFEST.examples`), `train.py` (MiniLM embeddings + `LogisticRegression`, versions in `data/models/nlu/v<N>/`, last 3 kept, corpus digest in `meta.json`), `classifier.py` (threshold + similarity floor → `unknown`), `slots.py`, `compound.py`, `retrain_worker.py` |
-| `skills/` | `contract.py` (`SkillManifest`, `run(ctx, **params) -> str`), `registry.py` (builtin + learned + edge tools; `origin` is set from where a skill was found), `builtin/`, `learned/` (factory output, git-ignored), `edge.py` (an edge's declared tools as skills) |
+| `skills/` | `contract.py` (`SkillManifest`, `run(ctx, **params) -> str`), `registry.py` (builtin + learned + edge tools; `origin` is set from where a skill was found), `builtin/`, `learned/` (the package only: factory output lives in `data/skills/learned/`), `edge.py` (an edge's declared tools as skills) |
 | `factory/` | the skill factory: `flows.py` (teach/edit/revert/remove dialogs), `jobs.py` (background build → validate → permission → sandbox), `claude_client.py` (the only Anthropic caller), `validate.py` (AST allowlist), `sandbox.py` |
 | `remote/` | M3 brain/edge split: `protocol.py`, `server.py`, `edge.py`, `addressing.py`, `intake.py`, `pairing.py`, `firmware.py` (OTA), `powerlog.py`, `supervisor.py` (starts/adopts the two services) |
 | `knowledge/` | M5 RAG: `store.py`, `ingest.py`, `answer.py`, `Knowledge.watch` |
@@ -457,6 +457,8 @@ Since M7 the pod writes there continuously: `data/interactions/` (every turn)
 and `data/learning/` (learned phrasings, the learning state). The pod is the
 brain that learns; a dev brain on the same `data/` should run with
 `[learning] enabled = false` (it still logs, and still trains on what the pod
-learned at its next start). Learned *skills* are not in `data/`: the pod keeps
-them on its `jarvis-state` PVC, the dev brain in `jarvis/skills/learned/`
-(known issue #19).
+learned at its next start). Learned *skills* are in `data/skills/learned/` too
+(known issue #19, fixed in M7): discovery points the `jarvis.skills.learned`
+package there, and a skill still in the old place — the checkout's
+`jarvis/skills/learned/`, or the pod's PVC mounted over it — is copied over at
+startup, never overwriting the shared copy.
