@@ -23,10 +23,14 @@ class Reasoner:
         base_url: str = "http://localhost:11434",
         model: str = "qwen2.5:3b",
         timeout: float = 30.0,
+        think: bool = False,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        #: sent as Ollama's ``think``: a qwen3-class model otherwise reasons
+        #: at length before every reply (12.5 s against 0.25 s for one guess)
+        self.think = think
         self.available = False
 
     @classmethod
@@ -34,6 +38,7 @@ class Reasoner:
         r = cls(
             base_url=config.reasoner.base_url,
             model=config.reasoner.model,
+            think=config.reasoner.think,
         )
         if config.reasoner.enabled:
             r.probe()
@@ -76,6 +81,7 @@ class Reasoner:
             "system": system,
             "prompt": prompt,
             "stream": False,
+            "think": self.think,
             "options": {"temperature": temperature},
         }
         if format is not None:

@@ -5,10 +5,14 @@ assistant that runs on your own machines. Hearing, understanding, answering and
 speaking are all local. A small embedding-based classifier routes what you say
 to a skill, and Piper speaks the answer in the persona's voice.
 
-Two things reach outside, and only when you ask for them. Claude **teaches**
-JARVIS new skills: "learn how to flip a coin" has Claude write a Python skill,
-which JARVIS validates, sandboxes, keeps after you confirm, and runs itself from
-then on. Some skills fetch from the web (Wikipedia, YouTube). Claude is never
+JARVIS **learns from every turn**: the words you used when it had to ask
+"Did you mean …?" become part of what it understands, "no, I meant …" corrects
+it, and a request it has no skill for is learned as a new skill (see
+[It learns as you use it](#it-learns-as-you-use-it)).
+
+Two things reach outside. Claude **teaches** JARVIS new skills: "learn how to
+flip a coin", or a request nothing fits, has Claude write a Python skill, which
+JARVIS validates, sandboxes and runs itself from then on. Some skills fetch from the web (Wikipedia, YouTube). Claude is never
 used to answer questions. Answers come from the skills, your own notes and,
 optionally, a local Ollama model.
 
@@ -112,6 +116,34 @@ Two rules hold throughout: the LLM never chooses a skill — it suggests
 suggests runs before you have said yes. Each step can be turned off on its own
 (`[nlu] compound`, `[reasoner] correct_misheard`, `plan_commands`,
 `answer_questions`).
+
+## It learns as you use it
+
+Every turn is written to `data/interactions/<device>/<day>.jsonl`: what was
+heard, what it was taken to be, which path the turn took and how it ended. From
+that, with no LLM needed for the first part:
+
+- **Your words.** When JARVIS had to ask *"Did you mean 'flip a coin'?"* and you
+  said yes, it learns that what it *heard* ("flip a corn") means that. So does
+  a command it ran while unsure, if your next words were not a correction.
+  These phrasings are retrained in at the next pause, a few at a time. A new
+  model is kept only if it gets your recent commands at least as right as the
+  old one.
+- **Corrections.** *"No, I meant set a timer"* right after a skill ran undoes
+  what that turn taught, learns the right meaning and does it instead.
+- **New skills.** With a local LLM up, a request no skill fits and it cannot
+  simply answer ("roll a twenty-sided die") is learned: *"I can't do that yet,
+  sir. I'll learn it."* Claude writes the skill in the background, it is
+  checked and sandboxed, and it is kept without asking. At most five a day.
+  A skill that needs network or file access still waits for your yes.
+- **Repairs.** A learned skill that fails is rewritten in the background and
+  kept only if the call that failed now works. One that keeps failing is
+  switched off, and JARVIS says so.
+
+*"What have you learned today?"* tells you, and `python -m jarvis learning`
+shows the status, the log (`log --since 2d`) and the learned phrasings, undoes
+one (`undo ID`) or switches a skill back on (`enable SKILL`). `[learning]` in
+`config.toml` sets every limit, or turns learning off and keeps only the log.
 
 ### Memory, per device
 

@@ -3,8 +3,8 @@
 ``intents.json`` stays the human-editable seed (builtin + meta intents,
 persona-critical canned lines); the trainer never writes to it. Each skill
 module owns its own ``examples`` in its ``MANIFEST``. The corpus the trainer
-actually reads is ``seed patterns`` + ``every registered skill's examples``,
-cached in ``data/nlu/corpus.sqlite`` and rebuildable with ``jarvis nlu rebuild``.
+actually reads is ``seed patterns`` + ``every registered skill's examples`` +
+(M7) ``phrasings learned from use`` (``jarvis/learning/phrasings.py``), cached in ``data/nlu/corpus.sqlite`` and rebuildable with ``jarvis nlu rebuild``.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ class SeedIntent:
 class Example:
     text: str
     label: str
-    source: str  # "seed" or "skill"
+    source: str  # "seed", "skill" or "learned"
 
 
 def load_seed_intents(path: str | Path = DEFAULT_INTENTS_PATH) -> list[SeedIntent]:
@@ -94,7 +94,12 @@ def expand_pattern(pattern: str) -> list[str]:
 def build_corpus(
     intents_path: str | Path = DEFAULT_INTENTS_PATH,
     manifests: Sequence[SkillManifest] = (),
+    learned: Iterable[tuple[str, str]] = (),
 ) -> list[Example]:
+    """``learned`` (M7): ``(text, label)`` pairs picked up from confirmed
+    turns. One whose label is neither a seed intent nor a skill here (a skill
+    that was removed since) is left out, so a model never gains a class that
+    nothing can handle."""
     seen: set[tuple[str, str]] = set()
     examples: list[Example] = []
 
@@ -116,6 +121,11 @@ def build_corpus(
     for manifest in manifests:
         for example in manifest.examples:
             add(example, manifest.name, "skill")
+
+    known = {e.label for e in examples}
+    for text, label in learned:
+        if label in known:
+            add(text, label, "learned")
 
     return examples
 

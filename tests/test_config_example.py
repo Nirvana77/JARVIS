@@ -30,6 +30,7 @@ _SECTIONS = {
     "memory": "memory",
     "factory": "factory",
     "knowledge": "knowledge",
+    "learning": "learning",
     "server": "server",
     "whisper": "whisper",
     "voder": "voder",

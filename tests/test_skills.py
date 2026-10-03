@@ -151,9 +151,14 @@ def test_note_without_text_prompts(config, tmp_path):
 def test_registry_discovers_a_learned_skill(config, tmp_path):
     import sys
 
+    import dataclasses
+
     import jarvis.skills.learned as learned_pkg
 
-    (tmp_path / "coin_flip.py").write_text(
+    # known issue #19: learned skills live in <data>/skills/learned/
+    cfg = dataclasses.replace(config, data_dir=tmp_path)
+    cfg.learned_skills_dir.mkdir(parents=True)
+    (cfg.learned_skills_dir / "coin_flip.py").write_text(
         "from jarvis.skills.contract import SkillManifest\n"
         "MANIFEST = SkillManifest(name='coin_flip', description='Flip a coin.', "
         "examples=['flip a coin'], origin='learned')\n"
@@ -161,9 +166,8 @@ def test_registry_discovers_a_learned_skill(config, tmp_path):
         encoding="utf-8",
     )
     original_path = list(learned_pkg.__path__)
-    learned_pkg.__path__ = [str(tmp_path)]
     try:
-        reg = Registry.discover(config)
+        reg = Registry.discover(cfg)
         assert "coin_flip" in reg.names()
         assert reg.manifest("coin_flip").origin == "learned"
     finally:
@@ -180,9 +184,14 @@ def test_a_learned_skills_origin_is_forced_even_if_the_code_omits_it(config, tmp
     Registry.discover() started normalizing it by package location."""
     import sys
 
+    import dataclasses
+
     import jarvis.skills.learned as learned_pkg
 
-    (tmp_path / "coin_flip.py").write_text(
+    # known issue #19: learned skills live in <data>/skills/learned/
+    cfg = dataclasses.replace(config, data_dir=tmp_path)
+    cfg.learned_skills_dir.mkdir(parents=True)
+    (cfg.learned_skills_dir / "coin_flip.py").write_text(
         "from jarvis.skills.contract import SkillManifest\n"
         "MANIFEST = SkillManifest(name='coin_flip', description='Flip a coin.', "
         "examples=['flip a coin'])\n"  # no `origin=` — defaults to "builtin"
@@ -190,9 +199,8 @@ def test_a_learned_skills_origin_is_forced_even_if_the_code_omits_it(config, tmp
         encoding="utf-8",
     )
     original_path = list(learned_pkg.__path__)
-    learned_pkg.__path__ = [str(tmp_path)]
     try:
-        reg = Registry.discover(config)
+        reg = Registry.discover(cfg)
         assert reg.manifest("coin_flip").origin == "learned"
     finally:
         learned_pkg.__path__ = original_path

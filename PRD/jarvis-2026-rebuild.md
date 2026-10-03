@@ -648,6 +648,36 @@ Plan: `PRD/milestone-5-knowledge-base.md`; outcome:
   (`.txt`/`.md`/`.pdf`), plus a `remember` builtin for spoken facts; `note.py`
   mirrors dictated notes into the docs dir.
 
+### Milestone 7 — learn from every turn — ✅ BUILT (2026-10-03)
+
+Plan: `PRD/milestone-7-learn-from-every-turn.md`; outcome:
+`PRD/milestone-7-learn-from-every-turn-outcome.md`. Asked for by the owner:
+every interaction adds to what JARVIS knows, and what it does not understand
+it learns, changing its own code. The owner chose **fully autonomous**
+learning and **growing around a fixed local LLM** rather than fine-tuning it.
+
+- **The reasoner, for real**: the cluster's Ollama (`qwen3:8b`), with
+  `think = false` (0.25 s a guess instead of 12.5 s).
+- **The interaction log**: one JSON line per turn,
+  `data/interactions/<device>/<day>.jsonl`.
+- **Phrasings learned from use**: a yes to "Did you mean …?" (the reasoner's
+  guess, a one-step plan, or, with no LLM, the classifier's own near miss), and
+  an unsure turn nobody corrected, teach the classifier the words that were
+  *heard*. They are a third corpus source (`data/learning/phrasings.json`),
+  retrained in batches at idle behind a regression gate.
+- **Corrections**: "no, I meant …" undoes what the last turn taught and learns
+  the right label.
+- **Building what nothing fits**: the reasoner can say a request is a new
+  capability; the factory builds it in the background and it is kept without
+  "Shall I keep it?". There is a daily cap and same-day deduplication, and a
+  permission beyond pure/notify still waits for a yes unless
+  `auto_permissions`.
+- **Repairing what breaks**: a learned skill that raises is rewritten, and kept
+  only if the failing call now passes in the sandbox. A skill that keeps
+  failing is switched off. Builtins are logged for a person.
+- **Claude is still only the teacher**: it writes and repairs code and never
+  answers a turn.
+
 ### Milestone 6 — polish
 - Voice barge-in during TTS: AEC on the all-in-one path and on the edge, so
   `speaking:on` can stop a reply without the button.

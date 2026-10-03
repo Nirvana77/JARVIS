@@ -58,6 +58,9 @@ class Persona:
     _reasoner: Reasoner | None = None
     _embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     _style_vecs: np.ndarray | None = field(default=None, repr=False)
+    #: one embedder for the life of the persona (known issue #16: it was
+    #: built on every call)
+    _embedder: object | None = field(default=None, repr=False)
 
     # -- construction ------------------------------------------------------
 
@@ -172,16 +175,15 @@ class Persona:
     def _nearest_style_lines(self, text: str, k: int) -> list[str]:
         if len(self.style_lines) <= k:
             return list(self.style_lines)
-        if self._style_vecs is None:
+        if self._embedder is None:
             from fastembed import TextEmbedding
 
-            embedder = TextEmbedding(model_name=self._embedding_model)
+            self._embedder = TextEmbedding(model_name=self._embedding_model)
+        embedder = self._embedder
+        if self._style_vecs is None:
             self._style_vecs = np.asarray(
                 list(embedder.embed(self.style_lines)), dtype=np.float32
             )
-        from fastembed import TextEmbedding
-
-        embedder = TextEmbedding(model_name=self._embedding_model)
         q = np.asarray(next(iter(embedder.embed([text]))), dtype=np.float32)
         sims = self._style_vecs @ q
         top = np.argsort(sims)[::-1][:k]

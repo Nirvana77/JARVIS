@@ -79,8 +79,10 @@ compound = true             # "…and…" / "…then…" run as separate command
 
 [reasoner]
 enabled = true           # still capability-probed; false disables Ollama entirely
-base_url = "http://localhost:11434"
-model = "qwen2.5:3b"
+base_url = "http://localhost:11434"  # the k8s pod: http://ollama.ollama.svc.cluster.local:11434
+model = "qwen2.5:3b"     # any pulled model; the cluster's is qwen3:8b
+think = false            # Ollama's "think": a qwen3-class model reasons before every reply
+                         # otherwise — 12.5 s instead of 0.25 s for one guess
 correct_misheard = true  # before "didn't catch that": is it a mishearing of a known
                          # command? Asks "Did you mean '…'?" and acts only on a yes
 guess_timeout_s = 8.0    # how long that guess may take before the plain line is said
@@ -122,6 +124,27 @@ data_dir = "data"        # models, nlu artifacts, per-skill scratch (git-ignored
 
 # ================================================================= the brain
 # `python -m jarvis serve`. Ignored by the all-in-one path.
+
+[learning]               # M7: learning from every turn (PRD/milestone-7-learn-from-every-turn.md)
+enabled = true           # learn phrasings, build and repair skills. false: log turns, learn
+                         # nothing — the dev brain beside the pod, which shares data/
+log = true               # one JSON line per turn in data/interactions/<device>/<day>.jsonl
+keep_days = 365
+learn_below = 0.5        # a skill that ran this unsure, and was not corrected in the next
+                         # turn, teaches the classifier the words it was asked with
+confirm_margin = 0.1     # "unknown" but within this of [nlu] threshold: "Did you mean …?"
+                         # with no LLM needed; 0 turns it off
+max_per_label = 50       # learned phrasings kept per skill, oldest dropped first
+retrain_after = 5        # retrain once this many phrasings wait ...
+retrain_idle_s = 600.0   # ... or once fewer have waited this long; only kept if the new
+                         # model does no worse on recent turns than the old one
+announce = "idle"        # "idle": say what was learned at the next idle point; "never"
+correction_window_s = 60.0  # how long after a skill ran "no, I meant …" corrects it
+auto_build = true        # a request for something new: have Claude build it, keep it
+auto_permissions = false # grant such a skill network/file/edge access without asking
+max_builds_per_day = 5   # what JARVIS may spend on Claude by itself, per day
+auto_repair = true       # a learned skill that raises is rewritten in the background ...
+max_repairs_per_skill_per_day = 2  # ... this often, then switched off until you look
 
 [server]
 # TLS is required on a routable address. Three legitimate shapes:

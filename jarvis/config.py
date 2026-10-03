@@ -134,6 +134,9 @@ class ReasonerConfig:
     #: NLU and confirmed by voice before any of them runs
     plan_commands: bool = True
     reason_timeout_s: float = 15.0
+    #: M7: Ollama's ``think``. Off: a qwen3-class model would otherwise reason
+    #: before every reply and blow ``guess_timeout_s``
+    think: bool = False
 
 
 @dataclass(frozen=True)
@@ -163,6 +166,44 @@ class FactoryConfig:
     #: to Claude as feedback, before the job gives up and tells the user it's
     #: setting the skill aside.
     max_generate_attempts: int = 5
+
+
+@dataclass(frozen=True)
+class LearningConfig:
+    """M7: learning from every turn (``jarvis/learning/``,
+    ``PRD/milestone-7-learn-from-every-turn.md``)."""
+
+    #: learn phrasings, build skills and repair them. Off: turns are still
+    #: logged, nothing is learned (the dev brain, beside the pod that learns)
+    enabled: bool = True
+    #: the interaction log, ``<data>/interactions/<device>/<day>.jsonl``
+    log: bool = True
+    keep_days: int = 365
+    #: a skill that ran at a confidence under this, and was not corrected,
+    #: teaches the classifier the words it was asked with
+    learn_below: float = 0.5
+    #: "unknown", but the best guess is within this of ``nlu.threshold``:
+    #: ask "Did you mean …?" even with no reasoner
+    confirm_margin: float = 0.1
+    #: learned phrasings kept per label; the oldest goes first
+    max_per_label: int = 50
+    #: retrain once this many phrasings are waiting ...
+    retrain_after: int = 5
+    #: ... or once the newest of fewer has waited this long
+    retrain_idle_s: float = 600.0
+    #: "idle": say what was learned at the next idle point; "never": log only
+    announce: str = "idle"
+    #: how long after a skill ran "no, I meant …" corrects it
+    correction_window_s: float = 60.0
+    #: the reasoner calls a request a new capability: build it, keep it
+    auto_build: bool = True
+    #: grant a built skill's network/file/edge permissions without asking.
+    #: Off: such a skill still waits for a spoken yes
+    auto_permissions: bool = False
+    max_builds_per_day: int = 5
+    #: a learned skill raised: rewrite it in the background
+    auto_repair: bool = True
+    max_repairs_per_skill_per_day: int = 2
 
 
 @dataclass(frozen=True)
@@ -357,6 +398,7 @@ class Config:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     factory: FactoryConfig = field(default_factory=FactoryConfig)
     knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
+    learning: LearningConfig = field(default_factory=LearningConfig)
     # M3: the remote-edge split. Unused by the all-in-one path.
     server: ServerConfig = field(default_factory=ServerConfig)
     whisper: WhisperConfig = field(default_factory=WhisperConfig)
@@ -381,6 +423,16 @@ class Config:
     def memory_dir(self) -> Path:
         """M4.5: lasting facts, one ``<device_id>.json`` each."""
         return self.data_dir / "memory"
+
+    @property
+    def interactions_dir(self) -> Path:
+        """M7: the interaction log, ``<device>/<YYYY-MM-DD>.jsonl``."""
+        return self.data_dir / "interactions"
+
+    @property
+    def learning_dir(self) -> Path:
+        """M7: learned phrasings, the learning state, builtin failures."""
+        return self.data_dir / "learning"
 
     @property
     def nlu_model_dir(self) -> Path:
@@ -419,6 +471,13 @@ class Config:
     def firmware_dir(self) -> Path:
         """OTA images for edges that flash themselves: ``<device_id>.bin``."""
         return self.data_dir / "firmware"
+
+    @property
+    def learned_skills_dir(self) -> Path:
+        """Skills the factory wrote (known issue #19): under ``data/`` so the
+        dev brain and the pod, which share it, share them too. The package
+        ``jarvis.skills.learned`` is pointed here at discovery."""
+        return self.data_dir / "skills" / "learned"
 
     @property
     def skill_quarantine_dir(self) -> Path:
@@ -494,6 +553,30 @@ def _knowledge_config(raw: dict) -> KnowledgeConfig:
     )
 
 
+def _learning_config(raw: dict) -> LearningConfig:
+    d = LearningConfig()
+    announce = str(raw.get("announce", d.announce))
+    return LearningConfig(
+        enabled=bool(raw.get("enabled", d.enabled)),
+        log=bool(raw.get("log", d.log)),
+        keep_days=max(1, int(raw.get("keep_days", d.keep_days))),
+        learn_below=float(raw.get("learn_below", d.learn_below)),
+        confirm_margin=max(0.0, float(raw.get("confirm_margin", d.confirm_margin))),
+        max_per_label=max(1, int(raw.get("max_per_label", d.max_per_label))),
+        retrain_after=max(1, int(raw.get("retrain_after", d.retrain_after))),
+        retrain_idle_s=max(0.0, float(raw.get("retrain_idle_s", d.retrain_idle_s))),
+        announce=announce if announce in ("idle", "never") else d.announce,
+        correction_window_s=max(0.0, float(raw.get("correction_window_s", d.correction_window_s))),
+        auto_build=bool(raw.get("auto_build", d.auto_build)),
+        auto_permissions=bool(raw.get("auto_permissions", d.auto_permissions)),
+        max_builds_per_day=max(0, int(raw.get("max_builds_per_day", d.max_builds_per_day))),
+        auto_repair=bool(raw.get("auto_repair", d.auto_repair)),
+        max_repairs_per_skill_per_day=max(
+            0, int(raw.get("max_repairs_per_skill_per_day", d.max_repairs_per_skill_per_day))
+        ),
+    )
+
+
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     """Build a :class:`Config`. Missing file -> all defaults. Env overrides win."""
     load_dotenv()  # make secrets visible to os.getenv elsewhere; harmless if absent
@@ -515,6 +598,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     memory = _section(raw, "memory")
     factory = _section(raw, "factory")
     knowledge = _section(raw, "knowledge")
+    learning = _section(raw, "learning")
     paths = _section(raw, "paths")
     # M3
     server = _section(raw, "server")
@@ -588,6 +672,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             answer_questions=bool(reasoner.get("answer_questions", True)),
             plan_commands=bool(reasoner.get("plan_commands", True)),
             reason_timeout_s=float(reasoner.get("reason_timeout_s", 15.0)),
+            think=bool(reasoner.get("think", False)),
         ),
         memory=MemoryConfig(
             turns=int(memory.get("turns", 8)),
@@ -602,6 +687,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             max_generate_attempts=int(factory.get("max_generate_attempts", 5)),
         ),
         knowledge=_knowledge_config(knowledge),
+        learning=_learning_config(learning),
         server=ServerConfig(
             host=str(server.get("host", "0.0.0.0")),
             port=int(server.get("port", 8765)),

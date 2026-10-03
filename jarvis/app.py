@@ -22,18 +22,39 @@ from jarvis.core.memory import Memory
 from jarvis.core.reasoner import Reasoner
 from jarvis.factory.claude_client import ClaudeClient
 from jarvis.factory.sandbox import SubprocessSandbox
+from jarvis.learning import Learning, learned_examples
 from jarvis.nlu.classifier import Classifier
 from jarvis.nlu.corpus import build_corpus, corpus_digest, intent_meta, write_corpus_db
 from jarvis.nlu.train import TrainResult, latest_version, train
-from jarvis.skills.registry import Registry
+from jarvis.skills.registry import CHECKOUT_LEARNED_DIR, Registry, migrate_learned_skills
 
 log = logging.getLogger(__name__)
 
 
+# -- skills ---------------------------------------------------------------------
+
+def _discover(config: Config, *args, **kwargs) -> Registry:
+    """``Registry.discover``, after copying learned skills from where they
+    used to be kept (the checkout, or the pod's PVC mounted over it) into the
+    shared ``data/skills/learned/`` (known issue #19)."""
+    try:
+        moved = migrate_learned_skills(CHECKOUT_LEARNED_DIR, config.learned_skills_dir)
+        if moved:
+            print(f"· learned skills moved to {config.learned_skills_dir}: {', '.join(moved)}", flush=True)
+    except OSError as exc:
+        log.warning("could not move learned skills into %s: %s", config.learned_skills_dir, exc)
+    return Registry.discover(config, *args, **kwargs)
+
+
 # -- NLU bootstrap ----------------------------------------------------------
 
+def training_corpus(config: Config, registry: Registry):
+    """Seeds, the skills' examples and (M7) the phrasings learned from use."""
+    return build_corpus(manifests=registry.manifests(), learned=learned_examples(config))
+
+
 def rebuild_nlu(config: Config, registry: Registry) -> TrainResult:
-    corpus = build_corpus(manifests=registry.manifests())
+    corpus = training_corpus(config, registry)
     write_corpus_db(corpus, config.corpus_path)
     result = train(corpus, config.nlu.embedding_model, config.nlu_model_dir)
     log.info(
@@ -45,7 +66,7 @@ def rebuild_nlu(config: Config, registry: Registry) -> TrainResult:
 
 def current_corpus_digest(config: Config, registry: Registry) -> str:
     """The digest a model trained now would record (see ``corpus_digest``)."""
-    return corpus_digest(build_corpus(manifests=registry.manifests()), config.nlu.embedding_model)
+    return corpus_digest(training_corpus(config, registry), config.nlu.embedding_model)
 
 
 def ensure_nlu(config: Config, registry: Registry) -> int:
@@ -118,6 +139,33 @@ def build_knowledge(config: Config):
     return knowledge
 
 
+# -- M7: learning from every turn ---------------------------------------------
+
+def build_learning(config: Config) -> Learning:
+    learning = Learning.from_config(config)
+    # `ensure_nlu` ran first and trained on every phrasing in the file (the
+    # corpus digest covers them), so none is waiting for a retrain any more
+    try:
+        pending = learning.phrasings.pending()
+        if pending:
+            learning.phrasings.mark_trained([p.id for p in pending])
+    except OSError as exc:
+        log.warning("could not read the learned phrasings: %s", exc)
+    try:
+        dropped = learning.log.rotate()
+        if dropped:
+            log.info("interaction log: dropped %d day(s) past keep_days", dropped)
+    except OSError as exc:
+        log.warning("could not rotate the interaction log: %s", exc)
+    s = config.learning
+    print(
+        f"· learning: {'on' if s.enabled else 'off (logging only)'}"
+        f" · log {'on' if s.log else 'off'} · {len(learning.phrasings.entries())} learned phrasing(s)",
+        flush=True,
+    )
+    return learning
+
+
 # -- full assembly --------------------------------------------------------
 
 def build_orchestrator(config: Config) -> Orchestrator:
@@ -145,7 +193,7 @@ def build_orchestrator(config: Config) -> Orchestrator:
 
     memory = Memory.from_config(config)
     knowledge = build_knowledge(config)
-    registry = Registry.discover(
+    registry = _discover(
         config, reasoner, say=tts.say, memory=memory, knowledge=knowledge
     )
     print("· NLU model", flush=True)
@@ -209,6 +257,7 @@ def build_orchestrator(config: Config) -> Orchestrator:
         claude_client=claude_client,
         sandbox=sandbox,
         knowledge=knowledge,
+        learning=build_learning(config),
     )
 
 
@@ -228,7 +277,7 @@ def build_text_orchestrator(config: Config, lines: list[str] | None = None) -> O
 
     memory = Memory.from_config(config)
     knowledge = build_knowledge(config)
-    registry = Registry.discover(
+    registry = _discover(
         config, reasoner, say=tts.say, memory=memory, knowledge=knowledge
     )
     ensure_nlu(config, registry)
@@ -261,6 +310,7 @@ def build_text_orchestrator(config: Config, lines: list[str] | None = None) -> O
         claude_client=claude_client,
         sandbox=sandbox,
         knowledge=knowledge,
+        learning=build_learning(config),
     )
     text_io.on_exhausted = orchestrator.stop
     return orchestrator
@@ -283,7 +333,7 @@ def build_server_orchestrator(config: Config, link, edges=None) -> Orchestrator:
 
     memory = Memory.from_config(config)
     knowledge = build_knowledge(config)
-    registry = Registry.discover(
+    registry = _discover(
         config, reasoner, say=link.say, edges=edges,
         memory=memory, knowledge=knowledge,
     )
@@ -318,6 +368,7 @@ def build_server_orchestrator(config: Config, link, edges=None) -> Orchestrator:
         claude_client=claude_client,
         sandbox=sandbox,
         knowledge=knowledge,
+        learning=build_learning(config),
         # A server: "shut down" from the watch stands by, it does not stop the
         # brain (Ctrl-C / systemd still do).
         allow_shutdown=False,
@@ -632,7 +683,7 @@ def run_text_mode(config: Config, script_path: str | None = None) -> int:
 
 def selftest(config: Config) -> int:
     reasoner = Reasoner.from_config(config)
-    registry = Registry.discover(config, reasoner)
+    registry = _discover(config, reasoner)
     version = ensure_nlu(config, registry)
     nlu = load_classifier(config)
     persona = Persona.load(config.persona.active, config, reasoner)
@@ -750,7 +801,7 @@ def mic_meter(config: Config) -> int:
 
 
 def nlu_rebuild(config: Config) -> int:
-    registry = Registry.discover(config, Reasoner.from_config(config))
+    registry = _discover(config, Reasoner.from_config(config))
     result = rebuild_nlu(config, registry)
     kept = sorted(p.name for p in config.nlu_model_dir.glob("v*"))
     print(f"NLU retrained -> v{result.version} "

@@ -240,6 +240,27 @@ class LearningJob:
                     )
                     module_path.unlink(missing_ok=True)
                     continue
+
+                if request.replay_params is not None:
+                    # M7 repair: the call that failed in use must work now
+                    replay = await run_detached(
+                        self.sandbox.dry_run, module_path, request.replay_params,
+                        manifest.permissions,
+                    )
+                    if not replay.ok:
+                        log.warning(
+                            "repair of %s still fails the call that broke it (attempt %d/%d):\n%s",
+                            manifest.name, attempt, self.max_attempts, _sandbox_output(replay),
+                        )
+                        reason = "the failing call still fails"
+                        feedback = (
+                            "Your repair passes its tests, but the call that failed in use "
+                            f"still fails: run(ctx, **{request.replay_params!r}). Error output:\n"
+                            f"{_sandbox_output(replay)}\n\n"
+                            f"Here is the code you wrote — fix it:\n```python\n{generated.module_source}\n```"
+                        )
+                        module_path.unlink(missing_ok=True)
+                        continue
             except BaseException:
                 # cancelled (shutdown) or crashed mid-sandbox: leave nothing staged
                 module_path.unlink(missing_ok=True)

@@ -14,6 +14,8 @@
                                       waiting for an edge over WebSocket
     python -m jarvis edge            M3: the audio satellite — a mic, a speaker
                                       and a socket. No models, nothing heavy.
+    python -m jarvis learning        M7: what JARVIS learned — status, log
+                                      [--since 2d], phrasings, undo ID, enable SKILL
 """
 
 from __future__ import annotations
@@ -83,6 +85,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     power.add_argument("--day", help="YYYY-MM-DD (default: today)")
     power.add_argument("--no-fetch", action="store_true", help="read what the brain already has")
+    learning = sub.add_parser("learning", help="M7: what JARVIS learned, and undoing it")
+    learning.add_argument(
+        "op", nargs="?", default="status",
+        choices=["status", "log", "phrasings", "undo", "enable"],
+    )
+    learning.add_argument("arg", nargs="?", help="undo: a phrasing id; enable: a skill name")
+    learning.add_argument("--since", help="log: 2d, or a date (default: the last day)")
+    learning.add_argument("--device", help="log: one device's turns")
     edge = sub.add_parser("edge", help="M3: run the audio satellite (mic + speaker only)")
     edge.add_argument("--server", help="override [edge] server_url")
     edge.add_argument("--device-id", help="override [edge] device_id")
@@ -118,6 +128,14 @@ def main(argv: list[str] | None = None) -> int:
         if overrides:
             config = replace(config, edge=replace(config.edge, **overrides))
         return run_edge(config)
+
+    if args.command == "learning":
+        # files only: no model, nothing heavy, safe beside a running brain
+        from jarvis.learning import cli as learning_cli
+
+        return learning_cli.run(
+            config, args.op, arg=args.arg, since=args.since, device=args.device
+        )
 
     app = _app()
     if args.selftest:
