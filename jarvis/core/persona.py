@@ -25,8 +25,12 @@ from pathlib import Path
 import numpy as np
 
 from jarvis.core.reasoner import Reasoner
+from jarvis.core.voice import facts_kept
 
 log = logging.getLogger(__name__)
+
+#: a line longer than this is spoken as it is: it is facts, not banter
+MAX_REWRITE_WORDS = 30
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PERSONAS_DIR = _REPO_ROOT / "personas"
@@ -136,11 +140,19 @@ class Persona:
     # -- dynamic phrasing ---------------------------------------------------
 
     def phrase(self, text: str) -> str:
-        """Rewrite a dynamic line into the persona's voice, if a reasoner is up."""
+        """Rewrite a dynamic line into the persona's voice, if a reasoner is up.
+
+        The rewrite is spoken only if it kept every number and content word of
+        the line (``voice.facts_kept``); a line longer than
+        ``MAX_REWRITE_WORDS`` is not rewritten at all — an answer that long is
+        facts, and a rewrite would only risk them. Skills whose lines are
+        written in voice to begin with never get here (``SkillManifest.voice``)."""
         text = text.strip()
         if not text:
             return text
         if not (self._reasoner and self._reasoner.available and self.style_lines):
+            return text
+        if len(text.split()) > MAX_REWRITE_WORDS:
             return text
         try:
             shots = self._nearest_style_lines(text, k=6)
@@ -150,7 +162,13 @@ class Persona:
                 f"Rewrite this line in character, keeping the meaning and any "
                 f"facts exactly. Reply with only the rewritten line.\n\n{text}",
             )
-            return _strip_wrapping_quotes(out) or text
+            rewrite = _strip_wrapping_quotes(out)
+            if not rewrite:
+                return text
+            if not facts_kept(text, rewrite):
+                log.info("persona rewrite dropped or changed a fact; saying it plainly: %r -> %r", text, rewrite)
+                return text
+            return rewrite
         except Exception as exc:  # noqa: BLE001
             log.warning("persona rewrite failed, using plain text: %s", exc)
             return text

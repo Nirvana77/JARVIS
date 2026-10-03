@@ -3,7 +3,7 @@
 Things that are wrong and not yet fixed, with enough written down that the fix
 doesn't start from zero. Fixed entries move out of here into the milestone
 outcome doc that fixed them (#4, #6, #7, #11, #12, #13 and #15:
-`PRD/steady-ship-outcome.md`; #19: `PRD/milestone-7-learn-from-every-turn-outcome.md`).
+`PRD/steady-ship-outcome.md`; #19: `PRD/milestone-7-learn-from-every-turn-outcome.md`; #16: `PRD/voice-at-source-outcome.md`).
 
 ---
 
@@ -277,34 +277,6 @@ Ask the knowledge base before giving up on an `unknown`: if a chunk clears
 with Milestone 4 (misheard-command reasoning), which already owns what happens
 to an utterance the NLU could not place — on the voice path a garbled
 transcription must not be answered from a note it happens to resemble.
-
----
-
-## 16. `Persona.phrase` — a model per call, on the event loop, and after the answer
-
-**Reported:** 2026-10-01, reading the answer path for M5.
-**Status:** partly fixed in M7 (2026-10-03). Reproduced live once the cluster's
-Ollama was wired in: every skill reply is rewritten, 0.4–0.9 s each with
-`qwen3:8b`. M7 made `phrase` build one embedder for the persona's life and run
-off the event loop (`Orchestrator._phrase`). Still open: the knowledge answer's
-double generation (third bullet), and the rewrite is free to lose content —
-"1 sheep, 2 sheep, 3 sheep." came back as "One, sir. Two, sir. Three, sir."
-Whether to rewrite skill replies at all is the owner's call.
-**Severity:** latency, and possibly a lost source, only when a reasoner is up.
-
-- `Persona._nearest_style_lines` (`jarvis/core/persona.py:165-181`) builds a
-  new `fastembed.TextEmbedding` on every call (twice on the first).
-- `handle()` calls `persona.phrase(...)` synchronously, so the Ollama request
-  (30 s timeout) blocks the event loop.
-- A knowledge answer composed by Ollama is then rewritten by Ollama again, by
-  `persona.phrase`: two generations per recall, and the rewrite is free to
-  drop the source the first one was made to name.
-
-### Fix, when someone takes it
-
-Give the persona one embedder, run `phrase` in `asyncio.to_thread`, and let a
-skill mark its line as already in voice (or pass the persona's system prompt
-to the knowledge compose step and skip the rewrite).
 
 ---
 

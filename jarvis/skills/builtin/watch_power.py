@@ -26,21 +26,22 @@ MANIFEST = SkillManifest(
     ],
     params={},
     permissions=frozenset({"net"}),
+    voice="jarvis",
 )
 
 
 def run(ctx, **_params) -> str:
     if ctx.edges is None:
-        return "The watch isn't connected to me."
+        return "The watch isn't connected to me, sir."
     result = ctx.edges.power_report()
     if result.status == "ok":
-        return result.spoken or "I fetched the power log, but there's nothing in it for today yet."
+        return result.spoken or "I fetched the power log, sir, but there's nothing in it for today yet."
     if result.status == "unsupported":
-        return "The watch can't send its power log; its firmware is too old."
+        return "The watch can't send its power log, sir; its firmware is too old."
     lead = (
-        "The watch didn't send its power log in time."
+        "The watch didn't send its power log in time, sir."
         if result.status == "timeout"
-        else "The watch isn't connected to me."
+        else "The watch isn't connected to me, sir."
     )
     # What the brain already has is still worth hearing.
     if result.spoken and "nothing" not in result.spoken:

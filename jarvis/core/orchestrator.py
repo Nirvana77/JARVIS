@@ -316,11 +316,22 @@ class Orchestrator:
         await asyncio.sleep(0.2)
         self._drain_mic()
 
-    async def _phrase(self, text: str) -> str:
-        """The persona's rewrite of a dynamic line. With a reasoner up that is
-        an Ollama call (0.4–0.9 s on the cluster's qwen3:8b), so it runs off
-        the event loop (known issue #16)."""
+    async def _phrase(self, text: str, skill: str | None = None) -> str:
+        """The line to speak for ``text``. A skill whose lines are written in
+        the active persona's voice (``SkillManifest.voice``) is spoken as
+        written. Anything else gets the persona's rewrite — an Ollama call
+        (0.4–0.9 s on the cluster's qwen3:8b), so off the event loop (known
+        issue #16), and checked for facts it dropped (``jarvis/core/voice.py``)."""
+        if skill is not None and self._voiced(skill):
+            return text
         return await asyncio.to_thread(self.persona.phrase, text)
+
+    def _voiced(self, skill: str) -> bool:
+        try:
+            voice = self.registry.manifest(skill).voice
+        except Exception:  # noqa: BLE001 — not a registered skill / a fake
+            return False
+        return bool(voice) and voice == getattr(self.persona, "name", None)
 
     async def _enter_standby(self) -> None:
         """Drop to standby, and tell the speaker *before* saying so.
@@ -628,6 +639,12 @@ class Orchestrator:
             return
 
         if action == "none":
+            # the persona's own words for it, written in voice ("reply_thanks"),
+            # else one of intents.json's replies through the checked rewrite
+            voiced = self.persona.line(f"reply_{label}", "")
+            if voiced:
+                await self._speak(voiced)
+                return
             meta = self.intent_meta.get(label)
             reply = random.choice(meta.responses) if meta and meta.responses else ""
             await self._speak(await self._phrase(reply) if reply else "")
@@ -751,7 +768,7 @@ class Orchestrator:
                 "text": self._record["heard"], "label": label, "turn": self._record["id"],
             }
         self.state = "speaking"
-        await self._speak(await self._phrase(line))
+        await self._speak(await self._phrase(line, label))
 
     def _registered(self, label: str) -> bool:
         try:

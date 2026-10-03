@@ -190,7 +190,7 @@ def test_an_old_line_in_a_file_indexed_today_does_not_beat_a_newer_fact(config, 
 def test_remember_then_recall(config, tmp_path, kb):
     ctx = _ctx(config, tmp_path, kb)
 
-    assert remember.run(ctx, text="my locker number is 52") == "I'll remember that."
+    assert remember.run(ctx, text="my locker number is 52") == "I'll remember that, sir."
 
     line = recall.run(ctx, query="my locker number")
     assert "my locker number is 52" in line
@@ -212,7 +212,7 @@ def test_remember_with_the_knowledge_base_off_says_so(config, tmp_path):
 def test_a_dictated_note_is_recallable_on_the_next_turn(config, tmp_path, kb):
     ctx = _ctx(config, tmp_path, kb)
 
-    assert note.run(ctx, text="the door code is 4821") == "Noted."
+    assert note.run(ctx, text="the door code is 4821") == "Noted, sir."
 
     # the notes file is still written, as before...
     assert "the door code is 4821" in (tmp_path / "skill" / "notes.txt").read_text("utf-8")
@@ -242,7 +242,7 @@ def test_each_note_comes_back_on_its_own(config, tmp_path, kb):
 
 def test_note_still_works_with_the_knowledge_base_off(config, tmp_path):
     ctx = _ctx(config, tmp_path, knowledge=None)
-    assert note.run(ctx, text="buy milk") == "Noted."
+    assert note.run(ctx, text="buy milk") == "Noted, sir."
     assert "buy milk" in (tmp_path / "skill" / "notes.txt").read_text("utf-8")
 
 
@@ -282,7 +282,7 @@ def test_what_is_goes_to_wikipedia_when_the_notes_only_brush_the_subject(
 
     line = search.run(_ctx(config, tmp_path, knowledge), query="python code")
 
-    assert line == "According to Wikipedia: Python is a programming language."
+    assert line == "According to Wikipedia, sir: Python is a programming language."
 
 
 def test_what_is_goes_to_wikipedia_when_the_reasoner_finds_no_answer_in_the_notes(
@@ -296,7 +296,7 @@ def test_what_is_goes_to_wikipedia_when_the_reasoner_finds_no_answer_in_the_note
         _ctx(config, tmp_path, knowledge, FakeReasoner("NO_ANSWER")), query="the door code"
     )
 
-    assert line == "According to Wikipedia: A door code is a sequence of digits."
+    assert line == "According to Wikipedia, sir: A door code is a sequence of digits."
 
 
 def test_search_survives_a_broken_knowledge_base(config, tmp_path, monkeypatch):

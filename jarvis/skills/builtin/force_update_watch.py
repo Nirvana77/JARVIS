@@ -27,12 +27,13 @@ MANIFEST = SkillManifest(
     ],
     params={},
     permissions=frozenset({"net"}),
+    voice="jarvis",
 )
 
 
 def run(ctx, **_params) -> str:
     if ctx.edges is None:
-        return "The watch isn't connected to me."
+        return "The watch isn't connected to me, sir."
     result = ctx.edges.update_firmware(force=True)
     if result.status == "sent":
         return (
@@ -40,7 +41,7 @@ def run(ctx, **_params) -> str:
             f"charger; otherwise it restarts when it's done."
         )
     if result.status == "none":
-        return "I have no firmware for the watch to force onto it."
+        return "I have no firmware for the watch to force onto it, sir."
     if result.status == "unsupported":
-        return "That device can't update itself."
-    return "The watch isn't connected to me."
+        return "That device can't update itself, sir."
+    return "The watch isn't connected to me, sir."

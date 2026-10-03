@@ -30,13 +30,14 @@ MANIFEST = SkillManifest(
     ],
     params={"query": {"type": "string", "required": True}},
     permissions=frozenset({"fs_read"}),
+    voice="jarvis",
 )
 
 
 def run(ctx, query: str = "") -> str:
     query = (query or "").strip()
     if not query:
-        return "What would you like me to look up in your notes?"
+        return "What shall I look up in your notes, sir?"
     if ctx.knowledge is None:
         return "My knowledge base is switched off, sir."
     answer = ctx.knowledge.answer(query, ctx.llm)

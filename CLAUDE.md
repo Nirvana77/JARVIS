@@ -427,8 +427,15 @@ Rules worth knowing before changing things:
 
 A module in `jarvis/skills/builtin/` with a `MANIFEST = SkillManifest(...)`
 (name = module name, description, `examples` — these train the classifier —
-`params`, `permissions`) and `def run(ctx, **params) -> str` returning the line
-to speak. If its params need extracting from the utterance, add its rule to
+`params`, `permissions`, `voice="jarvis"`) and `def run(ctx, **params) -> str`
+returning the line to speak. **Write that line in the persona's voice** ("Noted,
+sir.") and declare it with `voice`: a skill in the active persona's voice is
+spoken exactly as written. Anything else is rewritten by the local LLM at run
+time (0.4–0.9 s), and that rewrite is thrown away if it lost a number or a
+content word (`jarvis/core/voice.py`). The factory writes learned skills in
+voice the same way (`claude_client.VoiceGuide`). A canned reply to an
+`intents.json` intent is voiced by a `reply_<tag>` line in the persona's
+`responses.toml`. If its params need extracting from the utterance, add its rule to
 `nlu/slots.py`. Add it to `tests/test_skills.py`'s roster. The model retrains on
 the next start.
 

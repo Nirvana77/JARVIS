@@ -29,17 +29,18 @@ MANIFEST = SkillManifest(
     ],
     params={"text": {"type": "string", "required": False}},
     permissions=frozenset({"fs_write"}),
+    voice="jarvis",
 )
 
 
 def run(ctx, text: str = "") -> str:
     text = (text or "").strip()
     if not text:
-        return "What would you like me to remember?"
+        return "What would you like me to remember, sir?"
     memory = getattr(ctx, "memory", None)
     if ctx.knowledge is None and memory is None:
         return "My memory is switched off, sir."
     ref = ctx.knowledge.remember(text) if ctx.knowledge is not None else None
     if memory is not None:
         memory.remember(text, knowledge_ref=ref)
-    return "I'll remember that."
+    return "I'll remember that, sir."

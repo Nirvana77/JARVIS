@@ -42,6 +42,7 @@ MANIFEST = SkillManifest(
     ],
     params={"query": {"type": "string", "required": True}},
     permissions=frozenset({"pure", "net", "fs_read"}),
+    voice="jarvis",
 )
 
 
@@ -103,7 +104,7 @@ def _from_notes(ctx, query: str) -> str | None:
 def run(ctx, query: str = "") -> str:
     query = (query or "").strip()
     if not query:
-        return "What would you like me to look up?"
+        return "What would you like me to look up, sir?"
 
     answer = _from_notes(ctx, query)
     if answer:
@@ -113,14 +114,14 @@ def run(ctx, query: str = "") -> str:
         sess = _session()
         title = _search_title(sess, query)
         if not title:
-            return f"I couldn't find anything on Wikipedia for {query}."
+            return f"I couldn't find anything on Wikipedia for {query}, sir."
         data = _summary(sess, title)
         if data.get("type") == "disambiguation":
-            return f"{title} could mean several things. Can you be more specific?"
+            return f"{title} could mean several things, sir. Could you be more specific?"
         extract = (data.get("extract") or "").strip()
         if not extract:
-            return f"I found a page for {title} but no summary."
-        return f"According to Wikipedia: {_spoken_summary(extract)}"
+            return f"I found a page for {title}, sir, but no summary."
+        return f"According to Wikipedia, sir: {_spoken_summary(extract)}"
     except Exception as exc:  # noqa: BLE001 - network / parse trouble
         log.warning("wikipedia search for %r failed: %s", query, exc)
-        return "I had trouble reaching Wikipedia."
+        return "I had trouble reaching Wikipedia, sir."

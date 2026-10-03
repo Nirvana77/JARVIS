@@ -39,3 +39,6 @@ already_learning   = ["I am already learning that, sir."]
 learn_failed_today = ["I could not learn that earlier today, sir."]
 learn_limit        = ["I have done all the learning I may today, sir. Ask me again tomorrow."]
 skill_disabled     = ["'{name}' keeps failing, sir. I have switched it off until you look at it."]
+# Canned replies to an intent, in voice: "reply_<intent tag>". Spoken as written;
+# an intent without one gets intents.json's reply, rewritten and fact-checked.
+reply_thanks       = ["A pleasure, sir.", "Always, sir.", "Happy to be of use, sir.", "Of course, sir."]
