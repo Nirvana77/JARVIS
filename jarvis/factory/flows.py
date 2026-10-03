@@ -70,6 +70,14 @@ class LearningRequest:
     module_source: str | None = None
     manifest: SkillManifest | None = None
     reverted_from_version: int | None = None
+    #: M7: started by JARVIS itself (a request nothing fit, or a repair):
+    #: kept without "Shall I keep it?"
+    autonomous: bool = False
+    #: M7 repair: the call that failed in use, replayed in the sandbox — a
+    #: repair that does not fix it is not kept
+    replay_params: dict | None = None
+    #: M7: what was heard when it was asked for, or when it failed
+    utterance: str | None = None
 
 
 @dataclass

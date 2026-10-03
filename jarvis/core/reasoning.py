@@ -9,6 +9,9 @@ what does the speaker want? — and takes one of three replies:
                            watch" -> "set a timer for 5 minutes", "find my
                            watch")
   ``{"answer": "..."}``    something it can simply say, in character
+  ``{"learn": "...", "examples": [...]}``
+                           (M7) a request for something JARVIS cannot do yet:
+                           what it should learn, and other ways to ask for it
   ``{"none": true}``       nothing to do
 
 This module is the pure part: the prompt, and what is accepted back. As in
@@ -30,6 +33,10 @@ MAX_COMMANDS = 4
 MAX_ANSWER_CHARS = 320
 #: how much of the device's memory goes into one prompt, newest kept
 MAX_FACTS_IN_PROMPT = 30
+#: M7: a skill's description is a short instruction, not a specification
+MAX_LEARN_CHARS = 160
+#: ... with a few more ways of asking for it
+MAX_LEARN_EXAMPLES = 4
 
 _TASK = (
     "You are answering by voice. The speech recogniser heard something that "
@@ -43,6 +50,12 @@ _TASK = (
     "or two short spoken sentences, in character, using what you have been "
     "asked to remember and the conversation so far when they help. If you do "
     "not know, say so plainly. Never invent facts about the speaker.\n"
+    '{"learn": "...", "examples": ["...", "..."]} when they ask you to DO '
+    "something (an action, a calculation, a lookup, a device to control) that "
+    "none of your known commands can do and that you cannot simply answer from "
+    "what you know: describe the ability as a short instruction starting with "
+    'a verb ("roll a die with a given number of sides"), with two or three '
+    "other ways a person might ask for it. Not for questions you can answer.\n"
     '{"none": true} if it is noise, half a sentence, or you cannot tell what '
     "they want."
 )
@@ -56,6 +69,9 @@ class Thought:
 
     answer: str = ""
     commands: tuple[str, ...] = ()
+    #: M7: what JARVIS should learn to do, and more ways to ask for it
+    learn: str = ""
+    examples: tuple[str, ...] = ()
 
 
 def system(character: str = "") -> str:
@@ -136,4 +152,15 @@ def parse(reply: str) -> Thought | None:
     answer = obj.get("answer")
     if isinstance(answer, str) and answer.strip():
         return Thought(answer=clip(answer))
+    learn = obj.get("learn")
+    if isinstance(learn, str) and learn.strip():
+        learn = " ".join(learn.split()).strip(" .!?\"'")[:MAX_LEARN_CHARS]
+        examples = obj.get("examples")
+        examples = examples if isinstance(examples, list) else []
+        cleaned = tuple(
+            " ".join(e.split()).strip(" .!?\"'")
+            for e in examples
+            if isinstance(e, str) and e.strip()
+        )[:MAX_LEARN_EXAMPLES]
+        return Thought(learn=learn, examples=cleaned) if learn else None
     return None

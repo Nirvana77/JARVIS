@@ -43,6 +43,8 @@ class LearningState:
         self._now = now
         self._data: dict = {}
         self._lock = threading.Lock()
+        #: RAM only: what ``builtin_failure`` would have written
+        self._builtin_failures: list[dict] = []
 
     # -- storage --------------------------------------------------------------
 
@@ -191,13 +193,34 @@ class LearningState:
     # -- builtins, for a person -----------------------------------------------
 
     def builtin_failure(self, skill: str, heard: str, params: dict, error: str) -> None:
-        if self.path is None:
-            return
         line = {
             "ts": self._now().isoformat(timespec="seconds"), "skill": skill,
             "heard": heard, "params": params, "error": error,
         }
-        target = self.path.with_name("builtin-failures.jsonl")
+        if self.path is None:
+            with self._lock:
+                self._builtin_failures.append(line)
+            return
+        target = self._failures_path()
         with locked(target):
             with target.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
+
+    def builtin_failures(self) -> list[dict]:
+        if self.path is None:
+            with self._lock:
+                return list(self._builtin_failures)
+        try:
+            lines = self._failures_path().read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return []
+        out = []
+        for line in lines:
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+        return out
+
+    def _failures_path(self) -> Path:
+        return self.path.with_name("builtin-failures.jsonl")

@@ -26,6 +26,9 @@ M7: every turn is logged (``_record``, ``jarvis/learning/``); a confirmed turn
 teaches the classifier the words that were actually heard
 (``_learn_phrasing``), retrained in batches at idle behind a regression gate
 (``_retrain_phrasings``); "no, I meant …" undoes that (``_correction``).
+A request nothing fits is built as a new skill (``_learn_capability``) and a
+learned skill that raises is repaired (``_start_repair``), both without a
+"Shall I keep it?".
 """
 
 from __future__ import annotations
@@ -64,6 +67,7 @@ from jarvis.factory.flows import (
     ask_yes_no_or_none,
 )
 from jarvis.factory.jobs import LearningJob, run_detached
+from jarvis.factory.spec import SkillSpec
 from jarvis.learning import Learning
 from jarvis.nlu import compound as _compound
 from jarvis.nlu import slots as _slots
@@ -131,6 +135,9 @@ _SELF_CHECK_SEED_PROBES = (
 
 #: a background question answered unclearly this many times counts as "no"
 _MAX_UNCLEAR_ANSWERS = 3
+
+#: M7: two build requests this similar (MiniLM cosine) are the same request
+_SAME_REQUEST = 0.85
 
 #: M7: logged turns read back as regression probes for a phrasing retrain
 _MAX_REGRESSION_PROBES = 200
@@ -776,8 +783,140 @@ class Orchestrator:
             await self._start_repair(manifest, heard, params, error)
 
     async def _start_repair(self, manifest, heard: str, params: dict, error: str) -> None:
-        """Filled in by part F."""
-        return None
+        """M7 part F: rewrite a learned skill that raised, in the background,
+        and keep the result only if the call that failed now works. Past
+        ``max_repairs_per_skill_per_day`` the skill is switched off instead,
+        and JARVIS says so rather than failing the same way again."""
+        s = self.learning.settings
+        name = manifest.name
+        if (
+            not (s.enabled and s.auto_repair)
+            or self.claude_client is None
+            or not self.claude_client.available
+            or self.sandbox is None
+            or name in self._jobs
+        ):
+            return
+        if self.learning.state.repairs_today(name) >= s.max_repairs_per_skill_per_day:
+            last_line = error.strip().splitlines()[-1] if error.strip() else "it failed"
+            self.learning.state.disable(name, last_line)
+            self.learning.state.add_event("disabled", name)
+            log.warning("%s keeps failing after its repairs: switched off (%s)", name, last_line)
+            await self._speak(self.persona.line(
+                "skill_disabled", "'{name}' keeps failing, sir. I've switched it off."
+            ).replace("{name}", name))
+            return
+        try:
+            source = await asyncio.to_thread(
+                _flows.learned_source_path(name).read_text, encoding="utf-8"
+            )
+        except OSError as exc:
+            log.error("cannot repair %s: no source (%s)", name, exc)
+            return
+        self.learning.state.count_repair(name)
+        replay = _loggable(params)
+        description = (
+            f"Repair this skill. Asked {heard!r}, it was called as "
+            f"run(ctx, **{replay!r}) and raised:\n{error.strip()}\n"
+            "Fix the cause so that this exact call returns a line to speak; "
+            "keep everything else it does the same."
+        )
+        request = LearningRequest(
+            versioning="edit",
+            name=name,
+            spec=SkillSpec(
+                name=name,
+                description=description,
+                examples=list(manifest.examples),
+                based_on_version=manifest.version,
+            ),
+            existing_source=source,
+            allow_name=name,
+            autonomous=True,
+            replay_params=replay,
+            utterance=heard,
+        )
+        log.info("repairing %s in the background", name)
+        await self._start_learning(request, announce=False)
+
+    # -- M7 part E: learning what nothing fits -------------------------------------------
+
+    async def _learn_capability(self, text: str, thought) -> None:
+        """The reasoner says this is a request for something JARVIS cannot do
+        yet: have the factory build it, in the background, and keep it without
+        asking. Capped per day, never the same request twice in a day, and a
+        permission beyond pure/notify still waits for a yes (unless
+        ``[learning] auto_permissions``)."""
+        s = self.learning.settings
+        self._note_path("build")
+        if (
+            not (s.enabled and s.auto_build)
+            or self.claude_client is None
+            or not self.claude_client.available
+            or self.sandbox is None
+        ):
+            self._note(outcome="declined")
+            await self._speak(self.persona.line("unknown"))
+            return
+        description = thought.learn
+        for earlier in self.learning.state.requests_today():
+            if await self._same_request(text, description, earlier):
+                self._note(outcome="declined", skill=earlier["name"])
+                key = {"building": "already_learning", "failed": "learn_failed_today"}.get(
+                    earlier["status"], "unknown"
+                )
+                await self._speak(self.persona.line(key))
+                return
+        if self.learning.state.builds_today() >= s.max_builds_per_day:
+            self._note(outcome="declined")
+            await self._speak(self.persona.line(
+                "learn_limit", "I've done all the learning I may today, sir."))
+            return
+        name = self._new_skill_name(description)
+        examples: list[str] = []
+        for example in (text, *thought.examples, description):
+            if example and not any(same_text(example, e) for e in examples):
+                examples.append(example)
+        self.learning.state.count_build()
+        self.learning.state.add_request(text, description, name=name, status="building")
+        self._note(skill=name)
+        log.info("learning %s by itself: %r", name, description)
+        await self._speak(self.persona.line(
+            "learning_it", "I can't do that yet, sir. I'll learn it."))
+        await self._start_learning(
+            LearningRequest(
+                versioning="new",
+                name=name,
+                spec=SkillSpec(name=name, description=description, examples=examples),
+                autonomous=True,
+                utterance=text,
+            ),
+            announce=False,
+        )
+
+    async def _same_request(self, text: str, description: str, earlier: dict) -> bool:
+        if same_text(text, earlier.get("text", "")) or same_text(
+            description, earlier.get("description", "")
+        ):
+            return True
+        embed = getattr(self.nlu, "embed", None)
+        if not callable(embed):
+            return False
+        try:
+            a, b = await asyncio.to_thread(lambda: (embed(text), embed(earlier.get("text", ""))))
+        except Exception:  # noqa: BLE001 — a fake, or the model is busy
+            return False
+        return float(a @ b) >= _SAME_REQUEST
+
+    def _new_skill_name(self, description: str) -> str:
+        base = "_".join(_flows._slugify(description).split("_")[:4]).strip("_") or "new_skill"
+        if base[0].isdigit():
+            base = f"_{base}"
+        taken = set(self._latest_registry().names()) | set(self._jobs)
+        name, n = base, 2
+        while name in taken:
+            name, n = f"{base}_{n}", n + 1
+        return name
 
     # -- M4: misheard-command reasoning ---------------------------------------
 
@@ -819,6 +958,9 @@ class Orchestrator:
         thought = await self._think(text)
         if self._interrupted():
             print("  (cancelled thinking — still listening)", flush=True)
+            return
+        if isinstance(thought, _reasoning.Thought):
+            await self._learn_capability(text, thought)
             return
         if isinstance(thought, str):
             # already in the persona's voice: its character was in the prompt
@@ -1245,6 +1387,10 @@ class Orchestrator:
         if found is None:
             return None
 
+        if isinstance(found, _reasoning.Thought):
+            print(f'  learn   : "{found.learn}"')
+            return found
+
         if isinstance(found, str):
             if not options.answer_questions:
                 return None
@@ -1281,6 +1427,8 @@ class Orchestrator:
             return None
         if thought.answer:
             return thought.answer
+        if thought.learn:
+            return thought  # M7: a capability to learn, not a command
         return [(step, *self.nlu.predict(step)) for step in thought.commands]
 
     # -- M4.5: several commands in one turn --------------------------------------
@@ -1528,13 +1676,15 @@ class Orchestrator:
             return
         await self._start_learning(request)
 
-    async def _start_learning(self, request: LearningRequest) -> None:
+    async def _start_learning(self, request: LearningRequest, announce: bool = True) -> None:
         ahead = list(self._jobs)[-1] if self._jobs else None
         task = asyncio.ensure_future(self._learn(request, self._last_job, self._listening_device()))
         # registered before any await, so a dialog started right after this
         # already sees the name as busy
         self._jobs[request.name] = task
         self._last_job = task
+        if not announce:
+            return  # M7: the caller has already said what it is doing
         if ahead is None:
             await self._speak("I'll work on that in the background, sir.")
         else:
@@ -1563,10 +1713,13 @@ class Orchestrator:
                 # `wait`, not `await previous`: cancelling this job must not
                 # cancel the one ahead of it
                 await asyncio.wait({previous})
+            decide = self._decide
+            if request.autonomous and self.learning.settings.auto_permissions:
+                decide = _granted
             job = LearningJob(
                 request,
                 notify=self._notify,
-                decide=self._decide,
+                decide=decide,
                 registry=self._latest_registry(),
                 generate=self._generate,
                 sandbox=self.sandbox,
@@ -1574,21 +1727,35 @@ class Orchestrator:
             )
             outcome = await job.run()
             if outcome.accepted:
-                await self._retrain_and_stage(outcome, request.versioning)
+                await self._retrain_and_stage(outcome, request.versioning, request)
             else:
                 log.info("%s job not accepted: %s", name, outcome.reason)
+                self._autonomous_done(request, False)
         except asyncio.CancelledError:
             self._unstage(outcome.name if outcome and outcome.name else name)
             raise
         except Exception:  # noqa: BLE001 — a job must never take the loop down
             log.exception("learning job for %s crashed", name)
             self._unstage(outcome.name if outcome and outcome.name else name)
+            self._autonomous_done(request, False)
             self._queue_notice(f"Something went wrong while I was learning '{name}', sir.")
         finally:
             if self._jobs.get(name) is asyncio.current_task():
                 del self._jobs[name]
 
-    async def _retrain_and_stage(self, outcome: FlowOutcome, versioning: str) -> None:
+    def _autonomous_done(self, request: LearningRequest, built: bool) -> None:
+        """M7: how a build JARVIS started by itself ended, for the same-day
+        request check."""
+        if not request.autonomous or request.versioning != "new":
+            return
+        try:
+            self.learning.state.set_request_status(request.name, "built" if built else "failed")
+        except OSError as exc:
+            log.error("could not record how learning %s ended: %s", request.name, exc)
+
+    async def _retrain_and_stage(
+        self, outcome: FlowOutcome, versioning: str, request: LearningRequest | None = None
+    ) -> None:
         """Retrain against the *latest* registry (staged-but-unmerged skills
         included, so back-to-back jobs don't erase each other), self-check,
         ask to keep it (not for revert), then promote + stage for the merge
@@ -1615,6 +1782,8 @@ class Orchestrator:
                 else f"'{name}' didn't train cleanly, sir. I've set it aside."
             )
             self._queue_notice(msg)
+            if request is not None:
+                self._autonomous_done(request, False)
             return
 
         train_result, classifier = payload
@@ -1628,9 +1797,12 @@ class Orchestrator:
                     else f"I set '{name}' aside, sir; it didn't check out in practice."
                 )
                 self._queue_notice(msg)
+                if request is not None:
+                    self._autonomous_done(request, False)
                 return
 
-            if versioning not in ("revert", "remove"):
+            autonomous = request is not None and request.autonomous
+            if versioning not in ("revert", "remove") and not autonomous:
                 description = outcome.manifest.description.rstrip(".")
                 description = description[:1].lower() + description[1:]
                 keep = await self._decide(
@@ -1655,7 +1827,25 @@ class Orchestrator:
             if callable(close):
                 close()
         self._staged = (classifier, new_registry)
+        if versioning != "remove":
+            # a skill switched off for failing is back once it is taught, edited or reverted
+            self.learning.state.enable(name)
+        if request is not None and request.autonomous:
+            self._autonomous_done(request, True)
+            if versioning == "new":
+                description = outcome.manifest.description.rstrip(".")
+                description = description[:1].lower() + description[1:]
+                self.learning.state.add_event("skill", name.replace("_", " "))
+                self._queue_announcement(
+                    f"I've learned to {description}, sir. Ask me again and I'll do it."
+                )
+            else:
+                self.learning.state.add_event("repair", name.replace("_", " "))
+                self._queue_announcement(f"I've repaired '{name}', sir.")
+            return
         verb = {"new": "learned", "edit": "updated", "revert": "reverted", "remove": "removed"}[versioning]
+        if versioning == "new":
+            self.learning.state.add_event("skill", name.replace("_", " "))
         self._queue_announcement(f"I've {verb} '{name}', sir. My capabilities are updated.")
 
     async def _default_train_and_load(self, examples):
@@ -2043,3 +2233,10 @@ def _loggable(params: dict) -> dict:
     for key, value in (params or {}).items():
         out[key] = value if isinstance(value, (str, int, float, bool)) or value is None else str(value)
     return out
+
+
+async def _granted(prompt: str) -> bool:
+    """``[learning] auto_permissions``: a job's permission question, answered
+    yes without asking."""
+    log.info("granted without asking (auto_permissions): %s", prompt)
+    return True
