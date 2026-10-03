@@ -94,10 +94,11 @@ def _stem(word: str) -> str:
 
 
 def content_words(text: str) -> set[str]:
+    words = (t.split("'")[0] for t in _tokens(text))  # "today's" is "today"
     return {
-        _stem(t)
-        for t in _tokens(text)
-        if t.isalpha() and len(t) >= 4 and t not in _FUNCTION_WORDS and t not in _NUMBER_WORDS
+        _stem(w)
+        for w in words
+        if w.isalpha() and len(w) >= 4 and w not in _FUNCTION_WORDS and w not in _NUMBER_WORDS
     }
 
 

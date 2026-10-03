@@ -170,6 +170,14 @@ python -m jarvis pair <code> | devices | power | notify "text"   # the watch / p
 python -m jarvis learning [status|log --since 2d|phrasings|undo ID|enable SKILL]  # M7
 ```
 
+**Time.** Both of the owner's machines run on UTC. `[general] timezone` (an IANA
+zone) is what "now" means for the `clock` skill, the reasoner's prompt and
+`ctx.now()`, which skills, including Claude-written ones, use instead of
+`datetime.now()`.
+
+```bash
+```
+
 `./jarvis-run <args>` is the same with the repo's `.venv`, from any directory.
 
 **All-in-one is still the default.** `serve` / `edge` are the opt-in split
@@ -461,10 +469,11 @@ In a worktree, copy `data/` rather than linking it when the work trains,
 teaches or writes there.
 
 Since M7 the pod writes there continuously: `data/interactions/` (every turn)
-and `data/learning/` (learned phrasings, the learning state). The pod is the
-brain that learns; a dev brain on the same `data/` should run with
-`[learning] enabled = false` (it still logs, and still trains on what the pod
-learned at its next start). Learned *skills* are in `data/skills/learned/` too
+and `data/learning/` (learned phrasings, the learning state). **Both brains
+learn**: HAProxy sends the watch to the dev brain whenever it runs, so that is
+the brain being talked to. Each retrains only on the phrasings it learned
+itself (`Orchestrator._own_pending`) and picks up the other's at its next start
+through the corpus digest, so the two never retrain the same batch. Learned *skills* are in `data/skills/learned/` too
 (known issue #19, fixed in M7): discovery points the `jarvis.skills.learned`
 package there, and a skill still in the old place — the checkout's
 `jarvis/skills/learned/`, or the pod's PVC mounted over it — is copied over at

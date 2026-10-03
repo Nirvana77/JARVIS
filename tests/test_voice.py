@@ -49,6 +49,10 @@ def test_a_rewrite_that_changes_a_fact_is_not(original, rewrite):
     assert not voice.facts_kept(original, rewrite)
 
 
+def test_a_possessive_is_the_word_itself():
+    assert voice.content_words("What is today's date?") == {"today", "date"}
+
+
 def test_numbers_are_read_as_digits_and_as_words():
     assert voice.numbers("Set 2 timers for twenty five minutes and a hundred seconds") == {2, 25, 100}
     assert voice.numbers("It is 3.5 degrees at 7:45") == {3.5, 7, 45}

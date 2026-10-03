@@ -63,30 +63,6 @@
 			"action": "none"
 		},
 		{
-			"tag": "hours",
-			"patterns": ["What hours are you open?", "What are your hours?", "When are you open?"],
-			"responses": ["We're open every day 9am-9pm", "Our hours are 9am-9pm every day"],
-			"action": "none"
-		},
-		{
-			"tag": "payments",
-			"patterns": ["Do you take credit cards?", "Do you accept Mastercard?", "Are you cash only?"],
-			"responses": ["We accept VISA, Mastercard and AMEX", "We accept most major credit cards"],
-			"action": "none"
-		},
-		{
-			"tag": "opentoday",
-			"patterns": ["Are you open today?", "When do you open today?", "What are your hours today?"],
-			"responses": ["We're open every day from 9am-9pm", "Our hours are 9am-9pm every day"],
-			"action": "none"
-		},
-		{
-			"tag": "weather",
-			"patterns": ["What's the weather like?", "How's the weather today?", "What's the weather today?"],
-			"responses": ["The weather is nice", "It's sunny", "It's raining"],
-			"action": "none"
-		},
-		{
 			"tag": "search",
 			"patterns": [
 				"Search {intent}",

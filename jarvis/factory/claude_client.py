@@ -46,7 +46,9 @@ at module scope:
 2. `def run(ctx, **params) -> str:` — does the work and returns the line
    JARVIS should speak. `ctx` exposes `ctx.say(text)` (speak a progress line
    immediately), `ctx.data_dir` (a `pathlib.Path` scratch directory, created
-   on first access), and `ctx.llm` (an optional reasoner, may be `None`).
+   on first access), `ctx.llm` (an optional reasoner, may be `None`) and
+   `ctx.now()` (the current time where the user is, timezone-aware — use it
+   instead of `datetime.now()`, which is the server's time, often UTC).
    `run` must always return a `str`, never raise for expected input.
 
 Rules:

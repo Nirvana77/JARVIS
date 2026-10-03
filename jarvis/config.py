@@ -10,6 +10,7 @@ Two environment variables still override the file, as they did in the 2024 code:
 
 from __future__ import annotations
 
+import logging
 import os
 import tomllib
 from dataclasses import dataclass, field, fields, replace
@@ -31,6 +32,10 @@ _DEFAULT_CONFIG_NAME = "config.toml"
 @dataclass(frozen=True)
 class GeneralConfig:
     language: str = "en"
+    #: an IANA zone ("Europe/Stockholm") for what "now" is: the clock skill,
+    #: the reasoner's prompt, ``ctx.now()``. "" is the machine's own, which
+    #: on the owner's brain and pod is UTC
+    timezone: str = ""
 
 
 @dataclass(frozen=True)
@@ -553,6 +558,24 @@ def _knowledge_config(raw: dict) -> KnowledgeConfig:
     )
 
 
+def _timezone(value) -> str:
+    """A zone ``zoneinfo`` knows, or "" (the machine's own). A typo should
+    cost the right time, not the brain's start."""
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    try:
+        from zoneinfo import ZoneInfo
+
+        ZoneInfo(value)
+    except Exception:  # noqa: BLE001 — ZoneInfoNotFoundError, ValueError
+        logging.getLogger(__name__).warning(
+            "config.toml: [general] timezone %r is not a known zone; using the machine's", value
+        )
+        return ""
+    return value
+
+
 def _learning_config(raw: dict) -> LearningConfig:
     d = LearningConfig()
     announce = str(raw.get("announce", d.announce))
@@ -624,7 +647,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         data_dir = (_REPO_ROOT / data_dir).resolve()
 
     return Config(
-        general=GeneralConfig(language=language),
+        general=GeneralConfig(language=language, timezone=_timezone(general.get("timezone", ""))),
         persona=PersonaConfig(active=active_persona),
         wake=WakeConfig(
             model=wake.get("model", "hey_jarvis"),
