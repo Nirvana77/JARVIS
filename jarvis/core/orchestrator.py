@@ -21,6 +21,11 @@ M4.5: a sentence that is several commands is run as several (``_compound``,
 no model needed); a turn that is still unclear after M4 is planned or answered
 by the reasoner (``_think``); and every turn is remembered under the device
 it came from (``_turn``, ``jarvis/core/memory.py``).
+
+M7: every turn is logged (``_record``, ``jarvis/learning/``); a confirmed turn
+teaches the classifier the words that were actually heard
+(``_learn_phrasing``), retrained in batches at idle behind a regression gate
+(``_retrain_phrasings``); "no, I meant …" undoes that (``_correction``).
 """
 
 from __future__ import annotations
@@ -35,6 +40,8 @@ import re
 import shutil
 import sys
 import threading
+import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -57,6 +64,7 @@ from jarvis.factory.flows import (
     ask_yes_no_or_none,
 )
 from jarvis.factory.jobs import LearningJob, run_detached
+from jarvis.learning import Learning
 from jarvis.nlu import compound as _compound
 from jarvis.nlu import slots as _slots
 from jarvis.nlu.classifier import UNKNOWN, Classifier
@@ -86,13 +94,20 @@ _META_ACTIONS = {
     "recall_memory": "recall_memory",
     "forget_memory": "forget_memory",
     "forget_fact": "forget_fact",
+    # M7
+    "correction": "correction",
+    "learned_today": "learned_today",
 }
 
 #: A wrong guess at one of these costs a dialog, a skill's code or a device's
 #: memory, so they need `nlu.meta_action_threshold`, not just "not unknown".
 #: (`forget_fact` is not here: it always names what it would forget and asks,
 #: and needs its own "forget …" lead-in instead — see `_forget_fact`.)
-_GUARDED_ACTIONS = ("teach", "edit_skill", "revert_skill", "remove_skill", "forget_memory")
+_GUARDED_ACTIONS = (
+    "teach", "edit_skill", "revert_skill", "remove_skill", "forget_memory",
+    # M7: undoes what the last turn taught
+    "correction",
+)
 
 #: Skills whose argument is whatever was said: never one step of a chain
 #: ("note that buy milk and call mum" is one note).
@@ -116,6 +131,15 @@ _SELF_CHECK_SEED_PROBES = (
 
 #: a background question answered unclearly this many times counts as "no"
 _MAX_UNCLEAR_ANSWERS = 3
+
+#: M7: logged turns read back as regression probes for a phrasing retrain
+_MAX_REGRESSION_PROBES = 200
+
+#: M7: "no, I meant set a timer" -> "set a timer"
+_MEANT = re.compile(
+    r"\b(?:i\s+)?(?:meant|mean|said|wanted|asked\s+for|asked\s+you\s+to)\s+(?:to\s+)?(.+)$",
+    re.IGNORECASE,
+)
 
 
 #: The edge a background job was asked from (``tts.connected_device_id``), set in the
@@ -181,6 +205,7 @@ class Orchestrator:
         train_and_load=None,
         allow_shutdown: bool = True,
         knowledge=None,
+        learning: Learning | None = None,
     ) -> None:
         self.config = config
         #: False under `serve`: the brain is a server, and "shut down" said to
@@ -243,6 +268,21 @@ class Orchestrator:
         # Optional mid-command interrupt (Enter, and off-by-default voice
         # barge-in). Self-contained utility — see jarvis/core/interrupt.py.
         self._interrupter = Interrupter(config)
+
+        # M7: learning from every turn. Without one handed in (tests), the
+        # stores are in RAM.
+        self.learning = learning if learning is not None else Learning.in_memory(config)
+        self._clock = time.monotonic
+        #: the log line of the turn in flight (None between turns)
+        self._record: dict | None = None
+        #: the classifier's full verdict on the turn in flight, when it gave one
+        self._last_prediction = None
+        #: the last skill that ran, for "no, I meant …"
+        self._last_skill: dict | None = None
+        #: an unsure turn that ran: learned unless the next turn corrects it
+        self._provisional: dict | None = None
+        self._phrasing_task: asyncio.Task | None = None
+        self._phrasings_added_at = self._clock()
 
     @property
     def busy(self) -> bool:
@@ -430,6 +470,8 @@ class Orchestrator:
 
             window = grace = self.config.capture.follow_up_s
 
+        # nobody said "no, I meant …" before the session ended
+        self._commit_provisional()
         if self.running:
             # before the drop to standby: a finished job's question shouldn't
             # have to wait for the next wake word
@@ -455,6 +497,7 @@ class Orchestrator:
             print(f"  intent  : {p.label}  (conf {p.confidence:.2f}, sim {p.similarity:.2f})")
             print(f"  ranked  : {top}")
             log.info("heard %r -> %s (%.2f)", text, p.label, p.confidence)
+            self._last_prediction = (text, p)
             return p.label, p.confidence
         label, confidence = await asyncio.to_thread(self.nlu.predict, text)
         print(f'  heard   : "{text}"   -> {label} ({confidence:.2f})')
@@ -476,19 +519,67 @@ class Orchestrator:
         inside the turn ends the turn, not the loop."""
         device = self._device()
         self.memory.focus(device)
+        if _META_ACTIONS.get(label) != "correction":
+            self._commit_provisional()
+        self._record = self._new_record(device, label, text, confidence)
         self._turn_said = []
         try:
             await self.handle(label, text, confidence)
         except _Cancelled as exc:
             print(f"  (cancelled {exc} — still listening)", flush=True)
+            self._note(outcome="cancelled")
         finally:
             said, self._turn_said = self._turn_said, None
+            record, self._record = self._record, None
             if said is not None:  # None: the turn was "forget everything"
                 self.memory.device(device).add_turn(text, " ".join(said))
+                record["said"] = " ".join(said)
+                record.setdefault("path", self._default_path(label))
+                record.setdefault("outcome", "ok")
+                if self.learning.settings.log:
+                    self.learning.log.append(record)
+
+    # -- M7: the interaction log -------------------------------------------------
+
+    def _new_record(self, device: str, label: str, text: str, confidence: float) -> dict:
+        record = {
+            "id": self.learning.log.new_id(),
+            "device": device,
+            "heard": text,
+            "label": label,
+            "confidence": round(float(confidence), 3),
+        }
+        if self._last_prediction is not None and self._last_prediction[0] == text:
+            ranking = self._last_prediction[1].ranking
+            if len(ranking) > 1:
+                record["runner_up"] = [ranking[1][0], round(float(ranking[1][1]), 3)]
+        version = getattr(self.nlu, "version", None)
+        if isinstance(version, int):
+            record["model"] = version
+        self._last_prediction = None
+        return record
+
+    def _note(self, **fields) -> None:
+        """Fill in the turn's log line (a no-op outside a turn)."""
+        if self._record is not None:
+            self._record.update(fields)
+
+    def _note_path(self, path: str) -> None:
+        """The path a turn took, unless an outer step already named it: a
+        mishearing that runs a skill stays a ``mishear``."""
+        if self._record is not None:
+            self._record.setdefault("path", path)
+
+    def _default_path(self, label: str) -> str:
+        if label == UNKNOWN:
+            return "unknown"
+        action = _META_ACTIONS.get(label, self._action_for(label))
+        return "reply" if action == "none" else action
 
     async def handle(self, label: str, text: str, confidence: float = 1.0) -> None:
         steps = await self._compound(text)
         if steps:
+            self._note_path("compound")
             await self._run_steps(steps)
             return
         await self._handle_one(label, text, confidence)
@@ -588,6 +679,12 @@ class Orchestrator:
         if action == "forget_fact":
             await self._forget_fact(text)
             return
+        if action == "correction":
+            await self._correction(text)
+            return
+        if action == "learned_today":
+            await self._learned_today()
+            return
 
         if label in _slots.STORING and not _slots.has_lead_in(label, text):
             # "Forget about the park", heard as `remember`: with no "remember
@@ -598,20 +695,89 @@ class Orchestrator:
 
         # a skill
         self.state = "acting"
+        self._note_path("direct")
+        if self.learning.state.is_disabled(label):
+            # M7: a learned skill that kept failing after its repairs
+            self._note(skill=label, outcome="error", error="disabled")
+            await self._speak(self.persona.line(
+                "out_of_order", "That skill is switched off until you look at it, sir."))
+            return
         params = await self._fill_missing(label, self._params_for(label, text))
         if params is None:
             return
+        self._note(skill=label, params=_loggable(params))
         try:
             line = await asyncio.to_thread(self.registry.dispatch, label, params)
-        except KeyError:
-            await self._speak(self.persona.line("skill_missing"))
-            return
         except Exception as exc:  # noqa: BLE001 - a skill blew up
+            if isinstance(exc, KeyError) and not self._registered(label):
+                await self._speak(self.persona.line("skill_missing"))
+                self._note(outcome="error", error="missing")
+                return
+            # a KeyError from inside a skill is the skill's own bug, not a
+            # missing skill: it is repaired like any other failure
             log.exception("skill %s failed: %s", label, exc)
+            self._note(outcome="error", error=f"{type(exc).__name__}: {exc}"[:500])
+            self._remember_skill_turn(label)
             await self._speak(self.persona.line("error"))
+            await self._after_failure(label, text, params, exc)
             return
+        self._note(outcome="ok")
+        self._remember_skill_turn(label)
+        if (
+            self._record is not None
+            and self._record.get("path") == "direct"
+            and self.config.nlu.threshold <= confidence < self.learning.settings.learn_below
+            and self._learnable(label)
+        ):
+            # it ran, but the classifier was unsure: worth learning the words
+            # unless the next turn says it was the wrong thing
+            self._provisional = {
+                "text": self._record["heard"], "label": label, "turn": self._record["id"],
+            }
         self.state = "speaking"
         await self._speak(self.persona.phrase(line))
+
+    def _registered(self, label: str) -> bool:
+        try:
+            return label in self.registry.names()
+        except Exception:  # noqa: BLE001 — a fake without a roster
+            return False
+
+    def _remember_skill_turn(self, label: str) -> None:
+        """The skill that just ran, for a correction in the next turn."""
+        if self._record is None:
+            return
+        self._last_skill = {
+            "id": self._record["id"],
+            "heard": self._record["heard"],
+            "label": label,
+            "device": self._record["device"],
+            "at": self._clock(),
+            "learned": self._record.get("learned"),
+        }
+
+    async def _after_failure(self, label: str, heard: str, params: dict, exc: BaseException) -> None:
+        """M7 part F: a skill raised. Builtins are written down for a person;
+        a learned skill is repaired in the background (``_start_repair``)."""
+        try:
+            manifest = self._latest_registry().manifest(label)
+        except Exception:  # noqa: BLE001 — not a registered skill / a fake
+            return
+        error = "".join(traceback.format_exception(exc))[-2000:]
+        if manifest.origin == "builtin":
+            try:
+                await asyncio.to_thread(
+                    self.learning.state.builtin_failure, label, heard, _loggable(params), error
+                )
+            except OSError as exc2:
+                log.error("could not record the failure of %s: %s", label, exc2)
+            return
+        if manifest.origin == "learned":
+            await self._start_repair(manifest, heard, params, error)
+
+    async def _start_repair(self, manifest, heard: str, params: dict, error: str) -> None:
+        """Filled in by part F."""
+        return None
 
     # -- M4: misheard-command reasoning ---------------------------------------
 
@@ -632,14 +798,21 @@ class Orchestrator:
             print("  (cancelled thinking — still listening)", flush=True)
             return
         if corrected is _FAILED:
-            # the reasoner did not answer in time: not a second, longer wait
-            await self._speak(self.persona.line("unknown"))
+            # the reasoner did not answer in time: not a second, longer wait —
+            # but the classifier's own near miss costs nothing to offer
+            if not await self._offer_near_miss(text, confirm):
+                self._note_path("unknown")
+                await self._speak(self.persona.line("unknown"))
             return
         if corrected is not None:
             guess, label, confidence = corrected
+            self._note_path("mishear")
             if await self._confirmed(confirm.replace("{guess}", guess)):
+                # M7: the words that were heard mean what was confirmed
+                self._learn_phrasing(text, label, "mishear")
                 await self.handle(label, guess, confidence)
             else:
+                self._note(outcome="declined")
                 await self._speak(self.persona.line("unknown"))
             return
 
@@ -649,14 +822,325 @@ class Orchestrator:
             return
         if isinstance(thought, str):
             # already in the persona's voice: its character was in the prompt
+            self._note_path("answer")
             await self._speak(thought)
             return
         if thought:
+            self._note_path("plan")
             said = ", then ".join(step for step, _label, _confidence in thought)
             if await self._confirmed(confirm.replace("{guess}", said)):
+                if len(thought) == 1:
+                    # one command: the heard words mean it. Several mean no one label.
+                    self._learn_phrasing(text, thought[0][1], "plan")
                 await self._run_steps(thought)
                 return
+            self._note(outcome="declined")
+            await self._speak(self.persona.line("unknown"))
+            return
+        if await self._offer_near_miss(text, confirm):
+            return
+        self._note_path("unknown")
         await self._speak(self.persona.line("unknown"))
+
+    async def _offer_near_miss(self, text: str, confirm: str) -> bool:
+        """M7: with no reasoner (or none that helped), the classifier's own
+        best guess, when it fell just short of ``nlu.threshold``: "Did you mean
+        'flip a coin'?" A yes runs that skill on the words that were said and
+        learns them. ``True`` when the question was asked."""
+        margin = self.learning.settings.confirm_margin
+        explain = getattr(self.nlu, "explain", None)
+        if margin <= 0 or not callable(explain) or not text.strip():
+            return False
+        p = await asyncio.to_thread(explain, text)
+        if not p.ranking or p.similarity < self.config.nlu.similarity_floor:
+            return False
+        label, confidence = p.ranking[0]
+        if (
+            confidence < self.config.nlu.threshold - margin
+            or not self._chainable(label)
+            or label in _DICTATION
+        ):
+            return False
+        try:
+            examples = self._latest_registry().manifest(label).examples
+        except Exception:  # noqa: BLE001
+            examples = []
+        offered = examples[0] if examples else label.replace("_", " ")
+        self._note_path("confirmed")
+        if not await self._confirmed(confirm.replace("{guess}", offered.rstrip(" .?!"))):
+            self._note(outcome="declined")
+            await self._speak(self.persona.line("unknown"))
+            return True
+        self._learn_phrasing(text, label, "confirmed")
+        await self._handle_one(label, text, confidence)
+        return True
+
+    # -- M7: learning phrasings ------------------------------------------------------
+
+    def _learnable(self, label: str) -> bool:
+        """May the words for ``label`` be learned from use? Skills only: never
+        a session or meta action — above all not a guarded one, which a
+        learned phrasing would make easier to set off by mistake — and not
+        dictation, whose words are the content, not the command."""
+        if label == UNKNOWN or label in _META_ACTIONS or label in _DICTATION:
+            return False
+        if label in _slots.STORING:
+            return False
+        try:
+            return label in self._latest_registry().names()
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _learn_phrasing(self, text: str, label: str, why: str):
+        """``text`` means ``label``: kept for the next retrain. The phrasing,
+        or ``None`` when learning is off, the label may not be learned, or it
+        is known (or was undone) already."""
+        if not self.learning.settings.enabled or not self._learnable(label):
+            return None
+        turn = self._record["id"] if self._record is not None else None
+        try:
+            phrasing = self.learning.phrasings.add(text, label, why=why, turn=turn)
+        except OSError as exc:
+            log.error("could not keep the phrasing %r: %s", text, exc)
+            return None
+        if phrasing is None:
+            return None
+        self._note(learned=phrasing.id)
+        if self._last_skill is not None and self._last_skill["id"] == turn:
+            self._last_skill["learned"] = phrasing.id
+        self._phrasings_added_at = self._clock()
+        log.info("learned: %r means %s (%s)", text, label, why)
+        print(f'  learned : "{text}" -> {label} ({why})')
+        try:
+            self.learning.state.add_event("phrasing", f"'{phrasing.text}' means {label}")
+        except OSError:
+            pass
+        return phrasing
+
+    def _commit_provisional(self) -> None:
+        """The unsure turn was not corrected: learn its words now."""
+        provisional, self._provisional = self._provisional, None
+        if provisional is None:
+            return
+        record, self._record = self._record, None  # not this turn's line
+        try:
+            phrasing = self._learn_phrasing(provisional["text"], provisional["label"], "unsure")
+        finally:
+            self._record = record
+        if phrasing is not None and self._last_skill is not None:
+            if self._last_skill["id"] == provisional["turn"]:
+                self._last_skill["learned"] = phrasing.id
+
+    def _corpus(self, manifests):
+        """Every retrain's corpus: seeds, the skills' examples and the learned
+        phrasings. A retrain that left the phrasings out would unlearn them."""
+        try:
+            learned = self.learning.phrasings.examples()
+        except OSError as exc:
+            log.error("could not read the learned phrasings: %s", exc)
+            learned = []
+        return build_corpus(manifests=manifests, learned=learned)
+
+    def _phrasings_due(self) -> bool:
+        """Time to retrain on what was learned: enough phrasings waiting, or
+        one waiting long enough — and nothing else retraining or staged."""
+        s = self.learning.settings
+        if (
+            not s.enabled
+            or self._phrasing_task is not None
+            or self._jobs
+            or self._staged is not None
+        ):
+            return False
+        try:
+            pending = len(self.learning.phrasings.pending())
+        except OSError:
+            return False
+        if not pending:
+            return False
+        if pending >= s.retrain_after:
+            return True
+        return self._clock() - self._phrasings_added_at >= s.retrain_idle_s
+
+    def _maybe_retrain_phrasings(self) -> None:
+        if self._phrasings_due():
+            self._phrasing_task = asyncio.ensure_future(self._retrain_phrasings())
+
+    async def _retrain_phrasings(self) -> None:
+        """Retrain with the learned phrasings, in the worker; keep the model
+        only if it does no worse than the live one on the regression probes;
+        stage it for the merge gate. Never raises into the loop."""
+        try:
+            batch = self.learning.phrasings.pending()
+            registry = self._latest_registry()
+            examples = self._corpus(registry.manifests())
+            print(f"  (retraining with {len(batch)} learned phrasing(s))", flush=True)
+            kind, payload = await self._train_and_load(examples)
+            if kind != "ok":
+                log.error("phrasing retrain failed: %s", payload)
+                self._phrasings_added_at = self._clock()  # try again later
+                return
+            train_result, classifier = payload
+            kept = await asyncio.to_thread(self._regression_gate, self.nlu, classifier)
+            if not kept or self._staged is not None or self._jobs:
+                self._discard_unused_version(train_result)
+                _close(classifier)
+                if not kept:
+                    gone = self.learning.phrasings.quarantine([p.id for p in batch])
+                    log.warning(
+                        "phrasing retrain got worse; set aside: %s",
+                        ", ".join(f"{p.text!r} -> {p.label}" for p in gone),
+                    )
+                    self.learning.state.add_event(
+                        "quarantine", f"{len(gone)} phrasing(s) made recognition worse"
+                    )
+                else:
+                    self._phrasings_added_at = self._clock()  # a job got in first
+                return
+            self.learning.phrasings.mark_trained([p.id for p in batch])
+            self._staged = (classifier, registry)
+            if self.learning.settings.announce == "idle":
+                self._queue_announcement(self._learned_line(batch))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — learning must never take the loop down
+            log.exception("phrasing retrain crashed")
+            self._phrasings_added_at = self._clock()
+        finally:
+            self._phrasing_task = None
+
+    def _learned_line(self, batch) -> str:
+        if len(batch) == 1:
+            p = batch[0]
+            line = self.persona.line(
+                "learned_phrasing", "I've learned that '{text}' means {meaning}, sir."
+            )
+            return line.replace("{text}", p.text).replace("{meaning}", self._meaning(p.label))
+        line = self.persona.line(
+            "learned_phrasings", "I've learned {n} new ways of putting things, sir."
+        )
+        return line.replace("{n}", str(len(batch)))
+
+    def _meaning(self, label: str) -> str:
+        try:
+            examples = self._latest_registry().manifest(label).examples
+        except Exception:  # noqa: BLE001
+            examples = []
+        return (examples[0] if examples else label.replace("_", " ")).rstrip(" .?!")
+
+    def _regression_gate(self, old, new) -> bool:
+        """Blocking: does ``new`` get at least as many of the probes right as
+        ``old``? The probes are the seed self-check phrases plus recent turns
+        that ran a skill directly, surely and without error — what JARVIS
+        already understands must not be unlearned by what it just learned."""
+        probes = list(_SELF_CHECK_SEED_PROBES)
+        seen = {text for text, _ in probes}
+        try:
+            records = self.learning.log.records()
+        except OSError:
+            records = []
+        for r in reversed(records):
+            if len(probes) >= _MAX_REGRESSION_PROBES:
+                break
+            if (
+                r.get("path") == "direct"
+                and r.get("outcome") == "ok"
+                and r.get("skill")
+                and float(r.get("confidence", 0)) >= self.learning.settings.learn_below
+                and r.get("heard") not in seen
+            ):
+                probes.append((r["heard"], r["skill"]))
+                seen.add(r["heard"])
+        old_ok = sum(old.predict(text)[0] == label for text, label in probes)
+        new_ok = sum(new.predict(text)[0] == label for text, label in probes)
+        if new_ok < old_ok:
+            log.warning("regression gate: %d/%d right before, %d after", old_ok, len(probes), new_ok)
+            return False
+        return True
+
+    # -- M7: corrections ---------------------------------------------------------------
+
+    async def _correction(self, text: str) -> None:
+        """"No, I meant …" just after a skill ran: undo what that turn taught,
+        learn its words as what was meant, and do that instead."""
+        last = self._last_skill
+        window = self.learning.settings.correction_window_s
+        self._note_path("correction")
+        if (
+            last is None
+            or last["device"] != self._device()
+            or self._clock() - last["at"] > window
+        ):
+            self._note(outcome="declined")
+            await self._speak(self.persona.line(
+                "nothing_to_correct", "There's nothing for me to correct, sir."))
+            return
+        self._last_skill = None
+        self._note(corrects=last["id"])
+        if self._provisional is not None and self._provisional["turn"] == last["id"]:
+            self._provisional = None
+        if last.get("learned"):
+            try:
+                self.learning.phrasings.remove(last["learned"], reason="corrected")
+            except OSError as exc:
+                log.error("could not undo phrasing %s: %s", last["learned"], exc)
+
+        found = _MEANT.search(text)
+        meant = found.group(1).strip(" .!?,") if found else ""
+        if not meant:
+            meant = (await self._ask(self.persona.line(
+                "what_did_you_mean", "What did you mean, sir?"))).strip(" .!?,")
+        if not meant:
+            await self._speak(self.persona.line("unknown"))
+            return
+        label, confidence = await asyncio.to_thread(self.nlu.predict, meant)
+        print(f'  meant   : "{meant}" -> {label} ({confidence:.2f})')
+        if label == UNKNOWN or label == last["label"] or not self._learnable(label):
+            await self._speak(self.persona.line("unknown"))
+            return
+        try:
+            self.learning.state.confusion(last["label"], label)
+            self.learning.state.add_event("correction", f"'{last['heard']}' means {label}, not {last['label']}")
+        except OSError:
+            pass
+        learned = None
+        if not _mishear.same_words(last["heard"], meant):
+            learned = self._learn_phrasing(last["heard"], label, "correction")
+        await self._handle_one(label, meant, confidence)
+        if self._last_skill is not None and self._last_skill["id"] == (self._record or {}).get("id"):
+            # a correction of this correction is about the words first said
+            self._last_skill["heard"] = last["heard"]
+            self._last_skill["learned"] = learned.id if learned else None
+
+    async def _learned_today(self) -> None:
+        """"What have you learned today?" — from the learning's own events."""
+        try:
+            events = self.learning.state.events(since=_dt.date.today())
+        except OSError:
+            events = []
+        if not events:
+            await self._speak(self.persona.line("nothing_learned", "Nothing new today, sir."))
+            return
+        by_kind: dict[str, list[str]] = {}
+        for e in events:
+            by_kind.setdefault(e["kind"], []).append(e["text"])
+        parts = []
+        if by_kind.get("phrasing"):
+            shown = by_kind["phrasing"][-3:]
+            parts.append("that " + "; that ".join(shown))
+            if len(by_kind["phrasing"]) > len(shown):
+                parts.append(f"{len(by_kind['phrasing']) - len(shown)} more phrasings")
+        if by_kind.get("skill"):
+            parts.append("new skills: " + ", ".join(by_kind["skill"]))
+        if by_kind.get("repair"):
+            parts.append("repairs to " + ", ".join(by_kind["repair"]))
+        if by_kind.get("correction"):
+            parts.append(f"{len(by_kind['correction'])} correction(s) from you")
+        if not parts:
+            await self._speak(self.persona.line("nothing_learned", "Nothing new today, sir."))
+            return
+        # the speaker's own words: spoken as they are, not rephrased
+        await self._speak("Today I learned " + "; ".join(parts) + ".")
 
     async def _reason_about_unclear(self, text: str):
         """The reasoner's single best guess at the command that was actually
@@ -955,6 +1439,9 @@ class Orchestrator:
                 if refs and self.knowledge is not None:
                     await asyncio.to_thread(self._forget_in_knowledge, refs)
                 memory.forget()
+                # M7: what this device said is in the interaction log too
+                if self.learning.settings.log:
+                    self.learning.log.forget(memory.device)
             except Exception as exc:  # noqa: BLE001 — still stored: do not say otherwise
                 log.error("could not forget for %s: %s", memory.device, exc)
                 await self._speak(self.persona.line("error"))
@@ -1007,7 +1494,7 @@ class Orchestrator:
         same way a learned skill lands. Nothing to ask, nothing to self-check:
         the tools are the edge's, and a bad example list costs only them."""
         registry = self._latest_registry().rebuilt()
-        examples = build_corpus(manifests=registry.manifests())
+        examples = self._corpus(registry.manifests())
         kind, payload = await self._train_and_load(examples)
         if kind != "ok":
             log.error("retrain for the edge's tools failed: %s", payload)
@@ -1114,9 +1601,9 @@ class Orchestrator:
         if removing:
             # "relearn the module" without the removed skill: retrain on every
             # *remaining* skill's examples, nothing added.
-            examples = build_corpus(manifests=other_manifests)
+            examples = self._corpus(other_manifests)
         else:
-            examples = build_corpus(manifests=other_manifests + [outcome.manifest])
+            examples = self._corpus(other_manifests + [outcome.manifest])
 
         kind, payload = await self._train_and_load(examples)
         if kind != "ok":
@@ -1307,6 +1794,7 @@ class Orchestrator:
                 await asyncio.sleep(0)
         await self._merge_gate()
         await self._speak_notices()
+        self._maybe_retrain_phrasings()
 
     def _offer_due(self) -> bool:
         """A background question for the connected edge, not yet offered."""
@@ -1333,6 +1821,7 @@ class Orchestrator:
             return
         await self._merge_gate()
         await self._speak_notices()
+        self._maybe_retrain_phrasings()
 
     async def _idle_loop(self) -> None:
         while self.running:
@@ -1497,7 +1986,8 @@ class Orchestrator:
         finally:
             self.running = False
             # the re-scan waits for its worker thread before it is done
-            for task in (self._idle_task, self._knowledge_task):
+            self._commit_provisional()
+            for task in (self._idle_task, self._knowledge_task, self._phrasing_task):
                 if task is not None:
                     task.cancel()
                     try:
@@ -1539,3 +2029,17 @@ def _drop_note_lines(path: Path, found: list[str]) -> None:
             if not any(same_text(l.split("  ", 1)[-1], f) for f in found)]
     if len(kept) != len(lines):
         path.write_text("".join(kept), encoding="utf-8")
+
+
+def _close(classifier) -> None:
+    close = getattr(classifier, "close", None)
+    if callable(close):
+        close()
+
+
+def _loggable(params: dict) -> dict:
+    """Params as the log can hold them: JSON's own types, else their text."""
+    out = {}
+    for key, value in (params or {}).items():
+        out[key] = value if isinstance(value, (str, int, float, bool)) or value is None else str(value)
+    return out

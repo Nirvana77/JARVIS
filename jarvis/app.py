@@ -22,6 +22,7 @@ from jarvis.core.memory import Memory
 from jarvis.core.reasoner import Reasoner
 from jarvis.factory.claude_client import ClaudeClient
 from jarvis.factory.sandbox import SubprocessSandbox
+from jarvis.learning import Learning, learned_examples
 from jarvis.nlu.classifier import Classifier
 from jarvis.nlu.corpus import build_corpus, corpus_digest, intent_meta, write_corpus_db
 from jarvis.nlu.train import TrainResult, latest_version, train
@@ -32,8 +33,13 @@ log = logging.getLogger(__name__)
 
 # -- NLU bootstrap ----------------------------------------------------------
 
+def training_corpus(config: Config, registry: Registry):
+    """Seeds, the skills' examples and (M7) the phrasings learned from use."""
+    return build_corpus(manifests=registry.manifests(), learned=learned_examples(config))
+
+
 def rebuild_nlu(config: Config, registry: Registry) -> TrainResult:
-    corpus = build_corpus(manifests=registry.manifests())
+    corpus = training_corpus(config, registry)
     write_corpus_db(corpus, config.corpus_path)
     result = train(corpus, config.nlu.embedding_model, config.nlu_model_dir)
     log.info(
@@ -45,7 +51,7 @@ def rebuild_nlu(config: Config, registry: Registry) -> TrainResult:
 
 def current_corpus_digest(config: Config, registry: Registry) -> str:
     """The digest a model trained now would record (see ``corpus_digest``)."""
-    return corpus_digest(build_corpus(manifests=registry.manifests()), config.nlu.embedding_model)
+    return corpus_digest(training_corpus(config, registry), config.nlu.embedding_model)
 
 
 def ensure_nlu(config: Config, registry: Registry) -> int:
@@ -116,6 +122,33 @@ def build_knowledge(config: Config):
         log.warning("knowledge scan failed: %s", exc)
         print(f"  ! could not scan it: {exc}", flush=True)
     return knowledge
+
+
+# -- M7: learning from every turn ---------------------------------------------
+
+def build_learning(config: Config) -> Learning:
+    learning = Learning.from_config(config)
+    # `ensure_nlu` ran first and trained on every phrasing in the file (the
+    # corpus digest covers them), so none is waiting for a retrain any more
+    try:
+        pending = learning.phrasings.pending()
+        if pending:
+            learning.phrasings.mark_trained([p.id for p in pending])
+    except OSError as exc:
+        log.warning("could not read the learned phrasings: %s", exc)
+    try:
+        dropped = learning.log.rotate()
+        if dropped:
+            log.info("interaction log: dropped %d day(s) past keep_days", dropped)
+    except OSError as exc:
+        log.warning("could not rotate the interaction log: %s", exc)
+    s = config.learning
+    print(
+        f"· learning: {'on' if s.enabled else 'off (logging only)'}"
+        f" · log {'on' if s.log else 'off'} · {len(learning.phrasings.entries())} learned phrasing(s)",
+        flush=True,
+    )
+    return learning
 
 
 # -- full assembly --------------------------------------------------------
@@ -209,6 +242,7 @@ def build_orchestrator(config: Config) -> Orchestrator:
         claude_client=claude_client,
         sandbox=sandbox,
         knowledge=knowledge,
+        learning=build_learning(config),
     )
 
 
@@ -261,6 +295,7 @@ def build_text_orchestrator(config: Config, lines: list[str] | None = None) -> O
         claude_client=claude_client,
         sandbox=sandbox,
         knowledge=knowledge,
+        learning=build_learning(config),
     )
     text_io.on_exhausted = orchestrator.stop
     return orchestrator
@@ -318,6 +353,7 @@ def build_server_orchestrator(config: Config, link, edges=None) -> Orchestrator:
         claude_client=claude_client,
         sandbox=sandbox,
         knowledge=knowledge,
+        learning=build_learning(config),
         # A server: "shut down" from the watch stands by, it does not stop the
         # brain (Ctrl-C / systemd still do).
         allow_shutdown=False,

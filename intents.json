@@ -302,6 +302,44 @@
 			],
 			"responses": [],
 			"action": "forget_fact"
+		},
+		{
+			"tag": "correction",
+			"patterns": [
+				"no I meant {intent}",
+				"no, I said {intent}",
+				"I meant {intent}",
+				"no I wanted {intent}",
+				"I asked you to {intent}",
+				"no I asked for {intent}",
+				"that's not what I asked",
+				"that's not what I meant",
+				"that's not what I said",
+				"that's wrong",
+				"no that's wrong",
+				"wrong one",
+				"not that",
+				"that was the wrong thing",
+				"I didn't ask for that",
+				"you got that wrong"
+			],
+			"responses": [],
+			"action": "correction"
+		},
+		{
+			"tag": "learned_today",
+			"patterns": [
+				"what have you learned today",
+				"what did you learn today",
+				"what have you learned",
+				"what have you learnt today",
+				"what's new in what you can do",
+				"what did you pick up today",
+				"have you learned anything new",
+				"tell me what you learned today"
+			],
+			"responses": [],
+			"action": "learned_today"
 		}
 	]
 }

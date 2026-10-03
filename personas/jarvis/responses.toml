@@ -27,3 +27,15 @@ skill_missing = [
   "That is beyond my current capabilities, sir.",
 ]
 error         = ["Something went wrong, sir.", "I have run into a problem, sir."]
+# M7: learning from every turn. {text}/{meaning}/{n}/{name}/{what} are filled in.
+learned_phrasing   = ["I've learned that '{text}' means {meaning}, sir."]
+learned_phrasings  = ["I've learned {n} new ways of putting things, sir."]
+nothing_to_correct = ["There is nothing for me to correct, sir."]
+what_did_you_mean  = ["What did you mean, sir?"]
+nothing_learned    = ["Nothing new today, sir."]
+out_of_order       = ["That skill is switched off until you have looked at it, sir."]
+learning_it        = ["I can't do that yet, sir. I shall learn it.", "Not yet, sir. Give me a moment to learn it."]
+already_learning   = ["I am already learning that, sir."]
+learn_failed_today = ["I could not learn that earlier today, sir."]
+learn_limit        = ["I have done all the learning I may today, sir. Ask me again tomorrow."]
+skill_disabled     = ["'{name}' keeps failing, sir. I have switched it off until you look at it."]
