@@ -961,7 +961,7 @@ class RemoteServer:
 
         query = parse_qs(urlsplit(request.path).query)
         day = (query.get("day") or [None])[0]
-        if day is not None and not re.match(r"^\d{4}-\d{2}-\d{2}$", day):
+        if day is not None and not re.match(r"^\d{4}-\d{2}-\d{2}\Z", day):
             return connection.respond(HTTPStatus.BAD_REQUEST, "day=YYYY-MM-DD\n")
         if (query.get("fetch") or ["1"])[0] == "0":
             result = self.power_report(PowerFetch("skipped"), day, device_id)

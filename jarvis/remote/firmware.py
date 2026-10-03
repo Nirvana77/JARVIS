@@ -39,7 +39,7 @@ _APP_DESC = struct.Struct("<II8s32s32s")
 
 #: ``git describe --tags --dirty``: ``<tag>[-<n>-g<hash>][-dirty]``, the tag
 #: numeric (``v1``, ``1.2``, ``v1.2.3``). A bare all-digit hash is not a tag.
-_DESCRIBE_RE = re.compile(r"^v?(?P<tag>\d+(?:\.\d+)*)(?:-(?P<n>\d+)-g[0-9a-f]+)?$")
+_DESCRIBE_RE = re.compile(r"^v?(?P<tag>\d+(?:\.\d+)*)(?:-(?P<n>\d+)-g[0-9a-f]+)?\Z")
 
 
 def _order(version: str) -> tuple | None:

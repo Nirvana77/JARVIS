@@ -82,6 +82,7 @@ def test_hello_without_tools_is_still_fine():
     [
         "not a list",
         [{"name": "Set Timer", "description": "x", "examples": [], "params": {}}],
+        [{"name": "set_timer\n", "description": "x", "examples": [], "params": {}}],
         [{"name": "t", "description": "x" * 300, "examples": [], "params": {}}],
         [{"name": "t", "description": "x", "examples": ["y" * 200], "params": {}}],
         [{"name": "t", "description": "x", "examples": [], "params": {"p": {"type": "file"}}}],

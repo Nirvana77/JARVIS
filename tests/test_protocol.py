@@ -107,6 +107,7 @@ def test_hello_needs_a_protocol_a_token_and_a_device():
         _hello(device_id="../../etc/passwd"),   # it becomes a filename on the brain
         _hello(device_id="living room!"),
         _hello(device_id="x" * 65),
+        _hello(device_id="watch\n"),           # known issue #12: `$` matches before a final newline
     ):
         ok, err = P.validate_c2s(json.dumps(bad))
         assert ok is False, bad
