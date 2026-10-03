@@ -83,6 +83,14 @@ class LearningRequest:
     replay_params: dict | None = None
     #: M7: what was heard when it was asked for, or when it failed
     utterance: str | None = None
+    #: M8: a rewrite of a builtin, written to ``data/skills/overrides/``
+    override: bool = False
+    #: M8: permissions already granted (the packaged builtin's, by its owner)
+    pre_granted: frozenset[str] = frozenset()
+    #: M8: the repo's test files for the builtin, run against the rewrite
+    repo_tests: tuple[str, ...] = ()
+    #: M8: the builtin's recent good calls, each replayed and must still work
+    regression_params: tuple[dict, ...] = ()
 
 
 @dataclass
@@ -143,6 +151,21 @@ def learned_source_path(name: str) -> Path:
     import jarvis.skills.learned as learned_pkg
 
     return Path(list(learned_pkg.__path__)[0]) / f"{name}.py"
+
+
+def override_source_path(name: str) -> Path:
+    """M8: where JARVIS's own version of builtin ``name`` lives — wherever
+    discovery pointed ``jarvis.skills.overrides`` (``config.skill_overrides_dir``)."""
+    import jarvis.skills.overrides as overrides_pkg
+
+    return Path(list(overrides_pkg.__path__)[0]) / f"{name}.py"
+
+
+def packaged_source_path(name: str) -> Path:
+    """The builtin as shipped in the repo."""
+    import jarvis.skills.builtin as builtin_pkg
+
+    return Path(list(builtin_pkg.__path__)[0]) / f"{name}.py"
 
 
 def _slugify(text: str) -> str:

@@ -209,6 +209,9 @@ class LearningConfig:
     #: a learned skill raised: rewrite it in the background
     auto_repair: bool = True
     max_repairs_per_skill_per_day: int = 2
+    #: M8: a rewrite JARVIS made of its own skill is watched for this many
+    #: uses; a failure, or a correction, in them puts the previous version back
+    probation_calls: int = 5
 
 
 @dataclass(frozen=True)
@@ -478,6 +481,12 @@ class Config:
         return self.data_dir / "firmware"
 
     @property
+    def skill_overrides_dir(self) -> Path:
+        """M8: JARVIS's own versions of builtins, loaded in place of the
+        packaged ones; shared by both brains, like the learned skills."""
+        return self.data_dir / "skills" / "overrides"
+
+    @property
     def learned_skills_dir(self) -> Path:
         """Skills the factory wrote (known issue #19): under ``data/`` so the
         dev brain and the pod, which share it, share them too. The package
@@ -597,6 +606,7 @@ def _learning_config(raw: dict) -> LearningConfig:
         max_repairs_per_skill_per_day=max(
             0, int(raw.get("max_repairs_per_skill_per_day", d.max_repairs_per_skill_per_day))
         ),
+        probation_calls=max(0, int(raw.get("probation_calls", d.probation_calls))),
     )
 
 

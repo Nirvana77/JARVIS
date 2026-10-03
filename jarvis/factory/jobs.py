@@ -131,6 +131,35 @@ class LearningJob:
             return FlowOutcome(accepted=True, name=request.name, manifest=request.manifest)
         return await self._generate_validate_sandbox()
 
+    async def _regressions(self, module_path, manifest) -> tuple[str, str] | None:
+        """M8, for a rewrite of a builtin: its recent good calls, replayed,
+        and the repo's own tests for it. ``(reason, feedback)`` for the first
+        that fails, ``None`` when all pass."""
+        request = self.request
+        for params in request.regression_params:
+            result = await run_detached(
+                self.sandbox.dry_run, module_path, dict(params), manifest.permissions
+            )
+            if not result.ok:
+                return (
+                    f"a call that worked before now fails: run(ctx, **{params!r})",
+                    "Your rewrite breaks a call that worked with the current version: "
+                    f"run(ctx, **{params!r}). Error output:\n{_sandbox_output(result)}",
+                )
+        if request.repo_tests:
+            result = await run_detached(
+                self.sandbox.run_repo_tests, module_path, manifest.name,
+                list(request.repo_tests), manifest.permissions,
+            )
+            if not result.ok:
+                return (
+                    "the repo's own tests fail",
+                    "Your rewrite fails the project's own tests for this skill "
+                    "(they test the behaviour it must keep). Output:\n"
+                    f"{_sandbox_output(result)[-4000:]}",
+                )
+        return None
+
     async def _generate_validate_sandbox(self) -> FlowOutcome:
         """Generate → validate → sandbox, retrying up to `self.max_attempts`
         times. A validation or sandbox failure doesn't end the job outright —
@@ -189,7 +218,7 @@ class LearningJob:
             # permission beyond pure/notify has been granted by voice. A
             # permission already granted on an earlier attempt isn't re-asked
             # if a retry needs that same one again.
-            extra_perms = manifest.permissions - _BASE_PERMISSIONS
+            extra_perms = manifest.permissions - _BASE_PERMISSIONS - request.pre_granted
             if extra_perms and not extra_perms <= granted_perms:
                 granted = await self.decide(
                     f"'{manifest.name}' needs {', '.join(sorted(extra_perms))} access. Allow it, sir?"
@@ -238,6 +267,15 @@ class LearningJob:
                         f"crashed. Error output:\n{_sandbox_output(dry_result)}\n\n"
                         f"Here is the code you wrote — fix it:\n```python\n{generated.module_source}\n```"
                     )
+                    module_path.unlink(missing_ok=True)
+                    continue
+
+                failed = await self._regressions(module_path, manifest)
+                if failed is not None:
+                    reason, feedback = failed
+                    log.warning("rewrite of %s fails its regression gate (attempt %d/%d): %s",
+                                manifest.name, attempt, self.max_attempts, reason)
+                    feedback += f"\n\nHere is the code you wrote — fix it:\n```python\n{generated.module_source}\n```"
                     module_path.unlink(missing_ok=True)
                     continue
 

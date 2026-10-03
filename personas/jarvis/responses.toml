@@ -43,3 +43,4 @@ skill_disabled     = ["'{name}' keeps failing, sir. I have switched it off until
 # Canned replies to an intent, in voice: "reply_<intent tag>". Spoken as written;
 # an intent without one gets intents.json's reply, rewritten and fact-checked.
 reply_thanks       = ["A pleasure, sir.", "Always, sir.", "Happy to be of use, sir.", "Of course, sir."]
+nothing_to_undo    = ["There is nothing of mine to undo, sir."]

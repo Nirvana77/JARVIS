@@ -148,6 +148,8 @@ auto_permissions = false # grant such a skill network/file/edge access without a
 max_builds_per_day = 5   # what JARVIS may spend on Claude by itself, per day
 auto_repair = true       # a learned skill that raises is rewritten in the background ...
 max_repairs_per_skill_per_day = 2  # ... this often, then switched off until you look
+probation_calls = 5      # M8: a skill JARVIS rewrote itself is watched this many uses; a failure
+                         # or a correction in them puts the previous version back
 
 [server]
 # TLS is required on a routable address. Three legitimate shapes:
