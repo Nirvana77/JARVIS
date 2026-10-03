@@ -283,7 +283,13 @@ transcription must not be answered from a note it happens to resemble.
 ## 16. `Persona.phrase` — a model per call, on the event loop, and after the answer
 
 **Reported:** 2026-10-01, reading the answer path for M5.
-**Status:** open. Not reproduced live: there is no Ollama on the dev machine.
+**Status:** partly fixed in M7 (2026-10-03). Reproduced live once the cluster's
+Ollama was wired in: every skill reply is rewritten, 0.4–0.9 s each with
+`qwen3:8b`. M7 made `phrase` build one embedder for the persona's life and run
+off the event loop (`Orchestrator._phrase`). Still open: the knowledge answer's
+double generation (third bullet), and the rewrite is free to lose content —
+"1 sheep, 2 sheep, 3 sheep." came back as "One, sir. Two, sir. Three, sir."
+Whether to rewrite skill replies at all is the owner's call.
 **Severity:** latency, and possibly a lost source, only when a reasoner is up.
 
 - `Persona._nearest_style_lines` (`jarvis/core/persona.py:165-181`) builds a
@@ -373,3 +379,29 @@ Move learned skills under `data/` (say `data/skills/learned/`, imported by path
 the way `Registry` already imports the package) so both brains share them, or
 mount the PVC's directory into the dev checkout. Then decide which brain may
 write there: only the one with `[learning] enabled`.
+
+---
+
+## 20. A learned skill's number goes to the first number said, whatever it means
+
+**Reported:** 2026-10-03, the M7 dry run.
+**Status:** open.
+**Severity:** a wrong argument. "Roll a twenty sided die" rolled twenty dice.
+
+Known issue #7's fix fills a learned skill's `integer`/`number` params with
+`slots.extract_typed`, which takes the number in the sentence by type alone. The
+skill JARVIS built for itself, `roll_a_twenty_sided`, has one param, `count`.
+In "roll a twenty sided die" the only number is "twenty", which is part of
+"twenty-sided", so `count` = 20 and the total was 177. The same sentence gave
+one die the first time it was said (both were the same skill and path, so the
+difference is unexplained — possibly the persona rewrite, #16, reworded a
+20-dice reply).
+
+### Fix, when someone takes it
+
+Do not fill a numeric param from a number that is part of a compound modifier
+("twenty-sided", "five-minute", "d20"), or have the factory declare which words
+introduce each param (e.g. `"count": {"type": "integer", "after": ["roll"]}`) so
+extraction has a frame to look in. Asking the skill's examples which number
+filled which param would also work: the factory writes "roll two twenty sided
+dice" as an example and could mark `two` as `count`.

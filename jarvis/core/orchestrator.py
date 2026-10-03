@@ -316,6 +316,12 @@ class Orchestrator:
         await asyncio.sleep(0.2)
         self._drain_mic()
 
+    async def _phrase(self, text: str) -> str:
+        """The persona's rewrite of a dynamic line. With a reasoner up that is
+        an Ollama call (0.4–0.9 s on the cluster's qwen3:8b), so it runs off
+        the event loop (known issue #16)."""
+        return await asyncio.to_thread(self.persona.phrase, text)
+
     async def _enter_standby(self) -> None:
         """Drop to standby, and tell the speaker *before* saying so.
 
@@ -624,7 +630,7 @@ class Orchestrator:
         if action == "none":
             meta = self.intent_meta.get(label)
             reply = random.choice(meta.responses) if meta and meta.responses else ""
-            await self._speak(self.persona.phrase(reply) if reply else "")
+            await self._speak(await self._phrase(reply) if reply else "")
             return
 
         if self._too_unsure_for_meta(label, confidence):
@@ -745,7 +751,7 @@ class Orchestrator:
                 "text": self._record["heard"], "label": label, "turn": self._record["id"],
             }
         self.state = "speaking"
-        await self._speak(self.persona.phrase(line))
+        await self._speak(await self._phrase(line))
 
     def _registered(self, label: str) -> bool:
         try:
@@ -1057,7 +1063,7 @@ class Orchestrator:
         log.info("learned: %r means %s (%s)", text, label, why)
         print(f'  learned : "{text}" -> {label} ({why})')
         try:
-            self.learning.state.add_event("phrasing", f"'{phrasing.text}' means {label}")
+            self.learning.state.add_event("phrasing", f"'{phrasing.text}' means {self._meaning(label)}")
         except OSError:
             pass
         return phrasing
@@ -1246,7 +1252,10 @@ class Orchestrator:
             return
         try:
             self.learning.state.confusion(last["label"], label)
-            self.learning.state.add_event("correction", f"'{last['heard']}' means {label}, not {last['label']}")
+            self.learning.state.add_event(
+                "correction",
+                f"'{last['heard']}' means {self._meaning(label)}, not {self._meaning(last['label'])}",
+            )
         except OSError:
             pass
         learned = None
@@ -1641,7 +1650,7 @@ class Orchestrator:
             if name not in found and spec.get("type") in ("text", "name") and (answer or "").strip(" .!?"):
                 found = {name: answer.strip(" .!?")}  # asked for the text itself: all of it
             if name not in found:
-                await self._speak(self.persona.phrase("I didn't catch that, sir."))
+                await self._speak(await self._phrase("I didn't catch that, sir."))
                 return None
             params.update(found)
         return params
