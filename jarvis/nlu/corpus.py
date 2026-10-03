@@ -9,6 +9,7 @@ cached in ``data/nlu/corpus.sqlite`` and rebuildable with ``jarvis nlu rebuild``
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -117,6 +118,17 @@ def build_corpus(
             add(example, manifest.name, "skill")
 
     return examples
+
+
+def corpus_digest(examples: Iterable[Example], embedding_model: str) -> str:
+    """What a model was trained on, as one string: the (text, label) pairs —
+    order aside — and the embedding model. Recorded in a version's
+    ``meta.json`` so a start can tell an edited ``intents.json`` or skill
+    example from a model that is still current (known issue #15)."""
+    h = hashlib.sha256(embedding_model.encode("utf-8"))
+    for text, label in sorted((e.text, e.label) for e in examples):
+        h.update(b"\0" + text.encode("utf-8") + b"\1" + label.encode("utf-8"))
+    return h.hexdigest()
 
 
 # -- sqlite cache ---------------------------------------------------------------

@@ -23,7 +23,7 @@ from jarvis.core.reasoner import Reasoner
 from jarvis.factory.claude_client import ClaudeClient
 from jarvis.factory.sandbox import SubprocessSandbox
 from jarvis.nlu.classifier import Classifier
-from jarvis.nlu.corpus import build_corpus, intent_meta, write_corpus_db
+from jarvis.nlu.corpus import build_corpus, corpus_digest, intent_meta, write_corpus_db
 from jarvis.nlu.train import TrainResult, latest_version, train
 from jarvis.skills.registry import Registry
 
@@ -43,11 +43,17 @@ def rebuild_nlu(config: Config, registry: Registry) -> TrainResult:
     return result
 
 
+def current_corpus_digest(config: Config, registry: Registry) -> str:
+    """The digest a model trained now would record (see ``corpus_digest``)."""
+    return corpus_digest(build_corpus(manifests=registry.manifests()), config.nlu.embedding_model)
+
+
 def ensure_nlu(config: Config, registry: Registry) -> int:
     """Train v1 if there is no model yet — or retrain if a registered skill
     with examples is missing from the model's labels (a builtin added since
-    the last training), so a new skill is never silently unreachable. Returns
-    the current version."""
+    the last training), so a new skill is never silently unreachable, or if
+    the corpus changed since the model was trained (known issue #15: an edit
+    to ``intents.json`` or a skill's examples). Returns the current version."""
     version = latest_version(config.nlu_model_dir)
     if version is None:
         log.info("no NLU model found — training v1")
@@ -60,6 +66,14 @@ def ensure_nlu(config: Config, registry: Registry) -> int:
     missing = sorted(m.name for m in registry.manifests() if m.examples and m.name not in labels)
     if missing:
         log.info("NLU v%d does not know %s — retraining", version, ", ".join(missing))
+        return rebuild_nlu(config, registry).version
+    try:
+        meta_path = config.nlu_model_dir / f"v{version}" / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return version  # no meta to compare with: the labels check is all there is
+    if meta.get("corpus_digest") != current_corpus_digest(config, registry):
+        log.info("NLU v%d was trained on a different corpus — retraining", version)
         return rebuild_nlu(config, registry).version
     return version
 
