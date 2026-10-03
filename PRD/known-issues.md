@@ -345,3 +345,31 @@ before the skill's examples can, much as `slots.has_lead_in` gates
 `note`/`remember`/`forget_fact`. The orchestrator could check those frames
 first. Alternatively, a dispatch to a learned skill whose utterance starts with
 a removal verb could be treated as unclear.
+
+---
+
+## 19. The pod and the dev brain keep learned skills in different places
+
+**Reported:** 2026-10-03, while planning M7.
+**Status:** open; out of M7's scope by plan.
+**Severity:** a skill the pod builds or repairs by itself (M7) is unknown to the
+dev brain, and the reverse. The two share `data/` but not the learned code.
+
+The pod mounts `/app/jarvis/skills/learned` from its `jarvis-state` PVC. The dev
+brain reads `jarvis/skills/learned/` in its checkout. Everything else that is
+learned lives in the shared `data/`: phrasings, the NLU model versions, a
+skill's version history in `data/skills/_versions/`. Two consequences:
+
+- A learned phrasing whose label is a skill only the pod has is ignored by the
+  dev brain's corpus (`build_corpus` drops labels it has no skill for). This is
+  correct, but it means the dev brain's model differs from the pod's.
+- `data/skills/_versions/<name>/` can hold history for a skill the other brain
+  has never seen, and "go back to the previous version" there restores into
+  the wrong tree.
+
+### Fix, when someone takes it
+
+Move learned skills under `data/` (say `data/skills/learned/`, imported by path
+the way `Registry` already imports the package) so both brains share them, or
+mount the PVC's directory into the dev checkout. Then decide which brain may
+write there: only the one with `[learning] enabled`.

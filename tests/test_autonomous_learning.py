@@ -171,6 +171,26 @@ def test_a_request_that_failed_today_is_not_tried_again(rig):
     assert o.learning.state.requests_today()[0]["status"] == "failed"
 
 
+def test_a_plan_of_one_step_nothing_knows_is_a_capability(rig):
+    """Seen with qwen3:8b on the cluster (2026-10-03): asked about "roll a
+    twenty sided die" it sent a plan of that very sentence rather than
+    "learn". A single step the classifier does not know is a capability."""
+    o = setup(rig, FakeReasoner('{"commands": ["roll a twenty sided die"]}'))
+
+    async def go():
+        await o.handle("unknown", "roll a twenty sided die", 0.1)
+        assert "<learning_it>" in rig.voice.spoken
+        assert list(o._jobs) == ["roll_a_twenty_sided"]
+        await settle(rig)
+    asyncio.run(go())
+
+
+def test_a_plan_with_an_unknown_step_among_known_ones_is_still_dropped(rig):
+    o = setup(rig, FakeReasoner('{"commands": ["search black holes", "roll a die"]}'))
+    asyncio.run(o.handle("unknown", "search black holes and roll a die", 0.1))
+    assert rig.voice.spoken[-1] == "<unknown>" and not o._jobs
+
+
 def test_noise_builds_nothing(rig):
     o = setup(rig, FakeReasoner('{"none": true}'))
     asyncio.run(o.handle("unknown", "uh the", 0.1))

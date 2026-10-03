@@ -121,7 +121,10 @@ Follow this order for any PRD/milestone item — don't skip or reorder steps:
    (`jarvis/remote/server.py`) plus the services' `ThreadingHTTPServer` — and,
    since M5, the knowledge scan (`jarvis/knowledge/__init__.py`:
    `Knowledge.watch` runs each interval scan in an `asyncio.to_thread` worker;
-   cancelling the task waits for it). A leaked or runaway thread doesn't fail a test on
+   cancelling the task waits for it) — and, since M7, the phrasing retrain
+   (`Orchestrator._retrain_phrasings`: the same `RetrainWorker` process as a
+   learning job, plus one `asyncio.to_thread` for the regression gate) and
+   the autonomous build and repair jobs, which are ordinary M2.5 learning jobs. A leaked or runaway thread doesn't fail a test on
    its own, so check for one explicitly:
    - **Tests**: compare `threading.enumerate()` before and after the code
      under test. A test that starts a thread must leave none behind once it
@@ -164,6 +167,7 @@ python -m jarvis edge            # M3: the audio satellite (a mic, a speaker, a 
 python -m jarvis knowledge scan  # M5: index the docs folder now, print what changed
 python -m jarvis knowledge status  # M5: list indexed sources, counts, index backend
 python -m jarvis pair <code> | devices | power | notify "text"   # the watch / paired edges
+python -m jarvis learning [status|log --since 2d|phrasings|undo ID|enable SKILL]  # M7
 ```
 
 `./jarvis-run <args>` is the same with the repo's `.venv`, from any directory.
@@ -394,6 +398,7 @@ same orchestrator runs with a real mic (`audio/`), typed text
 | `factory/` | the skill factory: `flows.py` (teach/edit/revert/remove dialogs), `jobs.py` (background build → validate → permission → sandbox), `claude_client.py` (the only Anthropic caller), `validate.py` (AST allowlist), `sandbox.py` |
 | `remote/` | M3 brain/edge split: `protocol.py`, `server.py`, `edge.py`, `addressing.py`, `intake.py`, `pairing.py`, `firmware.py` (OTA), `powerlog.py`, `supervisor.py` (starts/adopts the two services) |
 | `knowledge/` | M5 RAG: `store.py`, `ingest.py`, `answer.py`, `Knowledge.watch` |
+| `learning/` | M7: `interactions.py` (the per-turn log), `phrasings.py` (words learned from confirmed turns, the corpus's third source), `state.py` (daily caps, disabled skills, events, confusions), `cli.py`. Locked atomic writes: `data/` is shared with the pod |
 | `app.py`, `__main__.py`, `config.py` | assembly per mode, the CLI, `config.toml` + `.env` |
 
 Rules worth knowing before changing things:
@@ -406,7 +411,16 @@ Rules worth knowing before changing things:
 - **Retraining never blocks a turn**: it runs in a worker, and the new model is
   swapped in only at an idle safe point (`_merge_gate`). `ensure_nlu` at
   startup retrains when a skill is unknown to the model or the corpus digest
-  changed.
+  changed — learned phrasings are part of that digest.
+- **Every corpus goes through `Orchestrator._corpus`** (or `app.training_corpus`
+  at startup), which adds the learned phrasings. A retrain built from
+  `build_corpus` alone would silently unlearn them.
+- **M7 learns by itself, within bounds** (`[learning]`): phrasings only for
+  skills, never for a guarded/meta action; builds capped per day; repairs
+  capped per skill per day, then the skill is switched off; a permission
+  beyond pure/notify still waits for a spoken yes unless `auto_permissions`.
+  Builtins are never rewritten — their failures go to
+  `data/learning/builtin-failures.jsonl` for a person.
 - **The edge's import graph stays light** (`tests/test_edge_imports.py`).
 
 ### Adding a builtin skill
@@ -438,3 +452,11 @@ the production k8s pod's `/app/data`** (same directory). Anything that retrains
 the NLU or writes under `data/` changes what the pod loads on its next restart.
 In a worktree, copy `data/` rather than linking it when the work trains,
 teaches or writes there.
+
+Since M7 the pod writes there continuously: `data/interactions/` (every turn)
+and `data/learning/` (learned phrasings, the learning state). The pod is the
+brain that learns; a dev brain on the same `data/` should run with
+`[learning] enabled = false` (it still logs, and still trains on what the pod
+learned at its next start). Learned *skills* are not in `data/`: the pod keeps
+them on its `jarvis-state` PVC, the dev brain in `jarvis/skills/learned/`
+(known issue #19).

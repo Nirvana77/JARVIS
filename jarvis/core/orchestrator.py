@@ -735,6 +735,9 @@ class Orchestrator:
             and self._record.get("path") == "direct"
             and self.config.nlu.threshold <= confidence < self.learning.settings.learn_below
             and self._learnable(label)
+            # known issue #18: "forget how to flip a coin" ran the coin with
+            # remove_skill second — never make that kind of near miss permanent
+            and (self._record.get("runner_up") or [None])[0] not in _META_ACTIONS
         ):
             # it ran, but the classifier was unsure: worth learning the words
             # unless the next turn says it was the wrong thing
@@ -1168,7 +1171,8 @@ class Orchestrator:
             examples = self._latest_registry().manifest(label).examples
         except Exception:  # noqa: BLE001
             examples = []
-        return (examples[0] if examples else label.replace("_", " ")).rstrip(" .?!")
+        meaning = (examples[0] if examples else label.replace("_", " ")).rstrip(" .?!")
+        return meaning[:1].lower() + meaning[1:]
 
     def _regression_gate(self, old, new) -> bool:
         """Blocking: does ``new`` get at least as many of the probes right as
@@ -1400,6 +1404,12 @@ class Orchestrator:
         print("  plan    : " + " · ".join(f'"{t}" -> {lbl} ({c:.2f})' for t, lbl, c in found))
         if not options.plan_commands:
             return None
+        if len(found) == 1 and found[0][1] == UNKNOWN:
+            # M7: a small model asked for something nothing does often re-says
+            # it as a "command" instead of answering "learn" (qwen3:8b, "roll a
+            # twenty sided die"). One step no command knows is a capability.
+            print(f'  learn   : "{found[0][0]}" (a plan nothing knows)')
+            return _reasoning.Thought(learn=found[0][0])
         for step, label, confidence in found:
             if label == UNKNOWN or self._too_unsure_for_meta(label, confidence):
                 log.info("plan dropped: %r is no clearer to the NLU (%s %.2f)", step, label, confidence)

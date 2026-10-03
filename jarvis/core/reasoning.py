@@ -45,7 +45,8 @@ _TASK = (
     '{"commands": ["...", "..."]} when they are asking for things your known '
     "commands do. Write each one the way that command is normally said, in the "
     "order to do them, keeping the speaker's own details (names, numbers, "
-    "durations). Only when the known commands really cover the request.\n"
+    "durations). Only when the known commands really cover the request: never "
+    "a command that is not in the list.\n"
     '{"answer": "..."} for a question or a remark you can answer yourself: one '
     "or two short spoken sentences, in character, using what you have been "
     "asked to remember and the conversation so far when they help. If you do "

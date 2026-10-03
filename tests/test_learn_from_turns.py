@@ -61,6 +61,10 @@ class RankedNLU:
 MAPPING = {
     "flip a coin": ("flip_a_coin", 0.9, [("flip_a_coin", 0.9)]),
     "toss one": ("flip_a_coin", 0.42, [("flip_a_coin", 0.42), ("set_timer", 0.2)]),
+    # known issue #18: a removal that ran the skill it meant to remove
+    "forget how to flip a coin": (
+        "flip_a_coin", 0.43, [("flip_a_coin", 0.43), ("remove_skill", 0.22)]
+    ),
     # unknown, but close: the offline confirm offers flip_a_coin
     "chuck a coin": ("unknown", 0.3, [("flip_a_coin", 0.3), ("set_timer", 0.1)]),
     # unknown and nowhere near
@@ -226,6 +230,16 @@ def test_an_unsure_turn_nobody_corrected_is_learned_at_the_next_turn():
     assert learned(o) == []      # not yet: a correction may still come
     turn(o, "flip a coin")
     assert learned(o) == [("toss one", "flip_a_coin")]
+
+
+def test_an_unsure_turn_whose_runner_up_is_a_meta_action_is_not_learned():
+    """Known issue #18: "forget how to flip a coin" runs flip_a_coin at 0.43
+    with remove_skill second. Learning it would make that mistake permanent."""
+    o = make()
+    o._last_prediction = ("forget how to flip a coin", o.nlu.explain("forget how to flip a coin"))
+    turn(o, "forget how to flip a coin")
+    turn(o, "flip a coin")
+    assert learned(o) == []
 
 
 def test_an_unsure_turn_is_learned_when_the_session_ends():
