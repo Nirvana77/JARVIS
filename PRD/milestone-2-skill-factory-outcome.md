@@ -1,7 +1,7 @@
 # Milestone 2 — skill factory + seamless hot-swap: outcome
 
 **Date:** 2026-09-05
-**Branch:** `milestone-2-skill-factory` (off `develop`, not yet merged)
+**Branch:** `milestone-2-skill-factory`, merged into `develop`
 **Result:** ✅ The skill factory, the `teach`/`edit_skill`/`revert_skill` voice
 dialogs, worker-process retraining, and the idle merge-gate all work
 end-to-end against real subprocesses (real `pytest` runs, real `unshare`

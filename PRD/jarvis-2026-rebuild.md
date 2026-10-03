@@ -54,9 +54,9 @@ TensorFlow entirely** (embeddings + a tiny sklearn head instead), which also
 removes the 3.14 blocker — pending a wheel-availability check on the rest of the
 new audio stack (Phase 0 below).
 
-Blockers already known: the Anthropic key in `.env` is identity-linked and needs
-`ANTHROPIC_WORKSPACE_ID`; `pyaudio` needs `portaudio-devel` (both are the user's
-to resolve, tracked in `check_setup.py`).
+The blockers once listed here are resolved: the Anthropic key resolves the
+model without `ANTHROPIC_WORKSPACE_ID` (`check_setup.py`, 2026-10-03), and
+`pyaudio` left with the 2024 code.
 
 ---
 
@@ -89,6 +89,10 @@ silently and logs what tier it got.
 | NLU, skills, persona, reasoner, factory, knowledge | local | — | ✓ |
 | TTS (Piper) | in-process | — | ✓ `jarvis-voder` loopback service, sentence by sentence |
 | Playback | local | ✓ (`speech` parts) | — |
+
+The edge is either `python -m jarvis edge` (a Pi-class box) or firmware that
+speaks the same protocol — in practice the ESP32-S3 watch (Milestone 3.5),
+which adds pairing, its own tools, OTA updates and a power log.
 
 The remote topology is opt-in. The orchestrator is the same in every mode. Only
 the injected `wake`/`mic`/`stt`/`tts` objects differ: `RemoteLink` on the brain
@@ -314,6 +318,9 @@ directory, no sandboxing involved.
 
 ## Migration mapping
 
+Complete: the old column was deleted on 2026-10-03 (`PRD/steady-ship-outcome.md`);
+`main.py` is the thin shim.
+
 | Old | New |
 |---|---|
 | `main.py` | `jarvis/__main__.py` + thin `main.py` shim |
@@ -531,6 +538,27 @@ criteria on a real GPU brain and Pi edge over the internet, with per-stage
 latency logged against the budget: segment flush < 200 ms, transcription
 < 800 ms, first speech < 500 ms.
 
+### Milestone 3.5 — the ESP32-S3 watch as an edge — ✅ SHIPPED (2026-09-28 → 10-02)
+
+Plan: `PRD/milestone-3.5-esp32-edge.md` (draft of 2026-09-28); outcome, written
+afterwards from the history: `PRD/milestone-3.5-esp32-edge-outcome.md`.
+
+The plan was a push-to-talk watch speaking protocol v1 with **the brain
+unmodified** and the firmware in this repo. What shipped kept the protocol and
+the push-to-talk, but the firmware lives in its own repo
+(`Nirvana77/esp32-s3-touch-amoled-2.06`) and the brain grew five things for it:
+
+- **Edge tools** — an edge declares typed tools in `hello`; the brain registers
+  them as skills (`origin` `edge`) and calls them (`call` / `result`).
+- **Pairing** — a device without a token pairs with an X25519 key and a 6-digit
+  code approved on the brain (`python -m jarvis pair`).
+- **Firmware updates** — `data/firmware/<device>.bin` offered over the link,
+  fetched over `GET /firmware`; "update the watch", "force update".
+- **Power log** — the watch's SD-card log fetched as `file` messages and read
+  (`python -m jarvis power`, "how was the watch battery today?").
+- **Notifications** — `python -m jarvis notify`, queued while the watch is
+  away; background jobs talk to the device that asked.
+
 ### Milestone 4 — misheard-command reasoning — ✅ DONE (2026-10-01)
 
 Outcome, and the decisions this section left open:
@@ -627,13 +655,15 @@ Plan: `PRD/milestone-5-knowledge-base.md`; outcome:
   to the M3 segmenter.
 - systemd user services for the all-in-one mode, `serve` and `edge`. The
   `jarvis-whisper` / `jarvis-voder` units already ship in M3.
-- Packaging (`pyproject.toml`, including a light edge-only install), tests,
-  README/CLAUDE.md rewrite.
-- **Skill factory repair loop.** Today `factory/jobs.py` runs one pass of
-  build → validate → sandbox tests → dry-run, and the first failure ends the
-  learning job. Instead, run it as a loop: when a stage fails, send the failure
-  back to Claude and ask it to fix the code, then re-run the whole gate on the
-  new code.
+- Packaging (`pyproject.toml`, including a light edge-only install).
+- ~~README/CLAUDE.md rewrite; delete the legacy TF path~~ — done 2026-10-03
+  (`PRD/steady-ship-outcome.md`).
+- **Skill factory repair loop.** *Partly there already*: since 2026-09-27
+  `factory/jobs.py` retries up to `[factory] max_generate_attempts` (5), feeding
+  the build / validation / sandbox failure back to Claude — but as a **fresh
+  prompt** with the failure appended, not a continued conversation. What is
+  left is the shape below: a follow-up turn in the same `messages` list, and
+  the bounds and no-repair rules checked against it.
   - **Continue the conversation.** A repair is a follow-up turn in the same
     `messages` list, not a fresh prompt. It carries Claude's previous reply,
     then a user turn that names the failed stage and includes its output. The

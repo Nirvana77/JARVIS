@@ -26,18 +26,15 @@ it with `git remote set-url origin https://Nirvana77@github.com/Nirvana77/JARVIS
 another account gets a 403 even with the right author set, since authorship and
 push permission are unrelated.
 
-**The rebuild is underway.** `PRD/jarvis-2026-rebuild.md` is the canonical
-spec; `PRD/milestone-N-*.md` are per-milestone plans and
-`PRD/milestone-N-*-outcome.md` their outcomes once shipped.
-`PRD/known-issues.md` lists what is known-broken and not yet fixed — **read it
-before debugging something that looks new**, and add to it rather than fixing
-in passing when a bug is out of the current milestone's scope. The rebuilt
-package lives in `jarvis/` (`python -m jarvis ...`) alongside the untouched
-legacy `main.py`/`libs/`/`actions/` this file otherwise describes — see the
-PRD for the target architecture and the migration mapping between the two.
-There **is** now a test suite (`python -m pytest`, `tests/`) covering
-`jarvis/` — the "There is no test suite" note further down is about the
-legacy code only.
+**Where things are.** `PRD/jarvis-2026-rebuild.md` is the canonical spec;
+`PRD/milestone-N-*.md` are per-milestone plans and `PRD/milestone-N-*-outcome.md`
+their outcomes once shipped. `PRD/known-issues.md` lists what is known-broken
+and not yet fixed — **read it before debugging something that looks new**, and
+add to it rather than fixing in passing when a bug is out of the current
+milestone's scope. The code is the `jarvis/` package (`python -m jarvis ...`);
+the 2024 scripts (`libs/`, `actions/`, the TensorFlow model) are gone, and
+`main.py` is a shim for `python -m jarvis`. Tests: `python -m pytest`
+(`tests/`).
 
 ## One worktree and branch per conversation
 
@@ -139,52 +136,44 @@ Follow this order for any PRD/milestone item — don't skip or reorder steps:
 
 ## Setup
 
-Install dependencies:
 ```bash
-pip install anthropic wolframalpha ecapture wikipedia pyttsx3 nltk python-dotenv SpeechRecognition openpyxl pyaudio tensorflow
-python -c "import nltk; [nltk.download(p) for p in ('punkt', 'punkt_tab', 'wordnet', 'omw-1.4')]"
+pip install -r requirements.txt       # Python 3.12+; the edge and the two services have their own
+sudo dnf install portaudio-devel      # or portaudio19-dev on Debian — sounddevice needs it
+cp config.example.toml config.toml    # per-machine, git-ignored; the example documents every key
+python -m jarvis models pull          # Whisper + the Piper voice
+python check_setup.py                 # ✓/✗/– report; exits non-zero only on a required row
 ```
-(`wolframalpha` and `ecapture` are listed in the historical install instructions but are not imported anywhere in the current code. `punkt_tab` is required by NLTK ≥ 3.9's `word_tokenize`.)
 
-**Python version:** `tensorflow` has no wheels for Python 3.14 — `libs/brain.py` and `libs/training.py` (the only TF consumers) will not import there. Use a **Python 3.12** venv if you need the intent classifier; the Claude Q&A path and the rest run on 3.14. The checked-in `JARVIS_model.keras` is a Keras-2 file from 2024 that current Keras cannot load, so it must be retrained regardless (which happens automatically — it is well past the 7-day staleness trigger).
-
-**System package:** `pyaudio` needs PortAudio headers — `sudo dnf install portaudio-devel` (Fedora) / `sudo apt install portaudio19-dev` (Debian).
-
-Create a `.env` file in the project root:
-```
-language="en"
-ANTHROPIC_API_KEY="YOUR_ANTHROPIC_API_KEY"
-HF_TOKEN="hf_..."   # optional — faster / rate-limited Hugging Face model downloads
-```
-`libs/anthropic_helper.py` reads `ANTHROPIC_API_KEY` (the name the Anthropic SDK picks up on its own), falling back to the legacy `api_key` name if that's all an older `.env` has. Optional: `ANTHROPIC_MODEL` overrides the default model (`claude-opus-5`); `ANTHROPIC_WORKSPACE_ID` is sent as the `anthropic-workspace-id` header and is **required for identity-linked API keys** (otherwise calls 400 with `anthropic-workspace-id is required`). `language` overrides the default in `command_helper` and is passed to Google Web Speech for recognition. `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) is read by `jarvis.config` and exported so `fastembed` / `faster-whisper` / `huggingface_hub` download the NLU, STT, and Piper models authenticated instead of anonymously.
-
-Run `python check_setup.py` to verify the environment: it prints a ✓/✗/– report for imports, NLTK data, the API key (masked), and whether the configured Claude model resolves.
+**Secrets are in `.env` only**, never `config.toml`: `ANTHROPIC_API_KEY` (or the
+older `api_key`; used by the skill factory and nothing else), optional
+`ANTHROPIC_MODEL` (default `claude-opus-5`) and `ANTHROPIC_WORKSPACE_ID` (sent as
+the `anthropic-workspace-id` header; needed only for identity-linked keys),
+`HF_TOKEN` (authenticated model downloads), `JARVIS_EDGE_TOKENS` (brain) /
+`JARVIS_EDGE_TOKEN` (edge). Env overrides of config: `JARVIS_PERSONA`,
+`language`.
 
 ## Running
 
 ```bash
-python main.py           # Run JARVIS
-python libs/training.py  # Train the NLP model manually
-python libs/brain.py     # Type sentences to see raw intent classification
-```
-
-### The rebuilt package (`jarvis/`)
-
-```bash
 python -m jarvis                 # all-in-one voice loop (wake word + mic + speaker)
-python -m jarvis text            # the same brain, typed in and printed out
+python -m jarvis text            # the same brain, typed in and printed out (--script FILE)
 python -m jarvis --selftest      # load NLU + persona, list skills, exit 0
+python -m jarvis nlu rebuild     # retrain the classifier now
 python -m jarvis serve           # M3: the brain, waiting for an audio edge
 python -m jarvis edge            # M3: the audio satellite (a mic, a speaker, a socket)
 python -m jarvis knowledge scan  # M5: index the docs folder now, print what changed
 python -m jarvis knowledge status  # M5: list indexed sources, counts, index backend
+python -m jarvis pair <code> | devices | power | notify "text"   # the watch / paired edges
 ```
+
+`./jarvis-run <args>` is the same with the repo's `.venv`, from any directory.
 
 **All-in-one is still the default.** `serve` / `edge` are the opt-in split
 from Milestone 3 (`PRD/milestone-3-remote-edge.md`): the brain runs where the
-GPU is, the edge runs in the room.
+GPU is, the edge runs in the room. The edge in daily use is the ESP32-S3 watch
+(firmware repo `Nirvana77/esp32-s3-touch-amoled-2.06`, `PRD/milestone-3.5-esp32-edge.md`).
 
-#### The knowledge base (M5)
+### The knowledge base (M5)
 
 `PRD/milestone-5-knowledge-base.md` is the plan; the code is `jarvis/knowledge/`.
 
@@ -223,7 +212,7 @@ the repo's `data/`.** Point a real config at tmp directories with
 test that builds JARVIS from the real config without it scans whatever is in
 the developer's folder — slow, and nondeterministic.
 
-#### The remote edge (M3)
+### The remote edge (M3)
 
 `python -m jarvis serve` **starts the two services itself** — separate
 processes, adopted if already running, restarted if they die, stopped with the
@@ -264,7 +253,7 @@ Secrets live in `.env`: the edge reads `JARVIS_EDGE_TOKEN`, the brain reads
 `JARVIS_EDGE_TOKENS="livingroom:s3cret,kitchen:other"`. `[server]` refuses to
 listen on a routable address without TLS unless `allow_insecure = true`.
 
-##### Over the internet, via Cloudflare Tunnel
+#### Over the internet, via Cloudflare Tunnel
 
 The recommended shape, because it needs no certificate, no open port and no
 port-forwarding — `cloudflared` runs **on the brain machine** and dials out:
@@ -312,7 +301,7 @@ does not need it, and it puts unencrypted audio on your LAN. If you want it
 anyway (a second edge on the LAN that skips the tunnel), that is what
 `allow_insecure = true` is for, and the warning it logs is accurate.
 
-###### `cloudflared` in Docker, and tunnel replicas
+##### `cloudflared` in Docker, and tunnel replicas
 
 From a container, `cloudflared` reaches the brain over the Docker bridge, not
 loopback. Two consequences:
@@ -388,76 +377,64 @@ genuinely off until the button is held) and "turn off the mic"; Ignore still
 listens and discards. Nothing is sent to a third party, and audio and tokens
 are never logged.
 
-Always run from the repo root. All file paths are resolved relative to the current working directory: `intents.json`, `JARVIS_model.keras`, `words.pkl`, `classes.pkl`.
+## Architecture (`jarvis/`)
 
-There is no test suite for this legacy code path. (`jarvis/` — the rebuild —
-has one: `python -m pytest`, see the top of this file and the PRD.)
+One asyncio loop — the **orchestrator** — owns the NLU and the skill registry
+and drives a turn: hear → classify → dispatch a skill → speak. Everything that
+touches hardware is injected in four roles (`wake`, `mic`, `stt`, `tts`), so the
+same orchestrator runs with a real mic (`audio/`), typed text
+(`audio/text_io.py`) or a remote edge (`remote/server.py`'s `RemoteLink`).
 
-### Model (re)training triggers
+| package | what is there |
+|---|---|
+| `core/` | `orchestrator.py` (turns, standby, follow-up window, merge gate, safe points, the unclear-turn path), `context.py` (what a skill gets: `ctx.say/data_dir/llm/http/edges/knowledge/memory`), `persona.py`, `reasoner.py` (optional Ollama), `mishear.py` + `reasoning.py` (M4/M4.5 prompts and parsing), `memory.py` + `forgetting.py` (per-device memory), `interrupt.py`, `speech.py` |
+| `audio/` | `wake.py` (openwakeword 0.4.0), `capture.py`, `stt.py` (faster-whisper), `tts.py` + `player.py` (Piper), `segment.py` (the edge's VAD), the whisper/voder service clients, `text_io.py` |
+| `nlu/` | `corpus.py` (`intents.json` seed + every skill's `MANIFEST.examples`), `train.py` (MiniLM embeddings + `LogisticRegression`, versions in `data/models/nlu/v<N>/`, last 3 kept, corpus digest in `meta.json`), `classifier.py` (threshold + similarity floor → `unknown`), `slots.py`, `compound.py`, `retrain_worker.py` |
+| `skills/` | `contract.py` (`SkillManifest`, `run(ctx, **params) -> str`), `registry.py` (builtin + learned + edge tools; `origin` is set from where a skill was found), `builtin/`, `learned/` (factory output, git-ignored), `edge.py` (an edge's declared tools as skills) |
+| `factory/` | the skill factory: `flows.py` (teach/edit/revert/remove dialogs), `jobs.py` (background build → validate → permission → sandbox), `claude_client.py` (the only Anthropic caller), `validate.py` (AST allowlist), `sandbox.py` |
+| `remote/` | M3 brain/edge split: `protocol.py`, `server.py`, `edge.py`, `addressing.py`, `intake.py`, `pairing.py`, `firmware.py` (OTA), `powerlog.py`, `supervisor.py` (starts/adopts the two services) |
+| `knowledge/` | M5 RAG: `store.py`, `ingest.py`, `answer.py`, `Knowledge.watch` |
+| `app.py`, `__main__.py`, `config.py` | assembly per mode, the CLI, `config.toml` + `.env` |
 
-- **Missing model**: if `JARVIS_model.keras` is absent on startup, `train_model()` runs before anything else.
-- **Stale model**: on startup, if `getctime('JARVIS_model.keras')` is more than 7 days (604800s) old, it retrains.
-- **`intents.json` changed**: a background thread (`my_thread_function` in `command_helper.py`) polls `intents.json`'s mtime every second and calls `train_model()` when it changes.
-- **`train` intent**: saying a "train" pattern spawns `training.train_model()` on a thread.
+Rules worth knowing before changing things:
 
-## Network dependencies
+- **Claude teaches, never answers.** It is called only by the factory. Answers
+  come from skills, the knowledge base and the optional local reasoner.
+- **The reasoner never picks a skill.** It suggests phrases; each goes through
+  the real classifier, and nothing it suggests runs unconfirmed.
+- **Skills import nothing from the core stack**; they only use `ctx`.
+- **Retraining never blocks a turn**: it runs in a worker, and the new model is
+  swapped in only at an idle safe point (`_merge_gate`). `ensure_nlu` at
+  startup retrains when a skill is unknown to the model or the corpus digest
+  changed.
+- **The edge's import graph stays light** (`tests/test_edge_imports.py`).
 
-Every turn of the main loop needs the internet:
-- **Speech-to-text**: `takeCommand()` uses `speech_recognition.recognize_google` (Google Web Speech API).
-- **`search` action**: `wikipedia.summary`.
-- **`ask_chat_gpt` action**: Anthropic `claude-opus-5` via `messages.create` (`libs/anthropic_helper.py`).
+### Adding a builtin skill
 
-## Architecture
+A module in `jarvis/skills/builtin/` with a `MANIFEST = SkillManifest(...)`
+(name = module name, description, `examples` — these train the classifier —
+`params`, `permissions`) and `def run(ctx, **params) -> str` returning the line
+to speak. If its params need extracting from the utterance, add its rule to
+`nlu/slots.py`. Add it to `tests/test_skills.py`'s roster. The model retrains on
+the next start.
 
-JARVIS is a voice assistant with an intent-classification NLP pipeline.
+### Adding an intent handled by the orchestrator
 
-1. **`main.py`** — Entry point. `llm.init()` → `commands.init()` → `commands.run()`.
+Seed patterns go in `intents.json` (`tag`, `patterns`, `responses`, `action`) —
+for session and meta actions (greeting, goodbye, teach, forget …) whose
+handling lives in the orchestrator, not in a skill. The trainer never writes to
+`intents.json`.
 
-2. **`libs/command_helper.py`** — Core loop and dispatcher.
-   - `run()` starts the `intents.json` watcher thread, then loops: `takeCommand()` → `brain.predict_class()` → `brain.get_response()` → `runCommand()`.
-   - **Standby state machine** (`standby` global, starts `True`):
-     - action `start` → wake (`standby = False`); says "already awake" if not in standby.
-     - action `exit` → if awake, go to standby; if already in standby, `shutdown()`.
-     - action `shutdown` → always `shutdown()` (speaks goodbye, joins watcher thread, `exit()`).
-     - While `standby is True`, every other action is ignored — JARVIS must be woken first.
-   - Non-standby actions: `none` (just speak the response), `train` (retrain on a thread), `ask_chat_gpt` (two-step: prompts "What is your question?", takes a second voice input, calls Claude), or anything else → dynamic import of `actions/<action>.py` and call `run(userIntent)`.
-   - `userIntent` is the **full lowercased query string, including the command verb** (e.g. `"search cats"`). Actions do not strip the verb.
+### Adding a watch tool
 
-3. **`libs/brain.py`** — Inference. `init()` loads `JARVIS_model.keras` + `words.pkl` + `classes.pkl`. `predict_class()` does bag-of-words encoding, runs the net, keeps intents above `ERROR_THRESHOLD = 0.25` sorted by probability. `get_response()` returns `{response, tag, action}` for the top intent, or an `action: 'none'` "could you rephrase" fallback when nothing clears the threshold.
+Tools are declared by the edge in `hello`, not written here: see
+`docs/edge-tools.md` in the watch repo. The brain stores them in
+`data/remote/tools/<device_id>.json` and learns them in the background.
 
-4. **`libs/training.py`** — `train_model()` tokenizes/lemmatizes `intents.json` patterns, builds bag-of-words vectors, and trains a Sequential net: Dense(128)→ReLU→Dropout(0.5)→Dense(64)→ReLU→Dropout(0.5)→Dense(n_classes)→softmax, `SGD(lr=0.01, momentum=0.9, nesterov=True)`, 200 epochs, batch size 5. Writes `JARVIS_model.keras`, `words.pkl`, `classes.pkl` to the repo root.
+### `data/` on this machine
 
-5. **`libs/voice.py`** — TTS via `pyttsx3`; `speak()` also prints `Jarvis: <text>`. `init()` selects `voices[0]`.
-
-6. **`libs/anthropic_helper.py`** — `ask_claude(prompt)` wraps `messages.create` (`claude-opus-5` by default, `ANTHROPIC_MODEL` to override; adaptive thinking, `max_tokens=1024`, voice-oriented system prompt). `init()` sets `client` and `model`, reading the key from `ANTHROPIC_API_KEY`/`api_key` and passing `anthropic-workspace-id` when `ANTHROPIC_WORKSPACE_ID` is set.
-
-7. **`actions/`** — Plugin modules, each with `run(query)`. The intent's `action` field is the module name: `importlib.import_module(f'actions.{action}')`. `ImportError`/`AttributeError` degrade to "Sorry, I don't know how to do that yet."
-
-### Intent ↔ action wiring (current state)
-
-`intents.json` and `actions/` are **not fully in sync**:
-
-| intent tag | `action` | module resolved | status |
-|---|---|---|---|
-| `search` | `search` | `actions/search.py` | works |
-| `open` | `open` | `actions/open.py` | **broken** — module is named `openApp.py`, so this raises `ImportError` |
-| (none) | — | `actions/play.py` | orphaned — no intent triggers it |
-| (none) | — | `actions/write.py` | orphaned — no intent triggers it |
-| `train` | `train` | handled inline in `command_helper` | works |
-| `greeting`/`goodbye`/`shutdown` | `start`/`exit`/`shutdown` | handled inline | works |
-| `ask_chat_gpt` | `ask_chat_gpt` | handled inline | code path exists but no intent uses it |
-
-Also note `goodbye` and `shutdown` share several identical patterns (`"shutdown JARVIS"`, `"stop JARVIS"`, ...), which makes classification between them unreliable.
-
-`actions/write.py` imports `takeCommand` from `libs.command_helper` at module load — keep that import cycle in mind when refactoring `command_helper`.
-
-## Adding a New Intent / Action
-
-1. Add an entry to `intents.json` with `tag`, `patterns`, `responses`, and `action`.
-2. If the action is new, create `actions/<action>.py` with a `run(userIntent)` function. **The filename must exactly match the `action` string.**
-3. The model retrains automatically (watcher thread on save, or on next run) — or run `python libs/training.py`.
-
-## Generated Files (not committed)
-
-- `JARVIS_model.keras` — trained Keras model
-- `words.pkl` / `classes.pkl` — vocabulary and class pickles from training
+`data/` is per-machine and git-ignored, and **on the owner's machine it is also
+the production k8s pod's `/app/data`** (same directory). Anything that retrains
+the NLU or writes under `data/` changes what the pod loads on its next restart.
+In a worktree, copy `data/` rather than linking it when the work trains,
+teaches or writes there.

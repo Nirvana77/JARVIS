@@ -1,89 +1,19 @@
 # J.A.R.V.I.S.
 
-Just A Rather Very Intelligent System (J.A.R.V.I.S.) from Iron Man — a voice
-assistant with an intent-classification NLP pipeline and a Claude-backed
-free-form Q&A fallback.
+Just A Rather Very Intelligent System, after the one in Iron Man: a voice
+assistant that runs on your own machines. Hearing, understanding, answering and
+speaking are all local. A small embedding-based classifier routes what you say
+to a skill, and Piper speaks the answer in the persona's voice.
 
-## Install
+Two things reach outside, and only when you ask for them. Claude **teaches**
+JARVIS new skills: "learn how to flip a coin" has Claude write a Python skill,
+which JARVIS validates, sandboxes, keeps after you confirm, and runs itself from
+then on. Some skills fetch from the web (Wikipedia, YouTube). Claude is never
+used to answer questions. Answers come from the skills, your own notes and,
+optionally, a local Ollama model.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-
-pip install anthropic wikipedia pyttsx3 nltk python-dotenv SpeechRecognition openpyxl pyaudio tensorflow
-python -c "import nltk; [nltk.download(p) for p in ('punkt', 'punkt_tab', 'wordnet', 'omw-1.4')]"
-```
-
-### System packages
-
-`pyaudio` builds against PortAudio, so install the dev headers first:
-
-```bash
-sudo dnf install portaudio-devel      # Fedora
-# sudo apt install portaudio19-dev    # Debian/Ubuntu
-```
-
-### Python version note
-
-`tensorflow` (used by the intent classifier in `libs/brain.py` /
-`libs/training.py`) has **no wheels for Python 3.14 yet**. Use a **Python 3.12**
-virtualenv if you need the intent model. The Claude Q&A path and everything
-else run fine on 3.14.
-
-## Configure
-
-Create a `.env` file in the project root:
-
-```
-language="en"
-ANTHROPIC_API_KEY="sk-ant-..."
-# ANTHROPIC_WORKSPACE_ID="wrkspc_..."   # required only for identity-linked API keys
-# ANTHROPIC_MODEL="claude-sonnet-5"     # optional; default is claude-opus-5
-
-# Optional, for the rebuilt assistant (see below):
-# HF_TOKEN="hf_..."                     # authenticated model downloads
-# JARVIS_EDGE_TOKENS="livingroom:s3cret"  # on the brain: one per edge device
-# JARVIS_EDGE_TOKEN="s3cret"              # on an edge: its own
-```
-
-Secrets live only here. Everything else is in `config.toml` — start from
-`config.example.toml`, which documents every setting.
-
-If your key is **identity-linked** (calls fail with
-`anthropic-workspace-id is required`), either add `ANTHROPIC_WORKSPACE_ID`
-(find it in the Anthropic Console workspace URL) or issue a standard
-workspace-scoped API key.
-
-## Verify
-
-```bash
-python check_setup.py
-```
-
-Prints a ✓/✗/– report for dependencies, NLTK data, the API key (masked), and
-whether the configured Claude model resolves.
-
-## Run
-
-```bash
-python main.py           # Run JARVIS
-python libs/training.py  # Train the NLP model manually
-python libs/brain.py     # Type sentences to see raw intent classification
-```
-
-Always run from the repo root — `intents.json`, `JARVIS_model.keras`,
-`words.pkl`, and `classes.pkl` are resolved relative to the working directory.
-
----
-
-# The 2026 rebuild (`jarvis/`)
-
-Everything above is the original code, kept working and untouched. The rebuilt
-assistant lives in `jarvis/` and runs as `python -m jarvis`: a local voice loop
-with an openwakeword wake word, faster-whisper for speech, an embedding-based
-NLU, Piper for speech out, and a Claude-backed skill factory that writes new
-skills on request. `PRD/jarvis-2026-rebuild.md` is the specification;
-`config.example.toml` is a commented copy of every setting.
+`PRD/jarvis-2026-rebuild.md` is the specification; `PRD/` also holds the plan and
+outcome of each milestone and `PRD/known-issues.md`.
 
 ## Install
 
@@ -110,21 +40,58 @@ meant to fail independently:
 | `services/whisper/requirements.txt` | the warm transcription service |
 | `services/voder/requirements.txt` | the warm speech service |
 
-Python 3.14 is fine for all of it (unlike the TensorFlow-era code above).
+## Configure
+
+Secrets live only in `.env`, in the project root:
+
+```
+ANTHROPIC_API_KEY="sk-ant-..."          # the skill factory; nothing else uses it
+# ANTHROPIC_WORKSPACE_ID="wrkspc_..."   # only for identity-linked keys
+# ANTHROPIC_MODEL="claude-opus-5"       # optional override
+# HF_TOKEN="hf_..."                     # authenticated model downloads
+# JARVIS_EDGE_TOKENS="livingroom:s3cret"  # on the brain: one per edge device
+# JARVIS_EDGE_TOKEN="s3cret"              # on an edge: its own
+```
+
+Everything else is in `config.toml`. `config.example.toml` documents every
+setting. `JARVIS_PERSONA` (env) picks the persona (`jarvis` or `plain`, a
+folder under `personas/`).
+
+## Run
 
 ```bash
 python -m jarvis                 # the voice loop — say "hey jarvis"
 python -m jarvis text            # the same brain, typed in and printed out
 python -m jarvis --selftest      # load NLU + persona, list skills, exit 0
 python -m jarvis mic             # live microphone meter, for tuning the VAD
+python -m jarvis nlu rebuild     # retrain the classifier now
 python -m jarvis serve           # the brain, waiting for an audio edge
 python -m jarvis edge            # the audio satellite
 python -m jarvis knowledge scan  # index the knowledge docs folder now
 python -m jarvis knowledge status  # what is indexed, and which search backend
+python -m jarvis pair <code>     # approve a device that is pairing
+python -m jarvis devices         # who may connect
+python -m jarvis power           # the watch's power log
+python -m jarvis notify "text"   # send a notification to the edge
 ```
 
-`./jarvis-run <args>` does the same thing using the repo's own virtualenv, from
-any directory.
+`./jarvis-run <args>` does the same using the repo's own virtualenv, from any
+directory. `python main.py` still works; it is the same as `python -m jarvis`.
+
+## Teaching it a skill
+
+*"Learn how to flip a coin."* JARVIS asks a few questions (a name, what it
+should do, an example) and then works on it **in the background**. You can
+keep using it meanwhile. Claude writes the module and its tests. JARVIS checks
+the code statically (no network, shell or file access unless you grant it by
+voice), runs the tests in a sandbox, and retrains its classifier. At the next
+pause it asks *"Shall I keep it?"*, and after a yes the skill is live. *"Edit
+the coin flip skill"*, *"revert the coin flip skill"* and *"forget how to flip
+a coin"* manage what it has learned. The last three versions of each skill and
+of the classifier are kept.
+
+The classifier retrains on its own when `intents.json` or a skill's examples
+change.
 
 ## When it isn't sure what you said
 
@@ -211,6 +178,12 @@ belongs. So JARVIS can be split in two:
 
 The two talk over a versioned WebSocket protocol, and the link may cross the
 internet. All-in-one `python -m jarvis` is still the default; this is opt-in.
+
+`python -m jarvis edge` is one edge. The other is firmware: an ESP32-S3 watch
+(Waveshare ESP32-S3-Touch-AMOLED-2.06, repo `Nirvana77/esp32-s3-touch-amoled-2.06`)
+speaks the same protocol, with push-to-talk on its button. It pairs itself,
+declares its own tools (timers, find-my-watch, notifications), takes firmware
+updates over the link and uploads its power log. The sections below cover each.
 
 ### The brain's two services
 
@@ -507,4 +480,7 @@ set `tls_cert`/`tls_key` or explicitly set `allow_insecure = true`.
 python -m pytest
 ```
 
-Covers `jarvis/` only; the legacy code above has no test suite.
+No test touches a real network, microphone, GPU or speaker, and the suite must
+pass whatever your own `config.toml`, `data/` and `~/jarvis/knowledge` hold — a
+test whose result depends on them is a bug (`tests/remote_harness.py`'s
+`make_config` and `tests/knowledge_harness.py` point a config at tmp dirs).

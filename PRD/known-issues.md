@@ -2,7 +2,8 @@
 
 Things that are wrong and not yet fixed, with enough written down that the fix
 doesn't start from zero. Fixed entries move out of here into the milestone
-outcome doc that fixed them.
+outcome doc that fixed them (#4, #6, #7, #11, #12, #13 and #15:
+`PRD/steady-ship-outcome.md`).
 
 ---
 
@@ -119,62 +120,6 @@ Split **thinking** from **speaking**:
 rule) and `RemoteLink` itself (one per brain → one per device), plus the
 edge's mute-while-playing in `jarvis/remote/edge.py`. Probably a milestone of
 its own rather than a fix.
-
----
-
-## 4. `tests/test_remote_auth.py` reads the machine's real `config.toml`
-
-**Reported:** 2026-10-01, while running the suite for the factory fix.
-**Status:** open, not fixed.
-**Severity:** four tests fail on any machine whose `config.toml` sets
-`[server] allow_insecure = true`; they pass in a clean checkout.
-**Owner:** unassigned.
-
-`test_a_routable_address_without_tls_is_refused`,
-`test_the_proxy_header_is_ignored_unless_it_is_configured`,
-`test_loopback_stays_trusted_with_no_peers_configured` and
-`test_trusted_peers_without_a_header_name_do_nothing` build their config from
-the local `config.toml`, so the owner's real `[server]` settings leak in and
-the "refuses without TLS" path never triggers. Fix: build the `[server]`
-section explicitly in the test (or load from a `tmp_path` config) instead of
-inheriting the developer's file.
-
----
-
-## 6. `tests/test_skills.py` reads the machine's real edge tools
-
-**Reported:** 2026-10-01, while running the suite for M4.
-**Status:** open, not fixed.
-**Severity:** `test_registry_discovers_the_builtins` fails on any machine an
-edge has declared tools to; it passes in a clean checkout. Same family as #4.
-**Owner:** unassigned.
-
-The test passes `packages=(BUILTIN_PACKAGE,)` precisely so that locally
-learned skills don't leak in — but `Registry.discover` also registers every
-tool stored under `config.remote_dir` (`data/remote/tools`), whatever
-`packages` says. On this machine that adds 12 names (`set_timer`,
-`find_watch`, `notify`, …). Fix: point the test's config at an empty
-`tmp_path` data dir, or give `discover` a way to skip the edge store.
-
----
-
-## 7. A learned skill's params are never filled
-
-**Reported:** 2026-10-01, from the M4 dry run.
-**Status:** open, not fixed.
-**Severity:** a learned skill that takes an argument always runs with its
-default. "flip three coins" flips one coin.
-**Owner:** unassigned.
-
-`Orchestrator._params_for` extracts typed params only for `origin == "edge"`
-(`_slots.extract_typed`). Every other skill goes through `_slots.extract`,
-which knows four builtin labels (`search`, `play`, `open_app`, `note`) and
-returns `{}` for anything else — so `flip_a_coin`'s declared
-`count: integer` is never set. Likely fix: use `extract_typed` for any
-manifest whose `params` declare types, not just edge tools; check what the
-factory's generated manifests use for type names first (`"integer"` here,
-where edge tools use their own vocabulary).
-
 
 ---
 
@@ -310,60 +255,6 @@ or start its workers up front so there is nothing left to add.
 
 ---
 
-## 11. An utterance queued for an edge that left starts empty sessions
-
-**Reported:** 2026-10-01, by the review of M4.5 (read, not reproduced end to end).
-**Status:** open, not fixed. Pre-dates M4.5.
-**Severity:** JARVIS talks to nobody — "Yes, sir?", "Standing by, sir.", about
-once a second — until an edge reconnects.
-**Owner:** unassigned.
-
-`RemoteLink.triggered()` is "the queue is not empty". While no edge is
-connected, `record_utterance` returns silence *without* taking anything off
-the queue (`_disconnected` is set), so an utterance that was submitted and not
-yet taken keeps `triggered()` true: `_await_wake` fires, the session hears
-nothing, acknowledges, stands by, and it starts again.
-
-M4.5 made one consequence worse and fixed that one: the leftover utterance
-used to be answered for whichever edge connected next, and would now have
-been *remembered* under it too. `RemoteLink.connect` drops what a different
-device left queued. The same device coming back still gets its words, and the
-loop above is untouched. Fix: do not report `triggered()` while disconnected,
-or decide that a disconnect drops the queue.
-
----
-
-## 12. A device id may end in a newline
-
-**Reported:** 2026-10-01, by the review of M4.5.
-**Status:** open in `jarvis/remote/protocol.py`; fixed in `jarvis/core/memory.py`.
-**Severity:** low. Not a path traversal — an odd filename.
-**Owner:** unassigned.
-
-`_DEVICE_ID_RE` ends in `$` and is used with `.match`; `$` also matches just
-before a trailing newline, so `"watch\n"` is a valid device id at `hello` and
-becomes `data/remote/…/watch\n.json`. `jarvis/remote/firmware.py` uses the
-same pattern. Fix: `\Z`, or `fullmatch` (what `memory.is_device_id` does).
-
----
-
-## 13. "I'm unsure" removes a skill
-
-**Reported:** 2026-10-01, by the review of M4.5.
-**Status:** open in `jarvis/factory/flows.py`; M4 / M4.5 no longer use it.
-**Severity:** a skill is quarantined, or a teach dialog proceeds, on a reply
-that was not a yes.
-**Owner:** unassigned.
-
-`flows.ask_yes_no` looks for the yes-words *anywhere* in the reply: "unsure"
-contains "sure", "incorrect" contains "correct", "yesterday" contains "yes".
-It is what confirms *"Remove the 'x' skill for good, sir?"* (`RemoveSkillFlow`)
-and *"… Is that right, sir?"* (`TeachFlow`). `ask_yes_no_or_none`, next to it,
-matches whole words and is what background questions already use. Fix: make
-the two flows use it (and decide what an unclear reply should do there).
-
----
-
 ## 14. A question about the documents that does not sound like one is "unknown"
 
 **Reported:** 2026-10-01, M5 dry run (`PRD/milestone-5-knowledge-base-outcome.md`).
@@ -386,25 +277,6 @@ Ask the knowledge base before giving up on an `unknown`: if a chunk clears
 with Milestone 4 (misheard-command reasoning), which already owns what happens
 to an utterance the NLU could not place — on the voice path a garbled
 transcription must not be answered from a note it happens to resemble.
-
----
-
-## 15. Changing `intents.json` or a skill's examples does not retrain the NLU
-
-**Reported:** 2026-10-01, M5 dry run.
-**Status:** open.
-**Severity:** silent — the old model keeps answering, and nothing says so.
-
-`ensure_nlu` (`jarvis/app.py`) retrains only when a registered skill is missing
-from the model's labels. Editing patterns or examples for intents the model
-already knows changes nothing until `python -m jarvis nlu rebuild`. It showed
-up as a dry run still classifying with the examples from an hour earlier. The
-legacy code watched `intents.json`'s mtime; the rebuild has no equivalent.
-
-### Fix, when someone takes it
-
-Store a hash of the corpus in the model's `meta.json` and have `ensure_nlu`
-compare it.
 
 ---
 
@@ -449,3 +321,27 @@ to the knowledge compose step and skip the rewrite).
   can steer the spoken answer. It stays on this machine, and Claude is never
   involved, but the docs folder is trusted input.
 
+---
+
+## 18. "Forget how to flip a coin" flips a coin
+
+**Reported:** 2026-10-03, the steady-ship dry run.
+**Status:** open.
+**Severity:** a request to remove a skill runs it instead. Harmless for a coin;
+not for a skill that acts.
+
+"forget how to flip a coin" classified as `flip_a_coin` 0.43, against
+`remove_skill` 0.22. Then `flip_a_coin` ran, because a learned skill has no
+lead-in or meta-action bar to clear. The skill's own name in the sentence
+outweighs the frame around it. "remove the flip a coin skill" routes correctly
+(it asks which skill, then confirms). M4.5 already measured `remove_skill`
+losing confidence as classes are added ("you can forget how to flip a coin"
+0.68 → 0.56).
+
+### Fix, when someone takes it
+
+A leading "forget how to" / "remove" / "delete" frame should decide this
+before the skill's examples can, much as `slots.has_lead_in` gates
+`note`/`remember`/`forget_fact`. The orchestrator could check those frames
+first. Alternatively, a dispatch to a learned skill whose utterance starts with
+a removal verb could be treated as unclear.

@@ -1,7 +1,7 @@
 # Milestone 2.5 — background skill learning: outcome
 
 **Date:** 2026-09-21
-**Branch:** `milestone-2.5-background-learning` (off `develop`, not yet merged or committed)
+**Branch:** merged into `develop`
 **Result:** ✅ After the teach/edit/revert dialog, learning runs as a
 background job and the session keeps serving commands. The job's questions
 (permission grant, "Shall I keep it?") and notices are spoken only at safe

@@ -1,7 +1,7 @@
 # Milestone 5 — knowledge base (RAG): outcome
 
 **Date:** 2026-10-01
-**Branch:** `knowledge-base` (off `develop`; committed per stage, not pushed, not merged)
+**Branch:** `knowledge-base`, merged into `develop` (via `reasoning-memory-knowledge`)
 **Result:** ✅ JARVIS answers from the user's own documents and from facts said
 aloud. Files in `[knowledge] docs_dir` and "remember that …" facts are embedded
 into `data/knowledge/kb.sqlite`; `recall` (and "what is …", notes first)
