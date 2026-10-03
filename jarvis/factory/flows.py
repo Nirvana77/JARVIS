@@ -35,6 +35,8 @@ _NO = {"no", "nope", "don't", "do not", "negative", "cancel", "never mind", "sto
 #: are checked first, so "don't keep it" is a no.
 _YES_WORDS = _YES | {"ok", "okay", "go ahead", "do it", "of course", "absolutely", "definitely"}
 _NO_WORDS = _NO | {"nah"}
+#: A yes-word next to one of these is not a yes ("not sure"); not a no either.
+_NEGATORS = {"not", "isn't", "wasn't", "can't", "won't", "doesn't", "didn't", "hardly"}
 
 #: People answer in the question's own words: "Shall I keep it?" -> "Keep
 #: it." (the watch, 2026-10-02). But "keep it" said to "Forget 'I parked on
@@ -81,10 +83,11 @@ class FlowOutcome:
 
 
 async def ask_yes_no(ask: Ask, prompt: str) -> bool:
-    reply = (await ask(prompt)).strip().lower()
-    if any(word in reply for word in _NO):
-        return False
-    return any(word in reply for word in _YES)
+    """A clear, whole-word yes — anything else is no. These dialogs confirm
+    removing a skill or building one, so "I'm unsure" (which has "sure" in
+    it), "incorrect" and "yesterday" must not count as consent (known issue
+    #13)."""
+    return await ask_yes_no_or_none(ask, prompt) is True
 
 
 def _words(reply: str) -> str:
@@ -107,6 +110,8 @@ async def ask_yes_no_or_none(ask: Ask, prompt: str) -> bool | None:
         yes = no = False
     if no or any(f" {w} " in words for w in _NO_WORDS):
         return False
+    if any(f" {w} " in words for w in _NEGATORS):
+        return None  # "not sure", "I can't say": a yes-word, negated, is no yes
     if yes or any(f" {w} " in words for w in _YES_WORDS):
         return True
     return None

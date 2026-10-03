@@ -317,6 +317,10 @@ def test_remove_skill_flow_refuses_a_skill_already_being_learned():
         ("nah", False),
         # still not answers
         ("I took the book", None),
+        ("I'm unsure", None),          # known issue #13: "sure" is not a word here
+        ("that's incorrect", None),
+        ("not sure", None),            # a yes-word, negated
+        ("I can't say for sure", None),
         ("keep in mind that the bins go out", None),
     ],
 )
@@ -360,3 +364,44 @@ def test_the_loose_check_did_not_gain_the_short_words():
     from jarvis.factory.flows import ask_yes_no
 
     assert asyncio.run(ask_yes_no(Script(["I took the book"]).ask, "Right, sir?")) is False
+
+
+# -- known issue #13: a yes is a whole word, not a substring -------------------
+
+@pytest.mark.parametrize("reply", ["I'm unsure", "that's incorrect", "yesterday", "insured", "not sure"])
+def test_ask_yes_no_needs_a_whole_word_yes(reply):
+    """"unsure" holds "sure", "incorrect" holds "correct", "yesterday" holds
+    "yes": none of them is consent."""
+    from jarvis.factory.flows import ask_yes_no
+
+    assert asyncio.run(ask_yes_no(Script([reply]).ask, "Is that right, sir?")) is False
+
+
+@pytest.mark.parametrize("reply", ["yes", "Yes, please.", "sure", "that's correct", "go ahead"])
+def test_ask_yes_no_still_hears_a_yes(reply):
+    from jarvis.factory.flows import ask_yes_no
+
+    assert asyncio.run(ask_yes_no(Script([reply]).ask, "Is that right, sir?")) is True
+
+
+@pytest.mark.parametrize("reply", ["I'm unsure", "that's incorrect", "hmm"])
+def test_remove_skill_flow_keeps_the_skill_unless_clearly_told(reply):
+    from jarvis.skills.contract import SkillManifest
+
+    existing = SkillManifest(name="coin_flip", description="x", examples=["x"], origin="learned")
+    flow = RemoveSkillFlow(
+        ask=Script(["coin flip", reply]).ask, say=Recorder().say, registry=FakeRegistry([existing])
+    )
+    assert asyncio.run(flow.run()) is None
+
+
+def test_remove_skill_flow_takes_remove_it_as_a_yes():
+    """The question is "Remove the skill?", so "remove it" is the yes."""
+    from jarvis.skills.contract import SkillManifest
+
+    existing = SkillManifest(name="coin_flip", description="x", examples=["x"], origin="learned")
+    flow = RemoveSkillFlow(
+        ask=Script(["coin flip", "remove it"]).ask, say=Recorder().say, registry=FakeRegistry([existing])
+    )
+    request = asyncio.run(flow.run())
+    assert isinstance(request, LearningRequest) and request.name == "coin_flip"
