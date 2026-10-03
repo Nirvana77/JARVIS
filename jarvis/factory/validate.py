@@ -73,8 +73,20 @@ def _extract_manifest(tree: ast.Module) -> SkillManifest:
         for kw in call.keywords:
             if kw.arg is None:
                 raise ValidationError("MANIFEST must not use `**kwargs` expansion")
+            value = kw.value
+            if (
+                kw.arg == "permissions"
+                and isinstance(value, ast.Call)
+                and _dotted_name(value.func) == "frozenset"
+                and len(value.args) == 1
+                and not value.keywords
+                and isinstance(value.args[0], (ast.Set, ast.List, ast.Tuple))
+            ):
+                # the builtins' own form, `frozenset({"net"})`: still a literal
+                # set inside, and M8 rewrites of builtins keep it
+                value = value.args[0]
             try:
-                kwargs[kw.arg] = ast.literal_eval(kw.value)
+                kwargs[kw.arg] = ast.literal_eval(value)
             except ValueError as exc:
                 raise ValidationError(
                     f"MANIFEST.{kw.arg} must be a literal, not an expression"

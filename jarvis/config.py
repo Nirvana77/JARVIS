@@ -602,7 +602,10 @@ def _learning_config(raw: dict) -> LearningConfig:
 
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     """Build a :class:`Config`. Missing file -> all defaults. Env overrides win."""
-    load_dotenv()  # make secrets visible to os.getenv elsewhere; harmless if absent
+    if os.environ.get("JARVIS_SANDBOX") != "1":
+        # secrets visible to os.getenv elsewhere — but never inside the factory's
+        # sandbox, where untrusted code runs (`factory.sandbox.sandbox_env`)
+        load_dotenv()
 
     raw: dict = {}
     config_path = _find_config(path)

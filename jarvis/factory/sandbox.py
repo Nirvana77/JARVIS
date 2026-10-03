@@ -11,6 +11,7 @@ user site-packages, no implicit script-dir on `sys.path`) always apply.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,19 @@ _UNSHARE_CMD = ["unshare", "--user", "--map-root-user", "--net"]
 #: doesn't auto-add cwd) can still `import jarvis...` — generated skills import
 #: `jarvis.skills.contract.SkillManifest`.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+#: what sandboxed code may see of the brain's environment: nothing secret
+#: (``ANTHROPIC_API_KEY``, ``HF_TOKEN`` and the edge tokens are all in it)
+_ENV_ALLOWED = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR")
+
+
+def sandbox_env() -> dict[str, str]:
+    """The environment a sandboxed run gets: a short allowlist, plus
+    ``JARVIS_SANDBOX=1`` so ``jarvis.config`` does not read ``.env`` either."""
+    env = {k: os.environ[k] for k in _ENV_ALLOWED if k in os.environ}
+    env["JARVIS_SANDBOX"] = "1"
+    return env
 
 
 @dataclass(frozen=True)
@@ -96,6 +110,7 @@ class SubprocessSandbox:
                     text=True,
                     timeout=self.timeout_s,
                     preexec_fn=_rlimits(self.mem_mb, self.cpu_s),
+                    env=sandbox_env(),
                 )
             except subprocess.TimeoutExpired as exc:
                 return SandboxResult(
@@ -152,6 +167,13 @@ class SubprocessSandbox:
             class _FakeContext:
                 def __init__(self):
                     self.llm = None
+                    self.config = None
+                    self.edges = None
+                    self.memory = None
+                    self.knowledge = None
+                def now(self):
+                    import datetime
+                    return datetime.datetime.now().astimezone()
                 def say(self, text):
                     print("[say]", text)
                 @property
