@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from jarvis.core.context import Context
@@ -31,13 +33,14 @@ def _ctx(config, tmp_path):
 
 # -- manifests / registry -------------------------------------------------
 
-def test_registry_discovers_the_builtins(config):
+def test_registry_discovers_the_builtins(config, tmp_path):
     # `packages=(BUILTIN_PACKAGE,)` — deliberately not the default, which also
     # scans `jarvis.skills.learned`. That directory is real, per-install state
     # (M2's `teach`/`edit_skill` write to it), so a test asserting the exact
     # builtin roster must not be coupled to whatever a developer has actually
-    # taught their local JARVIS.
-    reg = Registry.discover(config, packages=(BUILTIN_PACKAGE,))
+    # taught their local JARVIS. An empty data dir, for the same reason: the
+    # edge tools a device declared live under `data/remote/tools`.
+    reg = Registry.discover(replace(config, data_dir=tmp_path), packages=(BUILTIN_PACKAGE,))
     assert reg.names() == [
         "force_update_watch", "note", "open_app", "play", "recall", "remember", "search",
         "update_watch", "watch_power",
