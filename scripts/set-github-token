@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Store JARVIS_GITHUB_TOKEN (M8: JARVIS pushes the builtin rewrites it keeps
+# to the jarvis/self branch) in both places a brain reads it from, and restart
+# the pod so it picks it up:
+#
+#   - the repo's .env                       (the dev brain: ./jarvis-run serve)
+#   - the k8s Secret jarvis/jarvis-env      (the pod brain)
+#
+#   scripts/set-github-token
+#
+# The token: GitHub → Settings → Developer settings → Fine-grained tokens,
+# repository access "Only select repositories: Nirvana77/JARVIS",
+# permission "Contents: Read and write". Protect develop and master with a
+# repository ruleset so the token can only write jarvis/self.
+#
+# The token is read without echo and never passed on a command line (where
+# `ps` would show it): curl and kubectl read it from files in a private temp
+# directory that is removed on exit.
+#
+# Environment: DRY_RUN=1 changes nothing (prints what it would do);
+# JARVIS_ENV_FILE, JARVIS_NAMESPACE override the defaults.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+env_file="${JARVIS_ENV_FILE:-$here/.env}"
+ns="${JARVIS_NAMESPACE:-jarvis}"
+secret=jarvis-env
+deploy=jarvis-brain
+repo=Nirvana77/JARVIS
+key=JARVIS_GITHUB_TOKEN
+dry="${DRY_RUN:-0}"
+
+say()  { printf '%s\n' "$*"; }
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+run()  { if [ "$dry" = 1 ]; then say "  (dry run) $*"; else "$@"; fi; }
+
+for tool in curl python3; do command -v "$tool" >/dev/null || fail "$tool is not installed"; done
+[ "$dry" = 1 ] || command -v kubectl >/dev/null || fail "kubectl is not installed"
+
+tmp="$(umask 077 && mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# -- the token -------------------------------------------------------------------
+if [ -n "${JARVIS_TOKEN_FROM_STDIN:-}" ]; then
+    IFS= read -r token            # tests: piped in, not typed
+else
+    IFS= read -rsp "GitHub token for $repo (input hidden): " token
+    echo
+fi
+token="${token//[[:space:]]/}"
+[ -n "$token" ] || fail "no token given"
+case "$token" in
+    github_pat_*|ghp_*) ;;
+    *) read -rp "That does not look like a GitHub token. Use it anyway? [y/N] " ok
+       [ "$ok" = y ] || [ "$ok" = Y ] || exit 1 ;;
+esac
+printf '%s' "$token" > "$tmp/token"
+printf 'Authorization: Bearer %s\n' "$token" > "$tmp/auth"
+unset token
+
+# -- does GitHub accept it? ------------------------------------------------------
+if [ "${SKIP_GITHUB_CHECK:-0}" != 1 ]; then
+    code=$(curl -sS -o "$tmp/repo.json" -w '%{http_code}' -H @"$tmp/auth" \
+        -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo") \
+        || fail "could not reach api.github.com"
+    [ "$code" = 200 ] || fail "GitHub answered $code: the token cannot see $repo"
+    say "✓ GitHub accepts the token for $repo"
+fi
+
+# -- .env --------------------------------------------------------------------------
+python3 - "$env_file" "$key" "$tmp/token" "$dry" <<'PY'
+import os, sys
+path, key, token_file, dry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
+token = open(token_file, encoding="utf-8").read()
+lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
+kept = [l for l in lines if not l.strip().startswith(f"{key}=")]
+replaced = len(kept) != len(lines)
+kept.append(f'{key}="{token}"')
+if dry:
+    print(f"  (dry run) would {'replace' if replaced else 'add'} {key} in {path}")
+    sys.exit(0)
+tmp = path + ".tmp"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(kept) + "\n")
+os.replace(tmp, path)
+os.chmod(path, 0o600)  # it holds every secret JARVIS has: the owner's eyes only
+print(f"✓ {'replaced' if replaced else 'added'} {key} in {path} (now readable by you only)")
+PY
+
+# -- the pod's Secret ----------------------------------------------------------
+python3 - "$key" "$tmp/token" > "$tmp/patch.json" <<'PY'
+import base64, json, sys
+token = open(sys.argv[2], encoding="utf-8").read().encode()
+print(json.dumps({"data": {sys.argv[1]: base64.b64encode(token).decode()}}))
+PY
+run kubectl -n "$ns" patch secret "$secret" --type merge --patch-file "$tmp/patch.json" >/dev/null
+[ "$dry" = 1 ] || say "✓ $key set in secret $ns/$secret"
+
+# -- restart the pod -----------------------------------------------------------
+say "Restarting the pod brain (the watch reconnects by itself after a minute or two) …"
+run kubectl -n "$ns" rollout restart "deploy/$deploy" >/dev/null
+if [ "$dry" != 1 ]; then
+    kubectl -n "$ns" rollout status "deploy/$deploy" --timeout=15m >/dev/null
+    for _ in $(seq 1 120); do
+        line=$(kubectl -n "$ns" logs "deploy/$deploy" -c brain 2>/dev/null | grep -m1 'own rewrites' || true)
+        [ -n "$line" ] && break
+        sleep 5
+    done
+    case "$line" in
+        *"→ jarvis/self"*) say "✓ the pod brain will push its rewrites to jarvis/self" ;;
+        *) say "! the pod did not report the token yet: kubectl -n $ns logs deploy/$deploy -c brain" ;;
+    esac
+fi
+say "The dev brain reads .env when it starts: restart ./jarvis-run serve to give it the token too."

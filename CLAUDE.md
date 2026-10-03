@@ -154,7 +154,9 @@ the `anthropic-workspace-id` header; needed only for identity-linked keys),
 `HF_TOKEN` (authenticated model downloads), `JARVIS_EDGE_TOKENS` (brain) /
 `JARVIS_EDGE_TOKEN` (edge), `JARVIS_GITHUB_TOKEN` (M8: a fine-grained token,
 contents:write on this repo only, with which JARVIS pushes its own builtin
-rewrites to `jarvis/self`). Env overrides of config: `JARVIS_PERSONA`,
+rewrites to `jarvis/self`; `scripts/set-github-token` puts it in `.env` and
+the pod's `jarvis-env` Secret and restarts the pod, without the token ever
+appearing on a command line). Env overrides of config: `JARVIS_PERSONA`,
 `language`.
 
 ## Running
