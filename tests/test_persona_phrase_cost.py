@@ -72,3 +72,54 @@ def test_the_orchestrator_phrases_off_the_event_loop(config):
     asyncio.run(o.handle("search", "search black holes", 0.9))
     asyncio.run(o.handle("thanks", "thanks", 0.9))
     assert seen and not any(seen)
+
+
+def test_the_persona_borrows_the_classifiers_embedder(config, monkeypatch):
+    """A second MiniLM in the persona held ~30 threads for the life of the
+    brain (measured 2026-10-03). Given the classifier's ``embed``, it never
+    builds its own."""
+    import fastembed
+
+    monkeypatch.setattr(fastembed, "TextEmbedding", CountingEmbedding)
+    CountingEmbedding.made = 0
+    p = Persona.load("jarvis", config, Up())
+    used = []
+
+    def embed(text):
+        used.append(text)
+        v = np.zeros(4, dtype=np.float32)
+        v[len(text) % 4] = 1.0
+        return v
+
+    p.use_embed(embed)
+    assert p.phrase("Heads.") == "Heads, sir."
+    assert CountingEmbedding.made == 0 and used
+
+
+def test_the_orchestrator_lends_the_persona_its_classifier(config):
+    from jarvis.core.orchestrator import Orchestrator
+    from jarvis.nlu.corpus import intent_meta
+
+    class P:
+        lent = None
+
+        def use_embed(self, fn):
+            P.lent = fn
+
+        def line(self, event, default=""):
+            return default
+
+    class NLU:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def embed(self, text):
+            return self.tag
+
+    o = Orchestrator(
+        config=config, wake=FakeWake(), mic=FakeMic(), stt=None, tts=None,
+        nlu=NLU("v1"), persona=P(), registry=FakeRegistry(), intent_meta=intent_meta(),
+    )
+    assert P.lent("x") == "v1"
+    o.nlu = NLU("v2")  # a retrain swapped the classifier: the persona follows
+    assert P.lent("x") == "v2"

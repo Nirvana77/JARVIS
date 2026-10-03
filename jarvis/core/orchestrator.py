@@ -276,6 +276,12 @@ class Orchestrator:
         # barge-in). Self-contained utility — see jarvis/core/interrupt.py.
         self._interrupter = Interrupter(config)
 
+        # The persona's rewrite picks style lines by similarity: let it use the
+        # classifier's MiniLM (whichever is live) rather than load a second one
+        lend = getattr(persona, "use_embed", None)
+        if callable(lend):
+            lend(lambda text: self.nlu.embed(text))
+
         # M7: learning from every turn. Without one handed in (tests), the
         # stores are in RAM.
         self.learning = learning if learning is not None else Learning.in_memory(config)

@@ -65,6 +65,9 @@ class Persona:
     #: one embedder for the life of the persona (known issue #16: it was
     #: built on every call)
     _embedder: object | None = field(default=None, repr=False)
+    #: ``text -> vector``, borrowed from the classifier (``use_embed``), so the
+    #: brain does not keep a second MiniLM (~30 threads) just for this
+    _embed: object | None = field(default=None, repr=False)
 
     # -- construction ------------------------------------------------------
 
@@ -173,6 +176,11 @@ class Persona:
             log.warning("persona rewrite failed, using plain text: %s", exc)
             return text
 
+    def use_embed(self, embed) -> None:
+        """Embed with ``embed`` (the classifier's MiniLM, the same model)
+        instead of loading a model of the persona's own."""
+        self._embed = embed
+
     def character(self) -> str:
         """Who is speaking and how: the style description and its rules. What
         a caller puts in front of its own task so the reply comes back in
@@ -193,16 +201,22 @@ class Persona:
     def _nearest_style_lines(self, text: str, k: int) -> list[str]:
         if len(self.style_lines) <= k:
             return list(self.style_lines)
-        if self._embedder is None:
-            from fastembed import TextEmbedding
+        if self._embed is not None:
+            embed_one = self._embed
+        else:
+            if self._embedder is None:
+                from fastembed import TextEmbedding
 
-            self._embedder = TextEmbedding(model_name=self._embedding_model)
-        embedder = self._embedder
+                self._embedder = TextEmbedding(model_name=self._embedding_model)
+            embedder = self._embedder
+
+            def embed_one(t):
+                return next(iter(embedder.embed([t])))
         if self._style_vecs is None:
             self._style_vecs = np.asarray(
-                list(embedder.embed(self.style_lines)), dtype=np.float32
+                [embed_one(line) for line in self.style_lines], dtype=np.float32
             )
-        q = np.asarray(next(iter(embedder.embed([text]))), dtype=np.float32)
+        q = np.asarray(embed_one(text), dtype=np.float32)
         sims = self._style_vecs @ q
         top = np.argsort(sims)[::-1][:k]
         return [self.style_lines[i] for i in top]

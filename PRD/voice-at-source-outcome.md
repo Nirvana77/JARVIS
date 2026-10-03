@@ -8,7 +8,7 @@ chose **D**, writing the voice into the skills, with **C**, a fact-checked
 rewrite, as the backup.
 **Result:** ✅ Voiced skills are spoken as written (0.2 s for "Noted, sir.").
 A rewrite that loses a fact is thrown away. The factory writes new skills in
-the persona's voice. Suite: 1150 passed, 2 skipped.
+the persona's voice. Suite: 1152 passed, 2 skipped.
 
 ## The problem (measured with `qwen3:8b` on the cluster)
 
@@ -57,6 +57,20 @@ second case is why canned replies are now voiced at the source.
 - **The knowledge answer's double generation:** gone. `recall` is a voiced
   skill, so its answer is not rewritten again.
 - **The rewrite losing content:** it is now fact-checked (above).
+
+## Threads: a regression from M7, fixed here
+
+M7's #16 fix kept one embedder for the persona's life. That was a second MiniLM
+next to the classifier's, and it held about 30 threads for as long as the brain
+ran. The dry run showed 94–97 threads per turn here, against M7's 64–67. They
+were flat, so not a leak, but a needlessly higher baseline. Measured in
+isolation, the persona's first rewrite took a process from 16 to 48 threads.
+
+The persona now borrows the classifier's embedding (`Persona.use_embed`, lent
+by the orchestrator as `lambda text: self.nlu.embed(text)`, so it follows a
+retrain's swap). Measured: 63 threads with the classifier loaded, still 63
+after rewrites. The first rewrite takes 0.43 s, including embedding the 67
+style lines once; later ones take 0.24 s.
 
 ## Tests changed, said plainly
 
