@@ -6,7 +6,7 @@
 summary of it: *"The brain should understand that I meant something else and
 try to solve it. I asked the same question two times but JARVIS did not
 learn."*
-**Result:** ✅ Suite 1177 passed, 2 skipped. The session's questions were
+**Result:** ✅ Suite 1178 passed, 2 skipped. The session's questions were
 replayed in text mode against the cluster's Ollama, and each one now gets
 somewhere.
 
@@ -72,11 +72,14 @@ at the owner's report, said here as CLAUDE.md asks.
   on every start and needs nobody.
 - Threads in the replay: 48 at startup, 65–67 per turn, flat.
 
-## Not changed here (owner's call)
+## Also done, at the owner's yes
 
-- `intents.json`'s 2024 tutorial intents `hours`, `payments`, `opentoday`,
-  `weather` answer with made-up lines ("The weather is nice", "We accept VISA,
-  Mastercard and AMEX"). They are wrong rather than merely plain, and should go.
-- The owner's `config.toml`: `host = "00.0.0.0"` (works, prints oddly), and
-  the time zone, which is set to Europe/Stockholm only in the dry run, as an
-  assumption.
+- **Removed** `intents.json`'s 2024 tutorial intents `hours`, `payments`,
+  `opentoday` and `weather`, which answered with made-up lines ("The weather is
+  nice", "We accept VISA, Mastercard and AMEX"). "What's the weather like
+  today?" is now `unknown` and goes to the reasoner, which can answer it or
+  learn it. "Are you open today?" now lands on `open_app`, because of "open".
+  That was a shop-hours question that only made sense for the tutorial bot.
+- **`[general] timezone = "Europe/Stockholm"`** in the dev `config.toml` and
+  the pod's `jarvis-config`. The dev `config.toml`'s `host = "00.0.0.0"` is
+  now `0.0.0.0`, and its `[learning] enabled` is true again.

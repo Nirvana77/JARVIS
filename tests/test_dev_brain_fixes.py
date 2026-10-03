@@ -280,3 +280,12 @@ def test_after_the_window_a_question_is_just_a_question():
     o._previous["at"] -= 1.0
     turn(o, DATE_Q2)
     assert o._persona.spoken[-1] == "<nothing_remembered>"
+
+
+def test_the_2024_tutorial_intents_are_gone():
+    """"The weather is nice" and "We accept VISA, Mastercard and AMEX" were
+    made-up answers from the 2024 tutorial chatbot. Without them a weather
+    question reaches the reasoner, and can be learned (owner, 2026-10-03)."""
+    from jarvis.nlu.corpus import intent_meta
+
+    assert not {"weather", "hours", "payments", "opentoday"} & set(intent_meta())
