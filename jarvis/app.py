@@ -20,7 +20,7 @@ from jarvis.core.orchestrator import Orchestrator
 from jarvis.core.persona import Persona
 from jarvis.core.memory import Memory
 from jarvis.core.reasoner import Reasoner
-from jarvis.factory.claude_client import ClaudeClient
+from jarvis.factory.claude_client import ClaudeClient, VoiceGuide
 from jarvis.factory.sandbox import SubprocessSandbox
 from jarvis.learning import Learning, learned_examples
 from jarvis.nlu.classifier import Classifier
@@ -231,6 +231,8 @@ def build_orchestrator(config: Config) -> Orchestrator:
     )
 
     claude_client = ClaudeClient.from_config(config)
+    # skills it writes speak in the persona's voice as written: no rewrite at run time
+    claude_client.voice = VoiceGuide.from_persona(persona)
     sandbox = SubprocessSandbox(
         timeout_s=config.factory.sandbox_timeout_s,
         mem_mb=config.factory.sandbox_mem_mb,
@@ -284,6 +286,8 @@ def build_text_orchestrator(config: Config, lines: list[str] | None = None) -> O
     nlu = load_classifier(config)
 
     claude_client = ClaudeClient.from_config(config)
+    # skills it writes speak in the persona's voice as written: no rewrite at run time
+    claude_client.voice = VoiceGuide.from_persona(persona)
     sandbox = SubprocessSandbox(
         timeout_s=config.factory.sandbox_timeout_s,
         mem_mb=config.factory.sandbox_mem_mb,
@@ -342,6 +346,8 @@ def build_server_orchestrator(config: Config, link, edges=None) -> Orchestrator:
     nlu = load_classifier(config)
 
     claude_client = ClaudeClient.from_config(config)
+    # skills it writes speak in the persona's voice as written: no rewrite at run time
+    claude_client.voice = VoiceGuide.from_persona(persona)
     sandbox = SubprocessSandbox(
         timeout_s=config.factory.sandbox_timeout_s,
         mem_mb=config.factory.sandbox_mem_mb,
@@ -688,6 +694,8 @@ def selftest(config: Config) -> int:
     nlu = load_classifier(config)
     persona = Persona.load(config.persona.active, config, reasoner)
     claude_client = ClaudeClient.from_config(config)
+    # skills it writes speak in the persona's voice as written: no rewrite at run time
+    claude_client.voice = VoiceGuide.from_persona(persona)
     sandbox = SubprocessSandbox(
         timeout_s=config.factory.sandbox_timeout_s,
         mem_mb=config.factory.sandbox_mem_mb,

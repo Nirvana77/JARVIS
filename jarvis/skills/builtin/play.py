@@ -20,13 +20,14 @@ MANIFEST = SkillManifest(
     ],
     params={"query": {"type": "string", "required": True}},
     permissions=frozenset({"net"}),
+    voice="jarvis",
 )
 
 
 def run(ctx, query: str = "") -> str:
     query = (query or "").strip()
     if not query:
-        return "What would you like me to play?"
+        return "What would you like me to play, sir?"
     url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(query)
     webbrowser.open(url)
-    return f"Playing {query} on YouTube."
+    return f"Playing {query} on YouTube, sir."

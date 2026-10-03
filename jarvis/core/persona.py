@@ -25,8 +25,12 @@ from pathlib import Path
 import numpy as np
 
 from jarvis.core.reasoner import Reasoner
+from jarvis.core.voice import facts_kept
 
 log = logging.getLogger(__name__)
+
+#: a line longer than this is spoken as it is: it is facts, not banter
+MAX_REWRITE_WORDS = 30
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PERSONAS_DIR = _REPO_ROOT / "personas"
@@ -61,6 +65,9 @@ class Persona:
     #: one embedder for the life of the persona (known issue #16: it was
     #: built on every call)
     _embedder: object | None = field(default=None, repr=False)
+    #: ``text -> vector``, borrowed from the classifier (``use_embed``), so the
+    #: brain does not keep a second MiniLM (~30 threads) just for this
+    _embed: object | None = field(default=None, repr=False)
 
     # -- construction ------------------------------------------------------
 
@@ -136,11 +143,19 @@ class Persona:
     # -- dynamic phrasing ---------------------------------------------------
 
     def phrase(self, text: str) -> str:
-        """Rewrite a dynamic line into the persona's voice, if a reasoner is up."""
+        """Rewrite a dynamic line into the persona's voice, if a reasoner is up.
+
+        The rewrite is spoken only if it kept every number and content word of
+        the line (``voice.facts_kept``); a line longer than
+        ``MAX_REWRITE_WORDS`` is not rewritten at all — an answer that long is
+        facts, and a rewrite would only risk them. Skills whose lines are
+        written in voice to begin with never get here (``SkillManifest.voice``)."""
         text = text.strip()
         if not text:
             return text
         if not (self._reasoner and self._reasoner.available and self.style_lines):
+            return text
+        if len(text.split()) > MAX_REWRITE_WORDS:
             return text
         try:
             shots = self._nearest_style_lines(text, k=6)
@@ -150,10 +165,21 @@ class Persona:
                 f"Rewrite this line in character, keeping the meaning and any "
                 f"facts exactly. Reply with only the rewritten line.\n\n{text}",
             )
-            return _strip_wrapping_quotes(out) or text
+            rewrite = _strip_wrapping_quotes(out)
+            if not rewrite:
+                return text
+            if not facts_kept(text, rewrite):
+                log.info("persona rewrite dropped or changed a fact; saying it plainly: %r -> %r", text, rewrite)
+                return text
+            return rewrite
         except Exception as exc:  # noqa: BLE001
             log.warning("persona rewrite failed, using plain text: %s", exc)
             return text
+
+    def use_embed(self, embed) -> None:
+        """Embed with ``embed`` (the classifier's MiniLM, the same model)
+        instead of loading a model of the persona's own."""
+        self._embed = embed
 
     def character(self) -> str:
         """Who is speaking and how: the style description and its rules. What
@@ -175,16 +201,22 @@ class Persona:
     def _nearest_style_lines(self, text: str, k: int) -> list[str]:
         if len(self.style_lines) <= k:
             return list(self.style_lines)
-        if self._embedder is None:
-            from fastembed import TextEmbedding
+        if self._embed is not None:
+            embed_one = self._embed
+        else:
+            if self._embedder is None:
+                from fastembed import TextEmbedding
 
-            self._embedder = TextEmbedding(model_name=self._embedding_model)
-        embedder = self._embedder
+                self._embedder = TextEmbedding(model_name=self._embedding_model)
+            embedder = self._embedder
+
+            def embed_one(t):
+                return next(iter(embedder.embed([t])))
         if self._style_vecs is None:
             self._style_vecs = np.asarray(
-                list(embedder.embed(self.style_lines)), dtype=np.float32
+                [embed_one(line) for line in self.style_lines], dtype=np.float32
             )
-        q = np.asarray(next(iter(embedder.embed([text]))), dtype=np.float32)
+        q = np.asarray(embed_one(text), dtype=np.float32)
         sims = self._style_vecs @ q
         top = np.argsort(sims)[::-1][:k]
         return [self.style_lines[i] for i in top]

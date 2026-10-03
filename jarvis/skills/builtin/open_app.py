@@ -22,15 +22,16 @@ MANIFEST = SkillManifest(
     ],
     params={"app": {"type": "string", "required": True}},
     permissions=frozenset({"shell"}),
+    voice="jarvis",
 )
 
 
 def run(ctx, app: str = "") -> str:
     name = re.sub(r"[^a-z0-9.-]", "", (app or "").strip().lower())
     if not name:
-        return "Which app should I open?"
+        return "Which app shall I open, sir?"
     url = name if "." in name else f"https://www.{name}.com"
     if not url.startswith("http"):
         url = f"https://{url}"
     webbrowser.open(url)
-    return f"Opening {name}."
+    return f"Opening {name}, sir."

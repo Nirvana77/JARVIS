@@ -42,6 +42,11 @@ class SkillManifest:
     permissions: frozenset[str] = frozenset({"pure"})
     version: int = 1
     origin: str = "builtin"  # or "learned"
+    #: the persona whose voice ``run()``'s lines are written in ("jarvis"). When
+    #: it is the active persona they are spoken as written, with no rewrite at
+    #: run time; "" (or another persona) gets the checked rewrite
+    #: (``Persona.phrase``, ``jarvis/core/voice.py``).
+    voice: str = ""
 
     def __post_init__(self) -> None:
         if not self.name or not self.name.isidentifier():

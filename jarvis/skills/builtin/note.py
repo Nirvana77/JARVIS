@@ -33,6 +33,7 @@ MANIFEST = SkillManifest(
     ],
     params={"text": {"type": "string", "required": False}},
     permissions=frozenset({"fs_write"}),
+    voice="jarvis",
 )
 
 NOTES_FILE = "notes.txt"
@@ -57,7 +58,7 @@ def _mirror(knowledge, text: str, now: datetime) -> None:
 def run(ctx, text: str = "") -> str:
     text = (text or "").strip()
     if not text:
-        return "What would you like me to note?"
+        return "What would you like me to note, sir?"
     now = datetime.now()
     path = ctx.data_dir / NOTES_FILE
     with path.open("a", encoding="utf-8") as fh:
@@ -67,4 +68,4 @@ def run(ctx, text: str = "") -> str:
     memory = getattr(ctx, "memory", None)
     if memory is not None:
         memory.remember(text)
-    return "Noted."
+    return "Noted, sir."

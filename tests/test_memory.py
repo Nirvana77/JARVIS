@@ -182,7 +182,7 @@ def test_a_note_is_also_filed_under_the_device_it_was_said_to(config, tmp_path):
         say=lambda _t: None, config=config, _data_dir=tmp_path, llm=None,
         memory=memory.device("watch"),
     )
-    assert note.run(ctx, text="I parked on level two") == "Noted."
+    assert note.run(ctx, text="I parked on level two") == "Noted, sir."
     assert memory.device("watch").facts() == ["I parked on level two"]
     # the notes file is written as it always was
     assert (tmp_path / "notes.txt").read_text(encoding="utf-8").rstrip().endswith("I parked on level two")

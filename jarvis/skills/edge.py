@@ -91,21 +91,21 @@ class EdgeSkill:
 
     def run(self, ctx, **params) -> str:
         if ctx.edges is None:
-            return "The watch isn't connected to me."
+            return "The watch isn't connected to me, sir."
         for name in self.MANIFEST.required_params:
             if name not in params:
                 kind = self.MANIFEST.params[name].get("type", "text")
                 return ASK.get(kind, "I need a little more to go on, sir.")
         result = ctx.edges.call(self.MANIFEST.name, params)
         if result.status == "offline":
-            return "The watch isn't connected to me."
+            return "The watch isn't connected to me, sir."
         if result.status == "timeout":
             return "The watch didn't answer, sir."
         if result.status == "unsupported":
             return "The watch can't do that any more, sir."
         if result.say:
             return result.say
-        return "Done." if result.status == "ok" else "The watch couldn't do that, sir."
+        return "Done, sir." if result.status == "ok" else "The watch couldn't do that, sir."
 
 
 def edge_skills(store: EdgeTools, reserved: frozenset[str] = frozenset()) -> list[EdgeSkill]:

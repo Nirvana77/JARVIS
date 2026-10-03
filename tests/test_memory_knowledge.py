@@ -30,7 +30,7 @@ def test_a_remembered_fact_is_kept_by_the_device_and_the_knowledge_base(config, 
     memory = Memory(tmp_path / "memory")
     ctx = _ctx(config, tmp_path, knowledge=kb, memory=memory.device("watch"))
 
-    assert remember.run(ctx, text="I parked on level two") == "I'll remember that."
+    assert remember.run(ctx, text="I parked on level two") == "I'll remember that, sir."
 
     assert kb.store.stats()["facts"] == 1
     assert memory.device("watch").facts() == ["I parked on level two"]
@@ -43,7 +43,7 @@ def test_a_remembered_fact_is_kept_by_the_device_and_the_knowledge_base(config, 
 def test_with_the_knowledge_base_off_the_device_still_remembers(config, tmp_path):
     memory = Memory(tmp_path / "memory")
     ctx = _ctx(config, tmp_path, knowledge=None, memory=memory.device("watch"))
-    assert remember.run(ctx, text="I parked on level two") == "I'll remember that."
+    assert remember.run(ctx, text="I parked on level two") == "I'll remember that, sir."
     assert memory.device("watch").facts() == ["I parked on level two"]
     assert memory.device("watch").knowledge_refs() == []
 
@@ -54,7 +54,7 @@ def test_a_note_is_filed_with_the_device_but_has_no_fact_of_its_own(config, tmp_
     kb = make_knowledge(tmp_path)
     memory = Memory(tmp_path / "memory")
     ctx = _ctx(config, tmp_path, knowledge=kb, memory=memory.device("watch"))
-    assert note.run(ctx, text="the wifi code is 1234") == "Noted."
+    assert note.run(ctx, text="the wifi code is 1234") == "Noted, sir."
     assert memory.device("watch").facts() == ["the wifi code is 1234"]
     assert memory.device("watch").knowledge_refs() == []
 

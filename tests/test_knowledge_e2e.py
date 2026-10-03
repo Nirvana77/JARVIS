@@ -138,19 +138,19 @@ def test_what_was_said_is_recalled_and_wikipedia_still_answers_the_rest(
     )
     replies = _replies(out)
 
-    assert "I'll remember that." in replies
+    assert "I'll remember that, sir." in replies
     assert any(
         r.startswith("From your notes, sir: i parked on level three — from what you told me on ")
         for r in replies
     ), replies
-    assert "Noted." in replies
+    assert "Noted, sir." in replies
     # "what is ..." is answered from the notes when they have it...
     assert any(
         r.startswith("From your notes, sir: the door code is 4821") and "dictated notes" in r
         for r in replies
     ), replies
     # ...and from Wikipedia when they do not
-    assert "According to Wikipedia: Photosynthesis is how plants make sugar." in replies
+    assert "According to Wikipedia, sir: Photosynthesis is how plants make sugar." in replies
     assert asked == ["photosynthesis"]
     assert no_claude == []
     # the note was mirrored into the docs dir

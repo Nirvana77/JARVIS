@@ -25,26 +25,27 @@ MANIFEST = SkillManifest(
     ],
     params={},
     permissions=frozenset({"net"}),
+    voice="jarvis",
 )
 
 
 def run(ctx, **_params) -> str:
     if ctx.edges is None:
-        return "The watch isn't connected to me."
+        return "The watch isn't connected to me, sir."
     result = ctx.edges.update_firmware()
     if result.status == "sent":
-        return f"Updating the watch to {result.version}. It will restart when it's done."
+        return f"Updating the watch to {result.version}, sir. It will restart when it's done."
     if result.status == "current":
-        return f"The watch is already running {result.version}."
+        return f"The watch is already running {result.version}, sir."
     if result.status == "dev":
         return (
             f"The watch is running a development build, {result.running}. "
             f"It won't take {result.version} over that."
         )
     if result.status == "newer":
-        return f"The watch is already running {result.running}, newer than the {result.version} I have."
+        return f"The watch is already running {result.running}, sir, newer than the {result.version} I have."
     if result.status == "none":
-        return "I have no new firmware for the watch."
+        return "I have no new firmware for the watch, sir."
     if result.status == "unsupported":
-        return "That device can't update itself."
-    return "The watch isn't connected to me."
+        return "That device can't update itself, sir."
+    return "The watch isn't connected to me, sir."

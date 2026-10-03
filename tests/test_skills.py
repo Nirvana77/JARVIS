@@ -105,7 +105,7 @@ def test_search_network_error_is_graceful(config, tmp_path, monkeypatch):
         raise RuntimeError("connection reset")
 
     monkeypatch.setattr(search, "_search_title", _boom)
-    assert search.run(_ctx(config, tmp_path), query="anything") == "I had trouble reaching Wikipedia."
+    assert search.run(_ctx(config, tmp_path), query="anything") == "I had trouble reaching Wikipedia, sir."
 
 
 def test_search_requires_a_query(config, tmp_path):
@@ -122,7 +122,7 @@ def test_search_trims_wiki_markup_and_extra_sentences(config, tmp_path, monkeypa
     line = search.run(_ctx(config, tmp_path), query="pg tips")
     assert "==" not in line
     assert "Brand name" not in line
-    assert line == "According to Wikipedia: PG Tips is a brand of tea. It is sold in the UK."
+    assert line == "According to Wikipedia, sir: PG Tips is a brand of tea. It is sold in the UK."
 
 
 def test_open_app_builds_a_url(config, tmp_path, monkeypatch):
@@ -130,13 +130,13 @@ def test_open_app_builds_a_url(config, tmp_path, monkeypatch):
     monkeypatch.setattr(open_app.webbrowser, "open", lambda url: seen.setdefault("url", url))
     line = open_app.run(_ctx(config, tmp_path), app="GitHub")
     assert seen["url"] == "https://www.github.com"
-    assert line == "Opening github."
+    assert line == "Opening github, sir."
 
 
 def test_note_appends_and_confirms(config, tmp_path):
     ctx = _ctx(config, tmp_path)
-    assert note.run(ctx, text="the wifi code is 1234") == "Noted."
-    assert note.run(ctx, text="buy milk") == "Noted."
+    assert note.run(ctx, text="the wifi code is 1234") == "Noted, sir."
+    assert note.run(ctx, text="buy milk") == "Noted, sir."
     body = (tmp_path / "notes.txt").read_text(encoding="utf-8").splitlines()
     assert len(body) == 2
     assert body[0].endswith("the wifi code is 1234")

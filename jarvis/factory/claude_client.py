@@ -40,6 +40,8 @@ at module scope:
    - `permissions`: a *set literal* (not `frozenset(...)`) drawn only from
      {"pure", "notify", "fs_read", "fs_write", "net", "shell"}. Request the
      minimum the skill actually needs — most skills need only `{"pure"}`.
+   - `voice`: only when the request names a voice to write in (see "Voice"
+     below): that persona's name, e.g. `voice="jarvis"`. Otherwise leave it out.
 
 2. `def run(ctx, **params) -> str:` — does the work and returns the line
    JARVIS should speak. `ctx` exposes `ctx.say(text)` (speak a progress line
@@ -123,6 +125,34 @@ class GeneratedSkill:
     test_source: str
 
 
+@dataclass(frozen=True)
+class VoiceGuide:
+    """The persona a generated skill should speak as: its replies are written
+    in that voice (``SkillManifest.voice``) instead of being rewritten by the
+    local LLM every time they are spoken."""
+
+    name: str
+    character: str
+    samples: tuple[str, ...] = ()
+
+    @classmethod
+    def from_persona(cls, persona, max_samples: int = 12) -> "VoiceGuide | None":
+        """``None`` for a persona without a name or a character to write in:
+        then skills are written plain and rewritten at run time, as before."""
+        name = getattr(persona, "name", None)
+        character = getattr(persona, "character", None)
+        character = character() if callable(character) else None
+        if not isinstance(name, str) or not name or not isinstance(character, str):
+            return None
+        style = getattr(persona, "style_lines", ())
+        lines = [
+            l for l in (style if isinstance(style, (list, tuple)) else ())
+            if isinstance(l, str) and 3 <= len(l.split()) <= 14
+        ]
+        step = max(1, len(lines) // max_samples)
+        return cls(name=name, character=character, samples=tuple(lines[::step][:max_samples]))
+
+
 class ClaudeClientError(RuntimeError):
     """Claude was unreachable, mis-configured, or returned an unparsable reply."""
 
@@ -143,6 +173,8 @@ class ClaudeClient:
         self.model = model
         self.available = bool(api_key)
         self._client = None
+        #: set by the app once the persona is loaded: skills are written in it
+        self.voice: VoiceGuide | None = None
         if not api_key:
             log.info("no Anthropic API key configured — skill factory disabled")
             return
@@ -171,7 +203,7 @@ class ClaudeClient:
         if not self.available:
             raise ClaudeClientError("no Anthropic API key configured")
 
-        prompt = self._build_prompt(spec, existing_source, feedback)
+        prompt = self._build_prompt(spec, existing_source, feedback, voice=self.voice)
         try:
             response = self._client.messages.create(
                 model=self.model,
@@ -200,7 +232,11 @@ class ClaudeClient:
 
     @staticmethod
     def _build_prompt(
-        spec: SkillSpec, existing_source: str | None, feedback: str | None = None
+        spec: SkillSpec,
+        existing_source: str | None,
+        feedback: str | None = None,
+        *,
+        voice: VoiceGuide | None = None,
     ) -> str:
         lines = [
             f"Skill name: {spec.name}",
@@ -225,6 +261,21 @@ class ClaudeClient:
             f"It is not inside any package — `from jarvis.skills import {spec.name}` "
             f"will fail."
         )
+        if voice is not None:
+            lines.append(
+                "\nVoice. Every line `run()` returns is spoken aloud by this character, "
+                "exactly as written — nothing rewrites it afterwards — so write each one "
+                f"in this voice:\n{voice.character}"
+            )
+            if voice.samples:
+                lines.append("Lines in that voice:")
+                lines.extend(f'  - "{s}"' for s in voice.samples)
+            lines.append(
+                "Keep every fact explicit in the line (numbers, names, results): the "
+                "voice is in the wording, never instead of the content. A short reply "
+                "may pick from two or three phrasings with `random.choice`, so it does "
+                f'not sound canned. Declare it in the manifest: `voice="{voice.name}"`.'
+            )
         if feedback:
             lines.append(
                 "\nA previous attempt at this exact request was rejected. "
