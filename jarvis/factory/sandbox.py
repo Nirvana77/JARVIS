@@ -11,6 +11,7 @@ user site-packages, no implicit script-dir on `sys.path`) always apply.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,19 @@ _UNSHARE_CMD = ["unshare", "--user", "--map-root-user", "--net"]
 #: doesn't auto-add cwd) can still `import jarvis...` — generated skills import
 #: `jarvis.skills.contract.SkillManifest`.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+#: what sandboxed code may see of the brain's environment: nothing secret
+#: (``ANTHROPIC_API_KEY``, ``HF_TOKEN`` and the edge tokens are all in it)
+_ENV_ALLOWED = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR")
+
+
+def sandbox_env() -> dict[str, str]:
+    """The environment a sandboxed run gets: a short allowlist, plus
+    ``JARVIS_SANDBOX=1`` so ``jarvis.config`` does not read ``.env`` either."""
+    env = {k: os.environ[k] for k in _ENV_ALLOWED if k in os.environ}
+    env["JARVIS_SANDBOX"] = "1"
+    return env
 
 
 @dataclass(frozen=True)
@@ -56,10 +70,17 @@ class SubprocessSandbox:
         timeout_s: float = 10.0,
         mem_mb: int = 256,
         cpu_s: int = 5,
+        repo_timeout_s: float = 180.0,
+        repo_mem_mb: int = 2048,
+        repo_cpu_s: int = 180,
     ) -> None:
         self.timeout_s = timeout_s
         self.mem_mb = mem_mb
         self.cpu_s = cpu_s
+        #: M8: the repo's own tests import the whole package and its fixtures
+        self.repo_limits = (
+            max(timeout_s, repo_timeout_s), max(mem_mb, repo_mem_mb), max(cpu_s, repo_cpu_s)
+        )
         self.net_isolated = self._probe_unshare()
 
     @staticmethod
@@ -74,7 +95,10 @@ class SubprocessSandbox:
         except Exception:  # noqa: BLE001 — any failure means "not available"
             return False
 
-    def _run(self, script: str, cwd: Path, permissions: frozenset[str]) -> SandboxResult:
+    def _run(
+        self, script: str, cwd: Path, permissions: frozenset[str], limits=None
+    ) -> SandboxResult:
+        timeout_s, mem_mb, cpu_s = limits or (self.timeout_s, self.mem_mb, self.cpu_s)
         runner = cwd / "_sandbox_runner.py"
         runner.write_text(script, encoding="utf-8")
 
@@ -94,14 +118,15 @@ class SubprocessSandbox:
                     cwd=cwd,
                     capture_output=True,
                     text=True,
-                    timeout=self.timeout_s,
-                    preexec_fn=_rlimits(self.mem_mb, self.cpu_s),
+                    timeout=timeout_s,
+                    preexec_fn=_rlimits(mem_mb, cpu_s),
+                    env=sandbox_env(),
                 )
             except subprocess.TimeoutExpired as exc:
                 return SandboxResult(
                     ok=False,
                     stdout=exc.stdout or "",
-                    stderr=(exc.stderr or "") + f"\n[sandbox] timed out after {self.timeout_s}s",
+                    stderr=(exc.stderr or "") + f"\n[sandbox] timed out after {timeout_s}s",
                     returncode=-1,
                 )
             return SandboxResult(
@@ -135,6 +160,38 @@ class SubprocessSandbox:
         )
         return self._run(script, module_path.parent, permissions)
 
+    def run_repo_tests(
+        self,
+        module_path: Path,
+        name: str,
+        test_files: list[str],
+        permissions: frozenset[str],
+    ) -> SandboxResult:
+        """M8: the repo's own tests for builtin ``name``, with the rewrite at
+        ``module_path`` standing in for ``jarvis.skills.builtin.<name>``. Only
+        tests whose name mentions the skill are run (``-k``); none selected
+        counts as a pass. Same isolation as every sandboxed run — the
+        scrubbed environment means the repo's fixtures load no secrets."""
+        script = textwrap.dedent(
+            f"""\
+            import importlib.util
+            import sys
+            sys.path.insert(0, {str(_REPO_ROOT)!r})
+            import jarvis.skills.builtin as _pkg
+            _full = "jarvis.skills.builtin." + {name!r}
+            _spec = importlib.util.spec_from_file_location(_full, {str(module_path)!r})
+            _mod = importlib.util.module_from_spec(_spec)
+            sys.modules[_full] = _mod
+            _spec.loader.exec_module(_mod)
+            setattr(_pkg, {name!r}, _mod)
+            import pytest
+            code = pytest.main(["-q", "-p", "no:cacheprovider", "--rootdir", {str(_REPO_ROOT)!r},
+                                "-k", {name!r}, *{list(test_files)!r}])
+            raise SystemExit(0 if code in (0, 5) else int(code))
+            """
+        )
+        return self._run(script, module_path.parent, permissions, self.repo_limits)
+
     def dry_run(
         self,
         module_path: Path,
@@ -152,6 +209,13 @@ class SubprocessSandbox:
             class _FakeContext:
                 def __init__(self):
                     self.llm = None
+                    self.config = None
+                    self.edges = None
+                    self.memory = None
+                    self.knowledge = None
+                def now(self):
+                    import datetime
+                    return datetime.datetime.now().astimezone()
                 def say(self, text):
                     print("[say]", text)
                 @property

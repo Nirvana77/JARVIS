@@ -316,6 +316,23 @@
 			],
 			"responses": [],
 			"action": "learned_today"
+		},
+		{
+			"tag": "undo_change",
+			"patterns": [
+				"undo that",
+				"undo your change",
+				"undo what you changed",
+				"undo your last change",
+				"put it back the way it was",
+				"put back the old version",
+				"go back to how it was before",
+				"revert what you just changed",
+				"I liked it better before",
+				"change it back"
+			],
+			"responses": [],
+			"action": "undo_change"
 		}
 	]
 }

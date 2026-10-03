@@ -26,6 +26,8 @@ log = logging.getLogger(__name__)
 
 BUILTIN_PACKAGE = "jarvis.skills.builtin"
 LEARNED_PACKAGE = "jarvis.skills.learned"
+#: M8: JARVIS's own versions of builtins (``config.skill_overrides_dir``)
+OVERRIDES_PACKAGE = "jarvis.skills.overrides"
 DEFAULT_PACKAGES = (BUILTIN_PACKAGE, LEARNED_PACKAGE)
 
 #: which `origin` a manifest gets, keyed by the package it was actually found
@@ -49,6 +51,8 @@ class Registry:
         knowledge=None,
     ) -> None:
         self.config = config
+        #: M8: builtins running JARVIS's own version (``_apply_overrides``)
+        self.overridden: set[str] = set()
         self.reasoner = reasoner
         self.say = say or (lambda text: print(f"Jarvis: {text}"))
         #: `EdgeControl` under `serve`, else None — handed to skills as ctx.edges
@@ -61,6 +65,55 @@ class Registry:
         self._skills: dict[str, object] = {}
 
     # -- discovery ------------------------------------------------------------
+
+    @staticmethod
+    def _point_package(package: str, directory) -> None:
+        try:
+            pkg = importlib.import_module(package)
+        except ModuleNotFoundError:
+            return
+        pkg.__path__ = [str(directory)]
+
+    def _apply_overrides(self) -> None:
+        """M8: a module in ``config.skill_overrides_dir`` named like a builtin,
+        whose MANIFEST names that builtin, replaces it. Anything else there is
+        ignored, and an override that does not import leaves the packaged
+        builtin in place: a broken rewrite must never cost the skill."""
+        try:
+            pkg = importlib.import_module(OVERRIDES_PACKAGE)
+        except ModuleNotFoundError:
+            return
+        for info in pkgutil.iter_modules(pkg.__path__):
+            name = info.name
+            if name.startswith("_"):
+                continue
+            current = self._skills.get(name)
+            if current is None or current.MANIFEST.origin != "builtin":
+                log.warning("override %s: there is no builtin of that name; ignored", name)
+                continue
+            full_name = f"{OVERRIDES_PACKAGE}.{name}"
+            try:
+                if full_name in sys.modules:
+                    mod = importlib.reload(sys.modules[full_name])
+                else:
+                    mod = importlib.import_module(full_name)
+            except Exception as exc:  # noqa: BLE001 — keep the packaged one
+                log.error("override %s does not load (%s); the packaged one stays", name, exc)
+                sys.modules.pop(full_name, None)
+                continue
+            manifest = getattr(mod, "MANIFEST", None)
+            if (
+                not isinstance(manifest, SkillManifest)
+                or not callable(getattr(mod, "run", None))
+                or manifest.name != name
+            ):
+                log.error("override %s is not a skill named %s; the packaged one stays", name, name)
+                continue
+            if manifest.origin != "builtin":
+                mod.MANIFEST = dataclasses.replace(manifest, origin="builtin")
+            self._skills[name] = mod
+            self.overridden.add(name)
+            log.info("builtin %s: JARVIS's own version", name)
 
     @staticmethod
     def _point_learned_package(config) -> None:
@@ -87,6 +140,8 @@ class Registry:
         reg = cls(config, reasoner, say, edges, memory, knowledge)
         if LEARNED_PACKAGE in packages:
             cls._point_learned_package(config)
+        if BUILTIN_PACKAGE in packages:
+            cls._point_package(OVERRIDES_PACKAGE, config.skill_overrides_dir)
         for package in packages:
             try:
                 pkg = importlib.import_module(package)
@@ -115,6 +170,8 @@ class Registry:
                 if manifest.name in reg._skills:
                     log.warning("duplicate skill name %r (%s)", manifest.name, info.name)
                 reg._skills[manifest.name] = mod
+        if BUILTIN_PACKAGE in packages:
+            reg._apply_overrides()
         # What the edges said they can do (jarvis/skills/edge.py), kept on
         # disk, so they are skills — and trained — even while the edge is away.
         from jarvis.skills.edge import EdgeTools, edge_skills

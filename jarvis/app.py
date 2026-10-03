@@ -23,6 +23,7 @@ from jarvis.core.reasoner import Reasoner
 from jarvis.factory.claude_client import ClaudeClient, VoiceGuide
 from jarvis.factory.sandbox import SubprocessSandbox
 from jarvis.learning import Learning, learned_examples
+from jarvis.learning.publish import SelfPublisher
 from jarvis.nlu.classifier import Classifier
 from jarvis.nlu.corpus import build_corpus, corpus_digest, intent_meta, write_corpus_db
 from jarvis.nlu.train import TrainResult, latest_version, train
@@ -160,7 +161,8 @@ def build_learning(config: Config) -> Learning:
     s = config.learning
     print(
         f"· learning: {'on' if s.enabled else 'off (logging only)'}"
-        f" · log {'on' if s.log else 'off'} · {len(learning.phrasings.entries())} learned phrasing(s)",
+        f" · log {'on' if s.log else 'off'} · {len(learning.phrasings.entries())} learned phrasing(s)"
+        f" · own rewrites → {s.publish_branch if config.github_token else 'not pushed (no JARVIS_GITHUB_TOKEN)'}",
         flush=True,
     )
     return learning
@@ -260,6 +262,7 @@ def build_orchestrator(config: Config) -> Orchestrator:
         sandbox=sandbox,
         knowledge=knowledge,
         learning=build_learning(config),
+        publisher=SelfPublisher.from_config(config),
     )
 
 
@@ -315,6 +318,7 @@ def build_text_orchestrator(config: Config, lines: list[str] | None = None) -> O
         sandbox=sandbox,
         knowledge=knowledge,
         learning=build_learning(config),
+        publisher=SelfPublisher.from_config(config),
     )
     text_io.on_exhausted = orchestrator.stop
     return orchestrator
@@ -375,6 +379,7 @@ def build_server_orchestrator(config: Config, link, edges=None) -> Orchestrator:
         sandbox=sandbox,
         knowledge=knowledge,
         learning=build_learning(config),
+        publisher=SelfPublisher.from_config(config),
         # A server: "shut down" from the watch stands by, it does not stop the
         # brain (Ctrl-C / systemd still do).
         allow_shutdown=False,

@@ -337,15 +337,26 @@ def test_a_skill_that_keeps_failing_is_switched_off(rig):
     assert o.learning.state.is_disabled("flip_a_coin")
 
 
-def test_a_failing_builtin_is_written_down_not_repaired(rig):
+def test_a_failing_builtin_is_written_down_and_rewritten(rig):
+    """M7 said builtins are never rewritten. M8 changes that at the owner's
+    choice ("skills + builtins", 2026-10-03): the failure is still written
+    down for a person, and a rewrite as an override starts too
+    (tests/test_self_rewrite.py has the rest)."""
     o = setup(rig, None)
 
     def dispatch(label, params):
         raise RuntimeError("weather service moved")
 
     o.registry.dispatch = dispatch
+    started = []
+
+    async def start(request, announce=True):
+        started.append(request)
+
+    o._start_learning = start
     asyncio.run(o.handle("search", "search black holes", 0.9))
-    assert not o._jobs and rig.claude.calls == []
+    (request,) = started
+    assert request.override and request.name == "search"
     (failure,) = o.learning.state.builtin_failures()
     assert failure["skill"] == "search" and "weather service moved" in failure["error"]
 

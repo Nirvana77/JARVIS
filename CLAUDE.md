@@ -152,7 +152,9 @@ older `api_key`; used by the skill factory and nothing else), optional
 `ANTHROPIC_MODEL` (default `claude-opus-5`) and `ANTHROPIC_WORKSPACE_ID` (sent as
 the `anthropic-workspace-id` header; needed only for identity-linked keys),
 `HF_TOKEN` (authenticated model downloads), `JARVIS_EDGE_TOKENS` (brain) /
-`JARVIS_EDGE_TOKEN` (edge). Env overrides of config: `JARVIS_PERSONA`,
+`JARVIS_EDGE_TOKEN` (edge), `JARVIS_GITHUB_TOKEN` (M8: a fine-grained token,
+contents:write on this repo only, with which JARVIS pushes its own builtin
+rewrites to `jarvis/self`). Env overrides of config: `JARVIS_PERSONA`,
 `language`.
 
 ## Running
@@ -424,8 +426,18 @@ Rules worth knowing before changing things:
   skills, never for a guarded/meta action; builds capped per day; repairs
   capped per skill per day, then the skill is switched off; a permission
   beyond pure/notify still waits for a spoken yes unless `auto_permissions`.
-  Builtins are never rewritten — their failures go to
-  `data/learning/builtin-failures.jsonl` for a person.
+  Since M8 a builtin that fails is rewritten too, as an **override** in
+  `data/skills/overrides/<name>.py` that both brains load in place of the
+  packaged one. Its gate adds the repo's own tests for that builtin, run in the
+  sandbox with the rewrite standing in, and its recent good calls replayed. It
+  is on probation for `probation_calls` uses (a failure or a correction puts
+  the previous version back), "undo that" reverts it, and it is pushed to the
+  `jarvis/self` branch, never to `develop`. The failure is still written to
+  `data/learning/builtin-failures.jsonl`.
+- **The sandbox gets no secrets.** `factory.sandbox.sandbox_env` is a short
+  allowlist plus `JARVIS_SANDBOX=1`, under which `jarvis.config` does not read
+  `.env`. Never pass the brain's environment to sandboxed code: on this machine
+  `unshare` is unavailable, so there is no network isolation either.
 - **The edge's import graph stays light** (`tests/test_edge_imports.py`).
 
 ### Adding a builtin skill

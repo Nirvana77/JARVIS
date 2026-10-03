@@ -140,6 +140,15 @@ that, with no LLM needed for the first part:
   kept only if the call that failed now works. One that keeps failing is
   switched off, and JARVIS says so.
 
+**Its own skills, too.** When a built-in skill fails, JARVIS rewrites it the
+same way, but behind a stricter gate: the project's own tests for that skill
+must still pass, and so must the skill's recent good calls. The rewrite is
+loaded in place of the built-in, with no restart, so the watch stays
+connected. It is watched for its first five uses, and a failure or a
+correction there puts the previous version back on its own. *"Undo that"*
+does it on request. With `JARVIS_GITHUB_TOKEN` set, every rewrite it keeps
+is committed to the `jarvis/self` branch for you to review and merge.
+
 *"What have you learned today?"* tells you, and `python -m jarvis learning`
 shows the status, the log (`log --since 2d`) and the learned phrasings, undoes
 one (`undo ID`) or switches a skill back on (`enable SKILL`). `[learning]` in

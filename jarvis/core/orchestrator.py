@@ -71,6 +71,7 @@ from jarvis.factory.flows import (
 from jarvis.factory.jobs import LearningJob, run_detached
 from jarvis.factory.spec import SkillSpec
 from jarvis.learning import Learning
+from jarvis.learning.publish import SelfPublisher
 from jarvis.nlu import compound as _compound
 from jarvis.nlu import slots as _slots
 from jarvis.nlu.classifier import UNKNOWN, Classifier
@@ -103,6 +104,8 @@ _META_ACTIONS = {
     # M7
     "correction": "correction",
     "learned_today": "learned_today",
+    # M8
+    "undo_change": "undo_change",
 }
 
 #: A wrong guess at one of these costs a dialog, a skill's code or a device's
@@ -225,6 +228,7 @@ class Orchestrator:
         allow_shutdown: bool = True,
         knowledge=None,
         learning: Learning | None = None,
+        publisher=None,
     ) -> None:
         self.config = config
         #: False under `serve`: the brain is a server, and "shut down" said to
@@ -319,6 +323,14 @@ class Orchestrator:
         #: while a question asked again is being retried: the turn it repeats
         #: and every label that already answered it wrongly
         self._retry: dict | None = None
+        #: M8: rewrites JARVIS made of its own skills, newest last —
+        #: {"name", "previous" (source, or None for the packaged builtin),
+        #: "override", "left" (probation uses to go)}. In RAM: a restart ends
+        #: probation and forgets what "undo that" would undo
+        self._self_changes: list[dict] = []
+        #: M8: commits JARVIS's kept rewrites to its own branch (no token: off)
+        self.publisher = publisher if publisher is not None else SelfPublisher("")
+        self._publishing: set[asyncio.Task] = set()
 
     @property
     def busy(self) -> bool:
@@ -617,6 +629,11 @@ class Orchestrator:
             return None
         if prev.get("path") in ("unknown", "build") or prev.get("outcome") == "declined":
             return None  # nothing was answered: asking again is just asking
+        if any(
+            c["name"] == prev.get("skill") and c.get("at", 0.0) > prev.get("at", 0.0)
+            for c in self._self_changes
+        ):
+            return None  # the skill was rewritten since: the new version gets its turn
         body, said_no = _strip_no(text)
         before, _ = _strip_no(prev.get("heard", ""))
         if not (_QUESTION.search(body) and _QUESTION.search(before)):
@@ -807,6 +824,9 @@ class Orchestrator:
         if action == "learned_today":
             await self._learned_today()
             return
+        if action == "undo_change":
+            await self._undo_change(confidence)
+            return
 
         if label in _slots.STORING and not _slots.has_lead_in(label, text):
             # "Forget about the park", heard as `remember`: with no "remember
@@ -845,6 +865,7 @@ class Orchestrator:
             return
         self._note(outcome="ok")
         self._remember_skill_turn(label)
+        self._probation_passed_one(label)
         if (
             self._record is not None
             and self._record.get("path") == "direct"
@@ -896,8 +917,12 @@ class Orchestrator:
                 )
             except OSError as exc2:
                 log.error("could not record the failure of %s: %s", label, exc2)
+        if self._on_probation(label) is not None:
+            # JARVIS's own rewrite failed in its first uses: the previous
+            # version goes back, and that is not rewritten again on top
+            await self._revert_self_change(label, reason="failed on probation")
             return
-        if manifest.origin == "learned":
+        if manifest.origin in ("learned", "builtin"):
             await self._start_repair(manifest, heard, params, error)
 
     async def _start_repair(self, manifest, heard: str, params: dict, error: str) -> None:
@@ -907,6 +932,7 @@ class Orchestrator:
         and JARVIS says so rather than failing the same way again."""
         s = self.learning.settings
         name = manifest.name
+        builtin = manifest.origin == "builtin"
         if (
             not (s.enabled and s.auto_repair)
             or self.claude_client is None
@@ -914,6 +940,10 @@ class Orchestrator:
             or self.sandbox is None
             or name in self._jobs
         ):
+            return
+        if builtin and self.learning.state.repairs_today(name) >= s.max_repairs_per_skill_per_day:
+            # a builtin is never switched off: past the cap it is left to a person
+            log.warning("%s keeps failing; past today's rewrites, it is left for a person", name)
             return
         if self.learning.state.repairs_today(name) >= s.max_repairs_per_skill_per_day:
             last_line = error.strip().splitlines()[-1] if error.strip() else "it failed"
@@ -924,10 +954,14 @@ class Orchestrator:
                 "skill_disabled", "'{name}' keeps failing, sir. I've switched it off."
             ).replace("{name}", name))
             return
+        if builtin:
+            current = _flows.override_source_path(name)
+            if not current.is_file():
+                current = _flows.packaged_source_path(name)
+        else:
+            current = _flows.learned_source_path(name)
         try:
-            source = await asyncio.to_thread(
-                _flows.learned_source_path(name).read_text, encoding="utf-8"
-            )
+            source = await asyncio.to_thread(current.read_text, encoding="utf-8")
         except OSError as exc:
             log.error("cannot repair %s: no source (%s)", name, exc)
             return
@@ -953,9 +987,138 @@ class Orchestrator:
             autonomous=True,
             replay_params=replay,
             utterance=heard,
+            override=builtin,
+            # the packaged builtin's permissions were granted by its owner
+            pre_granted=_packaged_permissions(name) if builtin else frozenset(),
+            repo_tests=tests_for_builtin(name) if builtin else (),
+            regression_params=self._recent_good_params(name),
         )
         log.info("repairing %s in the background", name)
         await self._start_learning(request, announce=False)
+
+    def _recent_good_params(self, name: str, limit: int = 5) -> tuple[dict, ...]:
+        """M8: the params of ``name``'s recent calls that worked, distinct,
+        newest first — a rewrite must still handle every one."""
+        try:
+            records = self.learning.log.records()
+        except OSError:
+            return ()
+        seen: list[dict] = []
+        for r in reversed(records):
+            if r.get("skill") != name or r.get("outcome") != "ok":
+                continue
+            params = r.get("params")
+            if isinstance(params, dict) and params not in seen:
+                seen.append(params)
+            if len(seen) >= limit:
+                break
+        return tuple(seen)
+
+    # -- M8: probation, revert, undo ---------------------------------------------------
+
+    def _on_probation(self, name: str) -> dict | None:
+        return next(
+            (c for c in reversed(self._self_changes) if c["name"] == name and c["left"] > 0),
+            None,
+        )
+
+    def _probation_passed_one(self, name: str) -> None:
+        change = self._on_probation(name)
+        if change is None:
+            return
+        change["left"] -= 1
+        if change["left"] == 0:
+            log.info("JARVIS's rewrite of %s passed its probation", name)
+
+    async def _revert_self_change(self, name: str, *, reason: str, undo: bool = False) -> bool:
+        """Put back what JARVIS's last rewrite of ``name`` replaced: the
+        previous source, or (for a builtin rewritten for the first time) the
+        packaged one, by deleting the override. Swapped in at the next safe
+        point; the classifier stays (the skill names are the same)."""
+        change = next((c for c in reversed(self._self_changes) if c["name"] == name), None)
+        if change is None:
+            return False
+        self._self_changes.remove(change)
+        path = (
+            _flows.override_source_path(name) if change["override"]
+            else _flows.learned_source_path(name)
+        )
+        try:
+            if change["previous"] is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(change["previous"], encoding="utf-8")
+        except OSError as exc:
+            log.error("could not put back %s: %s", name, exc)
+            return False
+        registry = self._latest_registry().rebuilt()
+        nlu = self._staged[0] if self._staged is not None else self.nlu
+        self._staged = (nlu, registry)
+        log.warning("put back the previous %s (%s)", name, reason)
+        if change["override"]:
+            restored = change["previous"]
+            if restored is None:
+                try:
+                    restored = _flows.packaged_source_path(name).read_text(encoding="utf-8")
+                except OSError:
+                    restored = None
+            if restored is not None:
+                self._publish(name, restored, f"JARVIS put back the previous {name} ({reason})")
+        try:
+            self.learning.state.add_event("reverted", name.replace("_", " "))
+        except OSError:
+            pass
+        if not undo:
+            self._queue_notice(
+                f"My rewrite of '{name}' failed, sir, so I've put back the previous version."
+            )
+        return True
+
+    def _publish(self, name: str, source: str, message: str) -> None:
+        """M8: commit a builtin's source as JARVIS now runs it to its own
+        branch, in the background. Without a token it is only logged."""
+        if not self.publisher.available:
+            log.info("not publishing %s: no JARVIS_GITHUB_TOKEN", name)
+            return
+        path = f"jarvis/skills/builtin/{name}.py"
+
+        async def push() -> None:
+            sha = await run_detached(self.publisher.publish, path, source, message, name="publish")
+            if sha is None:
+                self.learning.state.add_event("unpublished", name.replace("_", " "))
+
+        task = asyncio.ensure_future(push())
+        self._publishing.add(task)
+        task.add_done_callback(self._publishing.discard)
+
+    async def _publishing_done(self) -> None:
+        """Wait for background publishes (tests, shutdown)."""
+        if self._publishing:
+            await asyncio.gather(*list(self._publishing), return_exceptions=True)
+
+    async def _undo_change(self, confidence: float = 1.0) -> None:
+        """"Undo that": the most recent rewrite JARVIS made of its own skills.
+        Not a guarded action — it only ever puts back a version that ran
+        before — but when the classifier is unsure it asks first ("Undo
+        that." scored 0.59 in the dry run, just under the guard)."""
+        if not self._self_changes:
+            await self._speak(self.persona.line(
+                "nothing_to_undo", "There is nothing of mine to undo, sir."))
+            return
+        name = self._self_changes[-1]["name"]
+        if confidence < self.config.nlu.meta_action_threshold:
+            ask = self.persona.line("undo_confirm", "Shall I put back the previous '{name}', sir?")
+            if not await self._confirmed(ask.replace("{name}", name)):
+                await self._speak(self.persona.line("forget_kept", "Very well, sir. I shall keep it."))
+                return
+        if await self._revert_self_change(name, reason="the owner said undo", undo=True):
+            # the owner rejected that rewrite: none on top of it today
+            s = self.learning.settings
+            while self.learning.state.repairs_today(name) < s.max_repairs_per_skill_per_day:
+                self.learning.state.count_repair(name)
+            await self._speak(f"Undone, sir: '{name}' is back as it was.")
+        else:
+            await self._speak(self.persona.line("error"))
 
     # -- M7 part E: learning what nothing fits -------------------------------------------
 
@@ -1363,6 +1526,8 @@ class Orchestrator:
             return
         self._last_skill = None
         self._note(corrects=last["id"])
+        if self._on_probation(last["label"]) is not None:
+            await self._revert_self_change(last["label"], reason="corrected on probation")
         if self._provisional is not None and self._provisional["turn"] == last["id"]:
             self._provisional = None
         if last.get("learned"):
@@ -1412,7 +1577,10 @@ class Orchestrator:
             return
         by_kind: dict[str, list[str]] = {}
         for e in events:
-            by_kind.setdefault(e["kind"], []).append(e["text"])
+            texts = by_kind.setdefault(e["kind"], [])
+            if e["kind"] in ("rewrite", "reverted", "repair", "skill") and e["text"] in texts:
+                continue  # a name once, however often
+            texts.append(e["text"])
         parts = []
         if by_kind.get("phrasing"):
             shown = by_kind["phrasing"][-3:]
@@ -1423,6 +1591,10 @@ class Orchestrator:
             parts.append("new skills: " + ", ".join(by_kind["skill"]))
         if by_kind.get("repair"):
             parts.append("repairs to " + ", ".join(by_kind["repair"]))
+        if by_kind.get("rewrite"):
+            parts.append("I rewrote " + ", ".join(by_kind["rewrite"]))
+        if by_kind.get("reverted"):
+            parts.append("I put back " + ", ".join(by_kind["reverted"]))
         if by_kind.get("correction"):
             parts.append(f"{len(by_kind['correction'])} correction(s) from you")
         if not parts:
@@ -1995,7 +2167,12 @@ class Orchestrator:
             self._unstage(name)
             raise
 
-        new_registry = self._promote_files(name, outcome.module_source, versioning, outcome)
+        override = request is not None and request.override
+        target = _flows.override_source_path(name) if override else _flows.learned_source_path(name)
+        previous = target.read_text(encoding="utf-8") if target.is_file() else None
+        new_registry = self._promote_files(
+            name, outcome.module_source, versioning, outcome, override=override
+        )
         if self._staged is not None:
             # an earlier job's staged model is superseded — this one was
             # trained on a corpus that already includes that skill
@@ -2016,8 +2193,24 @@ class Orchestrator:
                     f"I've learned to {description}, sir. Ask me again and I'll do it."
                 )
             else:
-                self.learning.state.add_event("repair", name.replace("_", " "))
-                self._queue_announcement(f"I've repaired '{name}', sir.")
+                self._self_changes.append({
+                    "name": name, "previous": previous, "override": override,
+                    "left": self.learning.settings.probation_calls, "at": self._clock(),
+                })
+                if override:
+                    self._publish(
+                        name, outcome.module_source,
+                        f"JARVIS rewrote {name} after it failed\n\n"
+                        f"Asked {request.utterance!r}.\n{request.spec.description[:1500]}",
+                    )
+                    self.learning.state.add_event("rewrite", name.replace("_", " "))
+                    self._queue_announcement(
+                        f"I've rewritten '{name}', sir, after it failed. "
+                        "Say 'undo that' to go back."
+                    )
+                else:
+                    self.learning.state.add_event("repair", name.replace("_", " "))
+                    self._queue_announcement(f"I've repaired '{name}', sir. Say 'undo that' to go back.")
             return
         verb = {"new": "learned", "edit": "updated", "revert": "reverted", "remove": "removed"}[versioning]
         if versioning == "new":
@@ -2247,7 +2440,8 @@ class Orchestrator:
         shutil.rmtree(train_result.path, ignore_errors=True)
 
     def _promote_files(
-        self, name: str, module_source: str | None, versioning: str, outcome: FlowOutcome
+        self, name: str, module_source: str | None, versioning: str, outcome: FlowOutcome,
+        *, override: bool = False,
     ):
         """Write the confirmed module to `skills/learned/`, with version /
         quarantine bookkeeping per PRD directory-layout decision 4, and
@@ -2257,6 +2451,20 @@ class Orchestrator:
         `versioning="remove"` has no module to write — it just quarantines the
         existing file and returns the rebuilt (now smaller) registry."""
         registry = self._latest_registry()
+        if override:
+            # M8: JARVIS's own version of a builtin. The one it replaces (if
+            # it was JARVIS's too) is kept as a version; the packaged builtin
+            # needs no copy — deleting the override restores it.
+            path = _flows.override_source_path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.is_file():
+                vdir = self.config.skill_versions_dir(name)
+                vdir.mkdir(parents=True, exist_ok=True)
+                stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                shutil.copy2(path, vdir / f"override.{stamp}.py")
+            path.write_text(module_source, encoding="utf-8")
+            self._unstage(name)
+            return registry.rebuilt()
         learned_path = _flows.learned_source_path(name)
         learned_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -2314,7 +2522,7 @@ class Orchestrator:
             old_nlu = self.nlu
             self.nlu, self.registry = new_nlu, new_registry
             close = getattr(old_nlu, "close", None)
-            if callable(close):
+            if callable(close) and old_nlu is not new_nlu:
                 close()
             if self._pending_announcement:
                 announcement, self._pending_announcement = self._pending_announcement, None
@@ -2361,6 +2569,7 @@ class Orchestrator:
                     except (asyncio.CancelledError, Exception):  # noqa: BLE001
                         pass
             await self.cancel_learning()
+            await self._publishing_done()
             await self._interrupter.shutdown()
             self.mic.stop()
             close = getattr(self.tts, "close", None)
@@ -2434,3 +2643,38 @@ def _same_question(a: str, b: str) -> bool:
     if not wa or not wb:
         return _mishear.same_words(a, b)
     return len(wa & wb) / len(wa | wb) >= _SAME_QUESTION
+
+
+#: the repo's tests, for M8's gate on a rewrite of a builtin
+_TESTS_DIR = Path(__file__).resolve().parent.parent.parent / "tests"
+
+
+def tests_for_builtin(name: str) -> tuple[str, ...]:
+    """The repo's test files that import builtin ``name``: what its rewrite
+    must still pass (``SubprocessSandbox.run_repo_tests``)."""
+    pattern = re.compile(
+        rf"from jarvis\.skills\.builtin import[^\n]*\b{re.escape(name)}\b"
+        rf"|jarvis\.skills\.builtin\.{re.escape(name)}\b"
+        rf"|from jarvis\.skills\.builtin import \([^)]*\b{re.escape(name)}\b",
+        re.DOTALL,
+    )
+    if not _TESTS_DIR.is_dir():
+        return ()
+    found = []
+    for path in sorted(_TESTS_DIR.glob("test_*.py")):
+        try:
+            if pattern.search(path.read_text(encoding="utf-8")):
+                found.append(str(path))
+        except OSError:
+            continue
+    return tuple(found)
+
+
+def _packaged_permissions(name: str) -> frozenset[str]:
+    """What the shipped builtin ``name`` was granted, by the person who wrote it."""
+    try:
+        import importlib
+
+        return frozenset(importlib.import_module(f"jarvis.skills.builtin.{name}").MANIFEST.permissions)
+    except Exception:  # noqa: BLE001
+        return frozenset()
