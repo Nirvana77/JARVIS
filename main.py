@@ -1,18 +1,12 @@
-# https://www.youtube.com/watch?v=pVZN03sNRxc
-# https://www.youtube.com/watch?v=RAKpMYOlttA
-# https://www.youtube.com/watch?v=OqFI_g8vAoc
-# https://www.youtube.com/watch?v=1lwddP0KUEg
+"""``python main.py`` — the same as ``python -m jarvis`` (any arguments too).
 
-#import pandas as pd
-import libs.anthropic_helper as llm
-import libs.command_helper as commands
+Kept so the old way of starting JARVIS still works; the assistant itself is the
+``jarvis`` package.
+"""
 
-if __name__ == '__main__':
-	print('Loading JARVIS...')
+import sys
 
-	llm.init()
-	print('loading commands...')
-	commands.init()
-	
+from jarvis.__main__ import main
 
-	commands.run()
+if __name__ == "__main__":
+    sys.exit(main())
