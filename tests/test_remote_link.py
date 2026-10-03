@@ -677,3 +677,24 @@ def test_the_link_names_the_edge_listening_now(tmp_path):
             await brain.stop()
 
     run(scenario())
+
+
+def test_words_left_by_an_edge_that_went_away_do_not_wake_the_brain(tmp_path):
+    """Known issue #11: an utterance queued but not yet taken when the edge
+    left kept `triggered()` true, and `record_utterance` (disconnected) never
+    took it — so the brain woke, heard nothing, stood by, and woke again,
+    about once a second, until an edge came back."""
+    from types import SimpleNamespace
+
+    from jarvis.remote.server import RemoteLink
+    from tests.remote_harness import FakeVoder
+
+    link = RemoteLink(make_config(tmp_path), voder=FakeVoder())
+    watch = SimpleNamespace(device_id="watch")
+    link.connect(watch)
+    link.submit("jarvis, flip a coin")
+    link.disconnect(watch)
+    assert link.triggered(None) is False
+
+    link.connect(SimpleNamespace(device_id="watch"))  # the same device back: its words are still there
+    assert link.triggered(None) is True
