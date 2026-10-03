@@ -1,7 +1,7 @@
 # Milestone 4.5 — reasoning and per-device memory: outcome
 
 **Date:** 2026-10-01
-**Branch:** `develop` working tree, on top of M4 (not yet committed)
+**Branch:** merged into `develop` (via `reasoning-memory-knowledge`)
 **Result:** ✅ A sentence that is several commands runs as several, with no
 model. A turn the NLU cannot place is, with Ollama up, re-said as commands
 (confirmed, then run) or answered in the persona's voice. Every device has its

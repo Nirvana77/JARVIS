@@ -22,7 +22,7 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 
-from jarvis.nlu.corpus import Example
+from jarvis.nlu.corpus import Example, corpus_digest
 
 KEEP_VERSIONS = 3
 
@@ -125,6 +125,7 @@ def train(
                 "version": version,
                 "embedding_model": embedding_model,
                 "n_examples": len(examples),
+                "corpus_digest": corpus_digest(examples, embedding_model),
                 "labels": head.classes_.tolist(),
                 "accuracy": accuracy,
                 "trained_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),

@@ -2,11 +2,10 @@
 
     python check_setup.py
 
-**Required** means the 2026 rebuild (`python -m jarvis`, `requirements.txt`):
-if a row there is ✗, the assistant will not run. Everything else — the legacy
-`main.py` / `libs/` stack, the optional remote-edge services, and the state of
-the knowledge base — is reported as ✓/– and never fails the run, because a
-rebuild-only install is the normal case and should exit 0.
+**Required** means what `python -m jarvis` imports (`requirements.txt`): if a
+row there is ✗, the assistant will not run. Everything else — the optional
+remote-edge services and the state of the knowledge base — is reported as ✓/–
+and never fails the run.
 """
 
 import importlib
@@ -97,49 +96,6 @@ for mod, name in [
 
 
 # --------------------------------------------------------------------------
-# The original main.py / libs/ path. Kept working, but nothing the rebuild
-# needs, and `requirements.txt` deliberately does not install it.
-section("Legacy stack (main.py / libs/ — optional)")
-for mod, name in [
-    ("speech_recognition", "SpeechRecognition"),
-    ("wikipedia", "wikipedia"),
-    ("pyttsx3", "pyttsx3"),
-    ("nltk", "nltk"),
-    ("openpyxl", "openpyxl"),
-    ("pyaudio", "PyAudio (legacy mic capture)"),
-    ("tensorflow", "TensorFlow (legacy intent model; no 3.14 wheels)"),
-]:
-    try:
-        m = importlib.import_module(mod)
-        line(OK, name, getattr(m, "__version__", ""))
-    except Exception:
-        line(SKIP, name, "not installed (legacy path only)")
-
-
-# --------------------------------------------------------------------------
-section("NLTK data (legacy path only)")
-DOWNLOAD_HINT = (
-    "run: python -c \"import nltk; "
-    "[nltk.download(p) for p in ('punkt','punkt_tab','wordnet','omw-1.4')]\""
-)
-try:
-    import nltk
-    from nltk.stem import WordNetLemmatizer
-
-    # Functional test — this is exactly what brain.py does per query.
-    nltk.word_tokenize("waking jarvis up")
-    line(OK, "tokenizer (punkt)")
-    WordNetLemmatizer().lemmatize("running", "v")
-    line(OK, "lemmatizer (wordnet)")
-except LookupError:
-    # NLTK's own message opens with a 70-character banner of asterisks, which
-    # is not what anyone needs to read here.
-    line(SKIP, "nltk data", "corpora not downloaded — " + DOWNLOAD_HINT)
-except Exception as e:
-    line(SKIP, "nltk data", repr(e))
-
-
-# --------------------------------------------------------------------------
 section("Anthropic")
 api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("api_key")
 model = os.getenv("ANTHROPIC_MODEL", "claude-opus-5")
@@ -174,16 +130,6 @@ else:
 
 if placeholder:
     line(SKIP, f"Model '{model}' resolves", "skipped (no API key)")
-
-
-# --------------------------------------------------------------------------
-section("Intent model (legacy brain.py / training.py)")
-line(
-    SKIP,
-    "Keras model",
-    "deferred — needs TensorFlow (no Python 3.14 wheels), and the checked-in "
-    "JARVIS_model.keras predates Keras 3 and must be retrained anyway",
-)
 
 
 # --------------------------------------------------------------------------

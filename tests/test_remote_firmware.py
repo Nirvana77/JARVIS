@@ -169,6 +169,14 @@ def test_a_device_id_cannot_walk_out_of_the_firmware_folder(tmp_path):
     assert store.get("../secret") is None
 
 
+def test_a_device_id_ending_in_a_newline_is_not_a_device(tmp_path):
+    """Known issue #12: the id comes from an HTTP header here, unchecked by hello."""
+    config = make_config(tmp_path)
+    put_image(config, fake_image("1.0"), device=DEVICE + "\n")  # so only the check can refuse it
+    store = FirmwareStore(config.firmware_dir)
+    assert store.get(DEVICE + "\n") is None
+
+
 # -- hello carries the version --------------------------------------------
 
 

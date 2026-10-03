@@ -465,8 +465,12 @@ class RemoteLink:
     def triggered(self, frame) -> bool:
         """True when an *addressed* utterance is queued — the equivalent of the
         wake word firing. Un-addressed speech never reaches the queue: the gate
-        dropped it before this."""
-        return not self._utterances.empty()
+        dropped it before this.
+
+        Not while no edge is connected (known issue #11): ``record_utterance``
+        takes nothing then, so a word left queued would wake an empty session
+        about once a second. The same device reconnecting still gets it."""
+        return not self._disconnected.is_set() and not self._utterances.empty()
 
     # -- as "mic" ----------------------------------------------------------
 
@@ -961,7 +965,7 @@ class RemoteServer:
 
         query = parse_qs(urlsplit(request.path).query)
         day = (query.get("day") or [None])[0]
-        if day is not None and not re.match(r"^\d{4}-\d{2}-\d{2}$", day):
+        if day is not None and not re.match(r"^\d{4}-\d{2}-\d{2}\Z", day):
             return connection.respond(HTTPStatus.BAD_REQUEST, "day=YYYY-MM-DD\n")
         if (query.get("fetch") or ["1"])[0] == "0":
             result = self.power_report(PowerFetch("skipped"), day, device_id)

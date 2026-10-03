@@ -15,9 +15,6 @@
 #   services/whisper/requirements.txt the warm transcription service
 #   services/voder/requirements.txt   the warm speech service
 #
-# The legacy `main.py` / `libs/` path has its own (TensorFlow-era) dependencies
-# — see README.md. Nothing here is needed for it, or it for this.
-#
 # Lower bounds, not pins: these are the versions this was built and tested
 # against (2026-09-25, Python 3.14).
 

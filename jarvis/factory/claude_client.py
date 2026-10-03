@@ -1,8 +1,8 @@
 """The only place in the factory that talks to the Anthropic API.
 
-Mirrors ``libs/anthropic_helper.py``'s env-var handling (``ANTHROPIC_API_KEY``
-/ legacy ``api_key``, ``ANTHROPIC_MODEL`` override, ``ANTHROPIC_WORKSPACE_ID``
-→ the ``anthropic-workspace-id`` header) but is scoped to one job: turn a
+Reads the key the way ``.env`` has always held it (``ANTHROPIC_API_KEY`` / the
+older ``api_key``, ``ANTHROPIC_MODEL`` override, ``ANTHROPIC_WORKSPACE_ID``
+→ the ``anthropic-workspace-id`` header) and is scoped to one job: turn a
 :class:`~jarvis.factory.spec.SkillSpec` into a skill module + test source.
 Everything downstream (``validate.py``, ``sandbox.py``) treats what comes back
 as untrusted text — this client's only responsibility is getting a plausible

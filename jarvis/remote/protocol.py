@@ -40,8 +40,9 @@ MAX_AUDIO_BASE64 = 2_000_000
 MAX_CLIENT_LOG = 500
 
 #: A device id becomes a filename (`data/remote/<device_id>.json`), so "it is a
-#: string" is not validation.
-_DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+#: string" is not validation. `\Z`, not `$`: `$` also matches before a final
+#: newline, and "watch\n" would become a filename (known issue #12).
+_DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _SEGMENT_REASONS = ("silence", "maximum", "release", "close")
 
 #: Where an edge fetches its staged firmware image: a plain ``GET`` on the
@@ -70,7 +71,7 @@ MAX_TOOL_PARAMS = 4
 TOOL_PARAM_TYPES = ("duration", "number", "text", "name")
 #: what a tool's `result` may ask JARVIS to say
 MAX_TOOL_SAY = 300
-_TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}\Z")
 
 #: Files an edge sends up (``file``): its power log, so far. Base64, because a
 #: chunk is cut at a byte offset and may split a UTF-8 character in two.
@@ -78,7 +79,7 @@ FILE_KINDS = ("power",)
 MAX_FILE_CHUNK = 65_536            # base64 chars in one message
 MAX_FILE_OFFSET = 64 * 1024 * 1024
 #: the day's rows, and beside them a line per stretch in one mode (-modes)
-_FILE_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|nodate)(-modes)?\.csv$")
+_FILE_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|nodate)(-modes)?\.csv\Z")
 
 
 class C2S:

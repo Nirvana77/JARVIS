@@ -1,7 +1,7 @@
 # Milestone 3 — remote edge (brain server + audio satellite): outcome
 
 **Date:** 2026-09-25
-**Branch:** `milestone-3-remote-edge` (off `develop`, not yet committed or merged)
+**Branch:** `milestone-3-remote-edge`, merged into `develop`
 **Result:** ✅ JARVIS can be split in two. `python -m jarvis serve` is the
 brain; `python -m jarvis edge` is an audio satellite with a microphone, a
 speaker and no models at all. The voice pipeline is Mike's, ported: a pure

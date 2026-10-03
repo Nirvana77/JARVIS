@@ -46,7 +46,7 @@ MIN_SEGMENT_MS = 120
 #: Base64 as the spec writes it, plus its padding. ``b64decode`` without
 #: ``validate=True`` silently skips anything else, so without this check a
 #: sentence of JSON would come back as a plausible-looking buffer of noise.
-_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]*={0,2}$")
+_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]*={0,2}\Z")
 
 
 @dataclass(frozen=True)

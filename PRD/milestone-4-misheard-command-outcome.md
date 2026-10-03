@@ -1,7 +1,7 @@
 # Milestone 4 — misheard-command reasoning: outcome
 
 **Date:** 2026-10-01
-**Branch:** `develop` working tree (not yet committed)
+**Branch:** merged into `develop` (via `reasoning-memory-knowledge`)
 **Result:** ✅ Where JARVIS used to say "didn't catch that" unconditionally, it
 now asks the local reasoner whether the transcript is a mishearing of something
 it knows, confirms the guess by voice (*"Did you mean 'flip a coin', sir?"*),

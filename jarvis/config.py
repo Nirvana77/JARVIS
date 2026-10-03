@@ -3,7 +3,7 @@
 ``config.toml`` holds every non-secret knob. ``.env`` holds only secrets and is
 loaded so ``os.getenv`` sees them elsewhere; nothing here reads the API key.
 
-Two environment variables still override the file, matching the legacy code:
+Two environment variables still override the file, as they did in the 2024 code:
 ``JARVIS_PERSONA`` (beats ``[persona].active``) and ``language`` (beats
 ``[general].language``).
 """
@@ -523,11 +523,11 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     addressing = _section(raw, "addressing")
     edge = _section(raw, "edge")
 
-    # Environment overrides (kept from the legacy code).
+    # Environment overrides (kept from the 2024 code).
     language = os.getenv("language") or general.get("language", "en")
     active_persona = os.getenv("JARVIS_PERSONA") or persona.get("active", "jarvis")
     hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
-    # Same fallback anthropic_helper.py uses: ANTHROPIC_API_KEY is the SDK's own
+    # ANTHROPIC_API_KEY is the SDK's own
     # env var; `api_key` is what older .env files used.
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("api_key")
     anthropic_workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID")

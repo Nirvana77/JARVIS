@@ -83,6 +83,7 @@ def test_file_chunks_and_done():
     [
         {"type": "file", "kind": "power", "name": "../../etc/passwd", "offset": 0, "b64": ""},
         {"type": "file", "kind": "power", "name": "2026-10-01.txt", "offset": 0, "b64": ""},
+        {"type": "file", "kind": "power", "name": "2026-10-01.csv\n", "offset": 0, "b64": ""},
         {"type": "file", "kind": "secrets", "name": "2026-10-01.csv", "offset": 0, "b64": ""},
         {"type": "file", "kind": "power", "name": "2026-10-01.csv", "offset": -1, "b64": ""},
         {"type": "file", "kind": "power", "name": "2026-10-01.csv", "offset": 0,

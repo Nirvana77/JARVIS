@@ -16,7 +16,7 @@ from dataclasses import replace
 import numpy as np
 
 from jarvis.audio.whisper_client import Transcript, TranscriptionUnavailable
-from jarvis.config import load_config
+from jarvis.config import ServerConfig, load_config
 from jarvis.core.orchestrator import Orchestrator
 from jarvis.nlu.corpus import intent_meta
 from jarvis.remote import protocol as P
@@ -33,7 +33,9 @@ def make_config(tmp_path, **over):
     config = replace(
         config,
         data_dir=tmp_path,
-        server=replace(config.server, host="127.0.0.1", port=0, hello_timeout_s=1.0),
+        # A fresh [server], not the developer's: their allow_insecure / proxy
+        # settings would otherwise leak into the TLS and proxy-trust tests.
+        server=ServerConfig(host="127.0.0.1", port=0, hello_timeout_s=1.0),
         addressing=replace(config.addressing, hold_ms=over.pop("hold_ms", 80)),
         capture=replace(
             config.capture,
