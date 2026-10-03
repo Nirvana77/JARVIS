@@ -175,9 +175,6 @@ zone) is what "now" means for the `clock` skill, the reasoner's prompt and
 `ctx.now()`, which skills, including Claude-written ones, use instead of
 `datetime.now()`.
 
-```bash
-```
-
 `./jarvis-run <args>` is the same with the repo's `.venv`, from any directory.
 
 **All-in-one is still the default.** `serve` / `edge` are the opt-in split
