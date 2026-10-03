@@ -136,6 +136,30 @@ class _Decision:
     offered: bool = False
 
 
+#: The factory's numeric param types (``claude_client._CONTRACT``) in the
+#: vocabulary of ``slots.extract_typed``. Strings and booleans are not guessed:
+#: text extraction takes what follows "to"/"that", which for "add eggs to the
+#: shopping list" is the wrong half, and a wrong value is worse than the
+#: skill's own default.
+_LEARNED_TYPES = {"integer": "number", "number": "number"}
+
+
+def _learned_params(params: dict, text: str) -> dict:
+    """A learned skill's declared params, by type (known issue #7: before
+    this, "flip three coins" flipped one). What is not there is left out, so
+    the skill's own default applies."""
+    spec = {
+        name: {"type": _LEARNED_TYPES[kind]}
+        for name, decl in params.items()
+        if isinstance(decl, dict) and (kind := decl.get("type")) in _LEARNED_TYPES
+    }
+    found = _slots.extract_typed(spec, text)
+    for name, value in list(found.items()):
+        if params[name].get("type") == "integer":
+            found[name] = int(round(value))
+    return found
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -949,6 +973,8 @@ class Orchestrator:
             manifest = None
         if manifest is not None and manifest.origin == "edge":
             return _slots.extract_typed(manifest.params, text)
+        if manifest is not None and manifest.origin == "learned" and manifest.params:
+            return _learned_params(manifest.params, text)
         return self._slot_extract(label, text)
 
     async def _fill_missing(self, label: str, params: dict) -> dict | None:
