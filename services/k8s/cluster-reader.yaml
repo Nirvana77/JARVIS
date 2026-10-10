@@ -1,0 +1,29 @@
+# What the `cluster_status` skill needs when the brain runs in a pod: its
+# service account may list nodes and pods, cluster-wide, and nothing else.
+# Without it the skill answers "I am not permitted to read the cluster, sir."
+#
+#   kubectl apply -f services/k8s/cluster-reader.yaml
+#
+# The subject is the namespace's default service account, which is what the
+# brain's Deployment runs as unless it names another.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: jarvis-cluster-reader
+rules:
+    - apiGroups: [""]
+      resources: ["nodes", "pods"]
+      verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+    name: jarvis-cluster-reader
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: jarvis-cluster-reader
+subjects:
+    - kind: ServiceAccount
+      name: default
+      namespace: jarvis

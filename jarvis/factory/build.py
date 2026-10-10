@@ -26,6 +26,17 @@ class BuildError(RuntimeError):
     """`generate` failed, or returned something obviously unusable."""
 
 
+class CannotBuild(BuildError):
+    """`generate` declined: nothing a skill may do can carry the request out.
+    Not a failed attempt — a retry has the same limits — so `build()` lets it
+    through as itself and the job ends on it. ``reason`` is a sentence for the
+    user."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def build(
     spec: SkillSpec,
     *,
@@ -39,6 +50,8 @@ def build(
     specific problem instead of generating blind again."""
     try:
         generated = generate(spec, existing_source, feedback)
+    except CannotBuild:
+        raise
     except Exception as exc:  # noqa: BLE001 — degrade to a spoken failure, not a crash
         raise BuildError(f"couldn't generate '{spec.name}': {exc}") from exc
 

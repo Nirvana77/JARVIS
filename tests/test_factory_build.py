@@ -77,3 +77,15 @@ def test_build_rejects_empty_test_source():
 
     with pytest.raises(BuildError, match="empty"):
         build(SPEC, generate=fake_generate)
+
+
+def test_build_lets_a_refusal_through_as_itself():
+    """`CannotBuild` is not a failed attempt to retry: the job ends on it."""
+    from jarvis.factory.build import CannotBuild
+
+    def generate(spec, existing_source, feedback=None):
+        raise CannotBuild("It needs your cluster.")
+
+    with pytest.raises(CannotBuild) as err:
+        build(SPEC, generate=generate)
+    assert err.value.reason == "It needs your cluster."

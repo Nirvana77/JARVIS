@@ -74,3 +74,44 @@ def test_generation_leaves_room_for_thinking_and_both_modules():
     generated = _client_with(messages).generate_skill(SPEC)
     assert generated.module_source == "A\n"
     assert messages.kwargs["max_tokens"] >= 16000
+
+
+def test_a_request_no_skill_can_carry_out_is_declined_not_faked():
+    """Asked to "perform the Kubernetes command and report back the result",
+    the factory wrote a skill that parsed a kubectl command the user had to
+    dictate and reported that nothing was executed. The contract now gives
+    Claude a way to say no, and the client hands the reason on."""
+    import pytest
+
+    from jarvis.factory.build import CannotBuild
+    from jarvis.factory.claude_client import _CONTRACT
+
+    assert "CANNOT:" in _CONTRACT
+    messages = _FakeMessages(
+        "CANNOT: It needs access to your cluster, which a skill does not have.\n", "end_turn"
+    )
+    with pytest.raises(CannotBuild) as err:
+        _client_with(messages).generate_skill(SPEC)
+    assert err.value.reason == "It needs access to your cluster, which a skill does not have."
+
+
+def test_a_skill_that_mentions_the_word_is_still_a_skill():
+    source = "```python skill\n# CANNOT: not a refusal\nA\n```\n```python test\nB\n```"
+    generated = _client_with(_FakeMessages(source, "end_turn")).generate_skill(SPEC)
+    assert generated.module_source.endswith("A\n")
+
+
+def test_the_contract_says_what_is_never_filled_in():
+    """A learned skill's string param is never taken from the utterance
+    (`orchestrator._learned_params`), so a skill that waits for one asks for
+    it forever."""
+    from jarvis.factory.claude_client import _CONTRACT
+
+    assert "never filled in" in _CONTRACT
+
+
+def test_the_contract_says_examples_are_how_the_skill_is_used():
+    from jarvis.factory.claude_client import _CONTRACT
+
+    assert "to use the skill" in _CONTRACT
+    assert "learn how to" in _CONTRACT  # named as what an example is not
