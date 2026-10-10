@@ -15,6 +15,7 @@ import logging
 import re
 from dataclasses import dataclass
 
+from jarvis.factory.build import CannotBuild
 from jarvis.factory.spec import SkillSpec
 
 log = logging.getLogger(__name__)
@@ -34,9 +35,17 @@ at module scope:
    f-strings, no variables):
    - `name`: the skill's identifier, matching the module's own name.
    - `description`: a short human-readable sentence.
-   - `examples`: a list of 3-6 example phrases a user might say.
+   - `examples`: a list of 3-6 phrases a user would say to use the skill,
+     once it exists. They train the classifier that picks the skill, so never
+     a request for it to be written or learned ("learn how to ...", "teach
+     yourself to ...", "can you learn to ...") — not even when a phrase like
+     that is among the examples you were given.
    - `params`: a dict describing keyword params `run()` accepts, e.g.
      `{"seconds": {"type": "integer", "required": True}}`. Use `{}` if none.
+     Only an `integer` or `number` param is taken from what the user said. A
+     `string` param is never filled in: `run()` gets its default, every time.
+     So a skill must do its job from the request alone — never one that waits
+     for the user to dictate a command, a name or a text to it.
    - `permissions`: a *set literal* (not `frozenset(...)`) drawn only from
      {"pure", "notify", "fs_read", "fs_write", "net", "shell"}. Request the
      minimum the skill actually needs — most skills need only `{"pure"}`.
@@ -61,6 +70,14 @@ Rules:
      `ctx.data_dir`. If the task is genuinely impossible under `{"pure"}`,
      say so in one sentence before the code and use the narrowest permission
      that unblocks it.
+   - A skill does what was asked, or it is not written. If the request needs
+     something no skill can reach under these rules — another machine or
+     service, a credential, a command-line tool — do not write one that only
+     describes, parses or simulates it, or that reports it could not act.
+     Reply instead with this one line and nothing else (it is read to the
+     user, so make it a full sentence about what is missing):
+
+     CANNOT: <one short sentence>
 
 Worked example (a real JARVIS skill, for shape only — do not copy verbatim):
 
@@ -103,7 +120,8 @@ handful of focused tests rather than an exhaustive suite.
 '''
 
 _RESPONSE_FORMAT = """\
-Respond with exactly two fenced code blocks, in this order, and nothing else:
+Unless you are declining with `CANNOT:`, respond with exactly two fenced code
+blocks, in this order, and nothing else:
 
 ```python skill
 <the full skill module source>
@@ -113,6 +131,9 @@ Respond with exactly two fenced code blocks, in this order, and nothing else:
 <the full pytest test module source>
 ```
 """
+
+#: a refusal is the whole reply, not a word inside a skill's source
+_CANNOT_RE = re.compile(r"\s*CANNOT:\s*(?P<reason>[^\n]+)")
 
 _BLOCK_RE = re.compile(
     r"```python\s+skill\s*\n(?P<skill>.*?)```.*?```python\s+test\s*\n(?P<test>.*?)```",
@@ -224,6 +245,9 @@ class ClaudeClient:
                 "blocks were complete — write a smaller skill and fewer tests"
             )
         match = _BLOCK_RE.search(text)
+        declined = None if match else _CANNOT_RE.match(text)
+        if declined:
+            raise CannotBuild(declined.group("reason").strip()[:240])
         if not match:
             raise ClaudeClientError("Claude's reply didn't contain the two expected code blocks")
         return GeneratedSkill(

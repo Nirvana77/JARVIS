@@ -414,6 +414,16 @@ Rules worth knowing before changing things:
 
 - **Claude teaches, never answers.** It is called only by the factory. Answers
   come from skills, the knowledge base and the optional local reasoner.
+- **The factory may say no.** A request no skill can carry out under the
+  contract (it needs a machine, a credential, a command-line tool) comes back
+  as `CANNOT: <why>` (`build.CannotBuild`): the job ends there, unretried, and
+  JARVIS says why. Before this it wrote a skill that only talked about the
+  request. Likewise a learned skill's `string` param is never filled in from
+  the utterance, and the contract says so: a skill that waits to be dictated
+  to asks forever.
+- **A learned skill's examples are how it is used**, not how it was asked for:
+  `orchestrator._as_used` drops "learn how to …" from the request before it
+  becomes the skill's name, description and examples.
 - **The reasoner never picks a skill.** It suggests phrases; each goes through
   the real classifier, and nothing it suggests runs unconfirmed.
 - **Skills import nothing from the core stack**; they only use `ctx`.
@@ -441,6 +451,14 @@ Rules worth knowing before changing things:
   `.env`. Never pass the brain's environment to sandboxed code: on this machine
   `unshare` is unavailable, so there is no network isolation either.
 - **The edge's import graph stays light** (`tests/test_edge_imports.py`).
+
+### The cluster (`cluster_status`)
+
+"Check the kubernetes status" is a builtin, not something to teach: two
+read-only GETs (nodes, pods) and a line on what is not healthy. Inside a pod it
+uses the pod's service account, which needs `services/k8s/cluster-reader.yaml`
+applied once; anywhere else it runs `kubectl get --raw` with that machine's
+kubeconfig.
 
 ### Adding a builtin skill
 

@@ -206,6 +206,28 @@ def _learned_params(params: dict, text: str) -> dict:
     return found
 
 
+#: "learn how to X" / "can you teach yourself to X": the request to learn, in
+#: front of what is said to use the skill
+_LEARN_LEAD_IN = re.compile(
+    r"^\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?"
+    r"(?:learn|teach\s+yourself|figure\s+out|find\s+out|work\s+out)\s+(?:how\s+)?to\s+(?=\S)",
+    re.IGNORECASE,
+)
+_BY_YOURSELF = re.compile(r"\s+(?:by|for)\s+yourself\s*$", re.IGNORECASE)
+
+
+def _as_used(text: str) -> str:
+    """A request to learn something, as the words that will use it: "Learn how
+    to check the cluster status." → "check the cluster status". Those words,
+    not the request, are the skill's name and its examples — or asking JARVIS
+    to learn anything else nearby runs it (the watch, 2026-10-10). Anything
+    without that lead-in is returned as it was said."""
+    match = _LEARN_LEAD_IN.match(text)
+    if not match:
+        return text
+    return _BY_YOURSELF.sub("", text[match.end():].strip().rstrip(".!?").strip())
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -1145,7 +1167,7 @@ class Orchestrator:
             self._note(outcome="declined")
             await self._speak(self.persona.line("unknown"))
             return
-        description = thought.learn
+        description = _as_used(thought.learn)
         for earlier in self.learning.state.requests_today():
             if await self._same_request(text, description, earlier):
                 self._note(outcome="declined", skill=earlier["name"])
@@ -1162,7 +1184,7 @@ class Orchestrator:
         name = self._new_skill_name(description)
         examples: list[str] = []
         earlier = (self._retry["prev"].get("heard", ""),) if self._retry is not None else ()
-        for example in (text, *earlier, *thought.examples, description):
+        for example in map(_as_used, (text, *earlier, *thought.examples, description)):
             if example and not any(same_text(example, e) for e in examples):
                 examples.append(example)
         self.learning.state.count_build()

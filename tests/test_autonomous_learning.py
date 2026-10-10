@@ -113,6 +113,49 @@ def test_the_heard_words_are_one_of_its_examples(rig):
     assert "throw a die" in seen[0].examples
 
 
+def test_asking_it_to_learn_is_not_how_the_skill_is_used(rig):
+    """The watch, 2026-10-10: "Learn how to check the cluster status." became
+    the skill `learn_how_to_check`, with that sentence as its first example —
+    so asking JARVIS to learn something else about the cluster ran it. The
+    examples are what is said to use the skill."""
+    o = setup(rig, FakeReasoner('{"commands": ["Learn how to check the cluster status"]}'))
+    seen = []
+    original = rig.o.claude_client.generate_skill
+
+    def spy(spec, existing, feedback=None):
+        seen.append(spec)
+        return original(spec, existing, feedback)
+
+    rig.o.claude_client.generate_skill = spy
+
+    async def go():
+        await o.handle("unknown", "Learn how to check the cluster status.", 0.1)
+        await settle(rig)
+    asyncio.run(go())
+    spec = seen[0]
+    assert spec.name == "check_the_cluster_status"
+    assert spec.description == "check the cluster status"
+    assert spec.examples == ["check the cluster status"]
+
+
+def test_the_lead_in_of_a_request_to_learn_is_dropped():
+    from jarvis.core.orchestrator import _as_used
+
+    for said in (
+        "Learn how to check the cluster status.",
+        "learn to check the cluster status",
+        "Can you learn how to check the cluster status?",
+        "Please teach yourself to check the cluster status",
+        "Learn how to check the cluster status by yourself.",
+        "figure out how to check the cluster status",
+    ):
+        assert _as_used(said) == "check the cluster status", said
+    # anything else is left as it was said
+    assert _as_used("roll me a die") == "roll me a die"
+    assert _as_used("learn") == "learn"
+    assert _as_used("How do I learn to juggle?") == "How do I learn to juggle?"
+
+
 def test_a_permission_still_waits_for_a_yes(rig):
     rig.o.claude_client = FakeClaude(perms='{"pure", "net"}')
     o = setup(rig, FakeReasoner(LEARN_DIE))

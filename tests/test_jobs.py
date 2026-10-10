@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from jarvis.factory.build import BuildError
+from jarvis.factory.build import BuildError, CannotBuild
 from jarvis.factory.claude_client import GeneratedSkill
 from jarvis.factory.flows import LearningRequest, staging_dir
 from jarvis.factory.jobs import LearningJob
@@ -176,6 +176,22 @@ def test_build_error_is_notified_not_raised():
     outcome = asyncio.run(make_job(teach_request(), channel=channel, generate=broken, sandbox=FakeSandbox()).run())
     assert not outcome.accepted
     assert any("coin_flip" in n for n in channel.notices)
+
+
+def test_a_declined_request_is_said_once_and_not_retried():
+    calls = []
+
+    def declines(spec, existing_source, feedback=None):
+        calls.append(feedback)
+        raise CannotBuild("It needs access to your cluster.")
+
+    channel = Channel()
+    job = make_job(teach_request(), channel=channel, generate=declines, sandbox=FakeSandbox())
+    outcome = asyncio.run(job.run())
+    assert not outcome.accepted
+    assert len(calls) == 1  # a retry cannot give a skill what it has no way to reach
+    assert channel.notices == ["I can't learn that one, sir. It needs access to your cluster."]
+    assert not list(staging_dir().glob("*.py"))
 
 
 def test_validation_failure_is_notified():

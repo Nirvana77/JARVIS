@@ -24,7 +24,7 @@ import threading
 from typing import Awaitable, Callable
 
 from jarvis.factory import flows as _flows
-from jarvis.factory.build import BuildError, build
+from jarvis.factory.build import BuildError, CannotBuild, build
 from jarvis.factory.flows import FlowOutcome, LearningRequest
 from jarvis.factory.validate import ValidationError, validate
 from jarvis.skills.contract import SkillManifest
@@ -185,6 +185,13 @@ class LearningJob:
                         existing_source=request.existing_source, feedback=feedback,
                     )
                 )
+            except CannotBuild as exc:
+                # nothing a skill may do carries this out: a retry has the
+                # same limits, and a skill that only talks about it is worse
+                # than none
+                log.info("%s declined by the factory: %s", name, exc.reason)
+                await self.notify(f"I can't learn that one, sir. {exc.reason}")
+                return FlowOutcome(accepted=False, name=name, reason=f"declined: {exc.reason}")
             except BuildError as exc:
                 log.warning(
                     "build failed for %s (attempt %d/%d): %s", name, attempt, self.max_attempts, exc

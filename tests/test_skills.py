@@ -8,14 +8,15 @@ import pytest
 
 from jarvis.core.context import Context
 from jarvis.skills.builtin import (
-    clock, force_update_watch, note, open_app, play, recall, remember, search, update_watch,
-    watch_power,
+    clock, cluster_status, force_update_watch, note, open_app, play, recall, remember, search,
+    update_watch, watch_power,
 )
 from jarvis.skills.contract import PERMISSIONS, SkillManifest, SkillNotFound
 from jarvis.skills.registry import BUILTIN_PACKAGE, Registry
 
 BUILTINS = {
     "clock": clock,
+    "cluster_status": cluster_status,
     "search": search,
     "open_app": open_app,
     "play": play,
@@ -43,8 +44,8 @@ def test_registry_discovers_the_builtins(config, tmp_path):
     # edge tools a device declared live under `data/remote/tools`.
     reg = Registry.discover(replace(config, data_dir=tmp_path), packages=(BUILTIN_PACKAGE,))
     assert reg.names() == [
-        "clock", "force_update_watch", "note", "open_app", "play", "recall", "remember", "search",
-        "update_watch", "watch_power",
+        "clock", "cluster_status", "force_update_watch", "note", "open_app", "play", "recall",
+        "remember", "search", "update_watch", "watch_power",
     ]
 
 
